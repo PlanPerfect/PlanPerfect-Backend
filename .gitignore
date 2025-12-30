@@ -1,0 +1,13 @@
+# Ignore Python cache files and environment files
+__pycache__/
+
+# Ignore sensitive environment files
+.env
+
+# Ignore system files
+app.log
+
+# Ignore virtual environment directories
+planperfect-env
+venv
+env

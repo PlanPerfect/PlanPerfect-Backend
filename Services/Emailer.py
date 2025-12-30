@@ -1,0 +1,1 @@
+# TO-DO: Google SMTP Email Server Setup & HTML Email Templates
