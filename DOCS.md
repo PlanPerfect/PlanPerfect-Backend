@@ -1,0 +1,11 @@
+# Tools & Services
+- `Utilities`
+  - Universal toolkit, includes tools for generating IDs, hashing strings, and encoding to / decoding from Base64
+- `Logger`
+  - Logs key system messages to `app.log` and are available at `/logs`
+- `Emailer`
+  - Emailing service (TO-DO)
+- `DatabaseManager`
+  - DBMS for Firebase RTDB & Bucket Storage (TO-DO)
+- `Bootcheck`
+  - System checks performed on boot (TO-DO)
