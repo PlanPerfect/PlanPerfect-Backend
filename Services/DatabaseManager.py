@@ -135,7 +135,7 @@ class DatabaseManagerClass:
 
             self._db_ref = db.reference()
             self._initialized = True
-            print(f"DATABASE MANAGER INITIALISED. CONNECTED TO {database_url}\n")
+            print(f"DATABASE MANAGER INITIALISED. CONNECTED TO \033[94m{database_url}\033[0m\n")
 
         except Exception as e:
             Logger.log(f"[DATABASE MANAGER] - ERROR: DatabaseManager could not be initialized. Error: {e}")

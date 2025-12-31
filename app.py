@@ -38,16 +38,7 @@ def index():
     dev_mode = os.getenv("DEV_MODE", "True").lower() == "true"
     mode_label = "Development" if dev_mode else "Production"
 
-    time_diff = datetime.now() - SERVER_START_TIME
-    hours, remainder = divmod(int(time_diff.total_seconds()), 3600)
-    minutes, seconds = divmod(remainder, 60)
-
-    if hours > 0:
-        last_reload = f"{hours}h {minutes}m ago"
-    elif minutes > 0:
-        last_reload = f"{minutes}m {seconds}s ago"
-    else:
-        last_reload = f"{seconds}s ago"
+    server_start_iso = SERVER_START_TIME.isoformat()
 
     html_content = f"""
     <!DOCTYPE html>
@@ -96,8 +87,8 @@ def index():
                     <div class="stat-label">Server Port</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">{last_reload}</div>
-                    <div class="stat-label">Last auto-reload</div>
+                    <div class="stat-value" id="uptime">Calculating...</div>
+                    <div class="stat-label">Server Uptime</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value">{mode_label}</div>
@@ -108,6 +99,41 @@ def index():
         <footer class="footer">
             <p>Powered by FastAPI • Developed with ❤️ by the PlanPerfect Team</p>
         </footer>
+
+        <script>
+            // Server start time passed from backend
+            const serverStartTime = new Date("{server_start_iso}");
+
+            function updateUptime() {{
+                const now = new Date();
+                const diff = now - serverStartTime; // difference in milliseconds
+
+                // Convert milliseconds to days, hours, minutes, seconds
+                const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+                // Format the uptime string
+                let uptimeString = "";
+                if (days > 0) {{
+                    uptimeString = `${{days}}d ${{hours}}h ${{minutes}}m`;
+                }} else if (hours > 0) {{
+                    uptimeString = `${{hours}}h ${{minutes}}m ${{seconds}}s`;
+                }} else if (minutes > 0) {{
+                    uptimeString = `${{minutes}}m ${{seconds}}s`;
+                }} else {{
+                    uptimeString = `${{seconds}}s`;
+                }}
+
+                // Update the display
+                document.getElementById('uptime').textContent = uptimeString;
+            }}
+
+            // Update immediately and then every second
+            updateUptime();
+            setInterval(updateUptime, 1000);
+        </script>
     </body>
     </html>
     """
@@ -129,7 +155,7 @@ if __name__ == '__main__':
             credentials_path=os.getenv("FIREBASE_CREDENTIALS_PATH")
         )
 
-    print(f"Server running at http://localhost:{port}\n")
+    print(f"Server running at \033[94mhttp://localhost:{port}\033[0m\n")
 
     uvicorn.run(
         "app:app",
