@@ -1,7 +1,6 @@
 from datetime import datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from Services import Logger
 
 router = APIRouter(prefix="/logs", tags=["Tools & Services"])
@@ -28,7 +27,7 @@ def log_message(message: str):
     Logger.log(message)
     return {"status": "Message logged"}
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def logs_page(request: Request):
     logs = read_logs()
 

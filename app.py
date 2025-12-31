@@ -1,12 +1,14 @@
 import os
 import uvicorn
 from datetime import datetime
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
 from routes.utilities import router as utilities_router
 from routes.logger import router as logger_router
-from dotenv import load_dotenv
+from routes.emailer import router as emailer_router
 
 load_dotenv()
 
@@ -15,15 +17,15 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(utilities_router)
 app.include_router(logger_router)
+app.include_router(emailer_router)
 
 SERVER_START_TIME = datetime.now()
 
-@app.get("/", tags=["Index"])
+@app.get("/", include_in_schema=False)
 def index():
     port = os.getenv("PORT", "8000")
     dev_mode = os.getenv("DEV_MODE", "True").lower() == "true"
     mode_label = "Development" if dev_mode else "Production"
-
 
     time_diff = datetime.now() - SERVER_START_TIME
     hours, remainder = divmod(int(time_diff.total_seconds()), 3600)
@@ -104,7 +106,9 @@ if __name__ == '__main__':
     load_dotenv()
     port = int(os.getenv("PORT", 8000))
     dev_mode = os.getenv("DEV_MODE", "True").lower() == "true"
+
     print(f"[{'DEVELOPMENT' if dev_mode else 'PRODUCTION'}] - Server running at http://localhost:{port}")
+
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
