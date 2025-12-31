@@ -676,7 +676,6 @@ main.container {
     padding: 0.5rem;
     color: #c9a86a;
     cursor: pointer;
-    transition: all 0.3s;
     width: 36px;
     height: 36px;
     display: flex;
@@ -694,6 +693,9 @@ main.container {
     background: rgba(16, 185, 129, 0.2);
     color: #10b981;
     border-color: rgba(16, 185, 129, 0.5);
+    width: auto;
+    padding: 0.5rem 1rem;
+    white-space: nowrap;
 }
 
 .empty-state {

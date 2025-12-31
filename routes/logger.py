@@ -226,7 +226,7 @@ async def logs_page(request: Request):
                         navigator.clipboard.writeText(message).then(() => {{
                             const originalHTML = this.innerHTML;
                             const originalClass = this.className;
-                            this.innerHTML = '✓';
+                            this.innerHTML = '✓ Copied to clipboard';
                             this.className = 'copy-log-btn copied';
 
                             setTimeout(() => {{
