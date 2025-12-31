@@ -1,4 +1,5 @@
 import os
+import sys
 import uvicorn
 from datetime import datetime
 from dotenv import load_dotenv
@@ -13,6 +14,7 @@ from routes.emailer import router as emailer_router
 from routes.database import router as database_router
 
 from Services import DatabaseManager as DM
+from Services import Bootcheck
 
 load_dotenv()
 
@@ -117,6 +119,9 @@ if __name__ == '__main__':
     dev_mode = os.getenv("DEV_MODE", "True").lower() == "true"
 
     print(f"SERVER MODE: {'DEVELOPMENT' if dev_mode else 'PRODUCTION'}\n")
+
+    if not Bootcheck.run_checks():
+        sys.exit(1)
 
     if not DM._initialized:
         DM.initialize(
