@@ -53,9 +53,9 @@ def index():
         </div>
         <nav class="navbar">
             <div class="nav-content">
-                <div class="logo">
+                <a href="/" class="logo" style="text-decoration: none;">
                     <span class="logo-text">PlanPerfect Backend</span>
-                </div>
+                </a>
                 <div class="nav-links">
                     <a href="/" class="nav-link">Home</a>
                     <a href="/docs" class="nav-link">API</a>
@@ -106,7 +106,7 @@ if __name__ == '__main__':
     dev_mode = os.getenv("DEV_MODE", "True").lower() == "true"
     print(f"[{'DEVELOPMENT' if dev_mode else 'PRODUCTION'}] - Server running at http://localhost:{port}")
     uvicorn.run(
-        "main:app",
+        "app:app",
         host="0.0.0.0",
         port=port,
         reload=dev_mode,

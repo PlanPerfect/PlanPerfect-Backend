@@ -5,7 +5,6 @@ from fastapi.staticfiles import StaticFiles
 from Services import Logger
 
 router = APIRouter(prefix="/logs", tags=["Tools & Services"])
-router.mount("/static", StaticFiles(directory="static"), name="static")
 
 LOG_FILE = 'app.log'
 
@@ -116,7 +115,6 @@ async def logs_page(request: Request):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Application Logs - PlanPerfect</title>
         <link rel="stylesheet" href="/static/serverIndexStyles.css">
-        <link rel="stylesheet" href="/static/serverLogsStyles.css">
     </head>
     <body>
         <div class="background">
@@ -127,9 +125,9 @@ async def logs_page(request: Request):
 
         <nav class="navbar">
             <div class="nav-content">
-                <div class="logo">
+                <a href="/" class="logo" style="text-decoration: none;">
                     <span class="logo-text">PlanPerfect Backend</span>
-                </div>
+                </a>
                 <div class="nav-links">
                     <a href="/" class="nav-link">Home</a>
                     <a href="/docs" class="nav-link">API</a>
