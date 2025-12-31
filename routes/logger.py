@@ -2,10 +2,13 @@ from datetime import datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from Services import Logger
+import re
 
 router = APIRouter(prefix="/logs", tags=["Tools & Services"])
 
 LOG_FILE = 'app.log'
+
+LOG_LINE_RE = re.compile(r'^\[(?P<timestamp>[\d\- :]+)\]\s+\[(?P<tag>[^\]]+)\]\s*-\s*(?P<message>.*)$')
 
 def read_logs():
     try:
@@ -13,11 +16,41 @@ def read_logs():
             lines = f.readlines()
         logs = []
         for line in lines:
-            if line.strip():
-                timestamp_end = line.find("]") + 1
-                timestamp = line[:timestamp_end].strip("[]")
-                message = line[timestamp_end+1:].strip()
-                logs.append({"timestamp": timestamp, "message": message})
+            line = line.rstrip('\n')
+            if not line.strip():
+                continue
+            m = LOG_LINE_RE.match(line)
+            if not m:
+                logs.append({
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    "tag": "UNKNOWN",
+                    "raw_message": line,
+                    "level": "MISC",
+                    "display_message": line,
+                })
+                continue
+
+            ts = m.group('timestamp')
+            tag = m.group('tag')
+            message = m.group('message').strip()
+
+            level = 'MISC'
+            for prefix in ('SUCCESS:', 'UERROR:', 'ERROR:'):
+                if message.upper().startswith(prefix):
+                    level = prefix[:-1]  # remove trailing ':'
+                    message = message[len(prefix):].strip()
+                    break
+
+            display_message = f"[{tag}] - {message}"
+
+            logs.append({
+                "timestamp": ts,
+                "tag": tag,
+                "raw_message": m.group('message'),
+                "level": level,
+                "display_message": display_message,
+            })
+
         return logs[::-1]
     except FileNotFoundError:
         return []
@@ -38,16 +71,8 @@ async def logs_page(request: Request):
         'MISC': 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
     }
 
-    def get_log_level(message):
-        message_upper = message.upper()
-        if message_upper.startswith('SUCCESS:'):
-            return 'SUCCESS'
-        elif message_upper.startswith('UERROR:'):
-            return 'UERROR'
-        elif message_upper.startswith('ERROR:'):
-            return 'ERROR'
-        else:
-            return 'MISC'
+    def get_log_level_from_entry(entry):
+        return entry.get('level', 'MISC')
 
     log_cards_html = ""
     if not logs:
@@ -60,20 +85,20 @@ async def logs_page(request: Request):
         """
     else:
         for log_entry in logs:
-            level = get_log_level(log_entry['message'])
+            level = get_log_level_from_entry(log_entry)
             gradient = log_levels.get(level, log_levels['MISC'])
 
-            dt = datetime.strptime(log_entry['timestamp'], '%Y-%m-%d %H:%M:%S')
-            formatted_time = dt.strftime('%I:%M %p')
-            formatted_date = dt.strftime('%b %d, %Y')
+            try:
+                dt = datetime.strptime(log_entry['timestamp'], '%Y-%m-%d %H:%M:%S')
+                formatted_time = dt.strftime('%I:%M %p')
+                formatted_date = dt.strftime('%b %d, %Y')
+            except Exception:
+                formatted_time = log_entry['timestamp']
+                formatted_date = ''
 
-            safe_message = log_entry['message'].replace("'", "&#39;").replace('"', "&quot;").replace('\n', ' ')
+            safe_message_attr = log_entry['display_message'].replace("'", "&#39;").replace('"', "&quot;").replace('\n', ' ')
 
-            display_message = log_entry['message']
-            for prefix in ['SUCCESS:', 'UERROR:', 'ERROR:']:
-                if display_message.upper().startswith(prefix):
-                    display_message = display_message[len(prefix):].strip()
-                    break
+            display_message_html = log_entry['display_message'].replace('<', '&lt;').replace('>', '&gt;')
 
             log_cards_html += f"""
             <div class="log-card" data-level="{level}">
@@ -87,14 +112,14 @@ async def logs_page(request: Request):
                     </div>
                 </div>
                 <div class="log-message">
-                    <p>{display_message}</p>
+                    <p>{display_message_html}</p>
                 </div>
                 <div class="log-footer">
                     <span class="log-timestamp">
                         {log_entry['timestamp']}
                     </span>
                     <div class="log-actions">
-                        <button class="copy-log-btn" data-message="{safe_message}" title="Copy message">
+                        <button class="copy-log-btn" data-message="{safe_message_attr}" title="Copy message">
                             <i>📋</i>
                         </button>
                     </div>
@@ -104,7 +129,11 @@ async def logs_page(request: Request):
 
     level_counts = {'SUCCESS': 0, 'UERROR': 0, 'ERROR': 0, 'MISC': 0}
     for log_entry in logs:
-        level_counts[get_log_level(log_entry['message'])] += 1
+        lvl = get_log_level_from_entry(log_entry)
+        if lvl in level_counts:
+            level_counts[lvl] += 1
+        else:
+            level_counts['MISC'] += 1
 
     html_content = f"""
     <!DOCTYPE html>
@@ -185,7 +214,9 @@ async def logs_page(request: Request):
                 document.querySelectorAll('.filter-btn').forEach(btn => {{
                     btn.classList.remove('active');
                 }});
-                event.target.classList.add('active');
+                if (event && event.target) {{
+                    event.target.classList.add('active');
+                }}
 
                 const logCards = document.querySelectorAll('.log-card');
                 const noLogsMessage = document.getElementById('noLogsMessage');
@@ -201,9 +232,9 @@ async def logs_page(request: Request):
                 }});
 
                 if (visibleCount === 0) {{
-                    noLogsMessage.style.display = 'block';
+                    if (noLogsMessage) noLogsMessage.style.display = 'block';
                 }} else {{
-                    noLogsMessage.style.display = 'none';
+                    if (noLogsMessage) noLogsMessage.style.display = 'none';
                 }}
             }}
 

@@ -3,6 +3,7 @@ __pycache__/
 
 # Ignore sensitive environment files
 .env
+firebaseServiceAccountKey.json
 
 # Ignore system files
 app.log

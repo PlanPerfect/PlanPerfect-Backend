@@ -2,6 +2,7 @@ import os
 import uvicorn
 from datetime import datetime
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,15 +10,23 @@ from fastapi.staticfiles import StaticFiles
 from routes.utilities import router as utilities_router
 from routes.logger import router as logger_router
 from routes.emailer import router as emailer_router
+from routes.database import router as database_router
+
+from Services import DatabaseManager as DM
 
 load_dotenv()
 
-app = FastAPI(title="PlanPerfect Backend", version="1.0.0", swagger_ui_parameters={"defaultModelsExpandDepth": -1})
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+
+app = FastAPI(title="PlanPerfect Backend", version="1.0.0", swagger_ui_parameters={"defaultModelsExpandDepth": -1}, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(utilities_router)
 app.include_router(logger_router)
 app.include_router(emailer_router)
+app.include_router(database_router)
 
 SERVER_START_TIME = datetime.now()
 
@@ -107,13 +116,21 @@ if __name__ == '__main__':
     port = int(os.getenv("PORT", 8000))
     dev_mode = os.getenv("DEV_MODE", "True").lower() == "true"
 
-    print(f"[{'DEVELOPMENT' if dev_mode else 'PRODUCTION'}] - Server running at http://localhost:{port}")
+    print(f"SERVER MODE: {'DEVELOPMENT' if dev_mode else 'PRODUCTION'}\n")
+
+    if not DM._initialized:
+        DM.initialize(
+            database_url=os.getenv("FIREBASE_DATABASE_URL"),
+            credentials_path=os.getenv("FIREBASE_CREDENTIALS_PATH")
+        )
+
+    print(f"Server running at http://localhost:{port}\n")
 
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
         port=port,
-        reload=dev_mode,
+        reload=False,
         log_level="error",
         access_log=False
     )
