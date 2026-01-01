@@ -8,6 +8,5 @@
   - MacOS: `source planperfect-env/bin/activate`
 - Install Dependancies
   - `pip install -r requirements.txt`
- 
-### Running the server
-Run this command: `python3 main.py`
+- Running the server
+  - `python main.py` or `python3 main.py`
