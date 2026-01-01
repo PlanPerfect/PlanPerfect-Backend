@@ -8,5 +8,3 @@ def log(message):
 
     with open(LOG_FILE, 'a') as f:
         f.write(log_entry)
-
-    print(log_entry.strip())

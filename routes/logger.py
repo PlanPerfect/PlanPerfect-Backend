@@ -1,6 +1,6 @@
 from datetime import datetime
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from Services import Logger
 import re
 
@@ -58,7 +58,8 @@ def read_logs():
 @router.post("/log-message")
 def log_message(message: str):
     Logger.log(message)
-    return {"status": "Message logged"}
+
+    return JSONResponse(status_code=200, content={ "success": True, "result": "SUCCESS: Message logged." })
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def logs_page(request: Request):
