@@ -8,10 +8,8 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from routes.utilities import router as utilities_router
-from routes.logger import router as logger_router
-from routes.emailer import router as emailer_router
-from routes.database import router as database_router
+# import routers
+from routes.sample import router as sample_router
 
 from Services import DatabaseManager as DM
 from Services import Bootcheck
@@ -25,10 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="PlanPerfect Backend", version="1.0.0", swagger_ui_parameters={"defaultModelsExpandDepth": -1}, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-app.include_router(utilities_router)
-app.include_router(logger_router)
-app.include_router(emailer_router)
-app.include_router(database_router)
+app.include_router(sample_router)
 
 SERVER_START_TIME = datetime.now()
 

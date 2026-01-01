@@ -1,10 +1,13 @@
-from datetime import datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from Services import DatabaseManager as DM
+from Services import Emailer
+from Services import Utilities
 from Services import Logger
+from datetime import datetime
 import re
 
-router = APIRouter(prefix="/logs", tags=["Tools & Services"])
+router = APIRouter(prefix="/database", tags=["Tools & Services"])
 
 LOG_FILE = 'app.log'
 
@@ -55,13 +58,78 @@ def read_logs():
     except FileNotFoundError:
         return []
 
+# DatabaseManager
+@router.get("/get-data")
+def get_data():
+    try:
+        value = DM.peek([])
+
+        if value is None:
+            return JSONResponse(status_code=404, content={ "success": False, "result": "ERROR: Data does not exist." })
+
+        return JSONResponse(status_code=200, content={ "success": True, "result": value })
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={ "success": False, "result": f"ERROR: Failed to get data; {e}" })
+
+@router.post("/set-data")
+def set_data():
+    try:
+        ID = Utilities.GenerateRandomID(12)
+
+        sample_data = {
+            "ID": ID,
+            "value": Utilities.GenerateRandomInt(1, 100)
+        }
+
+        DM.data["SAMPLE_1"]["TEST"]["BRANCH"][ID] = sample_data
+
+        DM.save()
+
+        return JSONResponse(status_code=200, content={ "success": True, "result": f"SUCCESS: Data set successfully." })
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={ "success": False, "result": f"ERROR: Failed to set data. Error: {e}" })
+
+@router.delete("/delete-data")
+def delete_data():
+    try:
+        destroy = DM.destroy([]) # destroys the root. you could also do something like DM.destroy(["SAMPLE_1", "TEST", "BRANCH", "some_id"])
+
+        if destroy:
+            DM.save()
+
+            return JSONResponse(status_code=200, content={ "success": True, "result": f"SUCCESS: Data deleted successfully." })
+        else:
+            return JSONResponse(status_code=404, content={ "success": False, "result": "ERROR: Data does not exist." })
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={ "success": False, "result": f"ERROR: Failed to delete data. Error: {e}" })
+
+# Emailer
+@router.post("/send-email")
+def send_email(to: str, subject: str, template: str):
+    try:
+        emailer = Emailer()
+
+        variables = {
+            "username": "John Appleseed"
+        }
+
+        result = emailer.send_email(to=to, subject=subject, template=template, variables=variables)
+
+        return JSONResponse(status_code=200, content={ "success": True, "result": f"SUCCESS: Email sent to {to}" })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={ "success": False, "result": f"ERROR: Failed to send email. Error: {e}" })
+
+# Logger
 @router.post("/log-message")
 def log_message(message: str):
     Logger.log(message)
 
     return JSONResponse(status_code=200, content={ "success": True, "result": "SUCCESS: Message logged." })
 
-@router.get("/", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/logs-page", response_class=HTMLResponse, include_in_schema=False)
 async def logs_page(request: Request):
     logs = read_logs()
 
@@ -275,3 +343,34 @@ async def logs_page(request: Request):
     </html>
     """
     return HTMLResponse(content=html_content)
+
+# Utilities
+@router.post("/generate-random-id")
+def generate_id(length: int = 32):
+    random_id = Utilities.GenerateRandomID(length)
+
+    return JSONResponse(status_code=200, content={ "success": True, "result": random_id })
+
+@router.post("/generate-random-int")
+def generate_int(min_value: int = 0, max_value: int = 100):
+    random_int = Utilities.GenerateRandomInt(min_value, max_value)
+
+    return JSONResponse(status_code=200, content={ "success": True, "result": random_int })
+
+@router.post("/hash-string")
+def hash_string(input_string: str):
+    hashed = Utilities.HashString(input_string)
+
+    return JSONResponse(status_code=200, content={ "success": True, "result": hashed })
+
+@router.post("/encode-base64")
+def encode_base64(input_string: str):
+    encoded = Utilities.EncodeToBase64(input_string)
+
+    return JSONResponse(status_code=200, content={ "success": True, "result": encoded })
+
+@router.post("/decode-base64")
+def decode_base64(encoded_string: str):
+    decoded = Utilities.DecodeFromBase64(encoded_string)
+
+    return JSONResponse(status_code=200, content={ "success": True, "result": decoded })
