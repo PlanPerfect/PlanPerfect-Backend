@@ -1,8 +1,23 @@
 import firebase_admin
 from firebase_admin import credentials, db
-from typing import Optional
+from typing import Optional, Any
 from Services import Logger
 import copy
+
+class AutoDict(dict):
+    def __missing__(self, key):
+        value = self[key] = type(self)()
+        return value
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        if isinstance(value, dict) and not isinstance(value, AutoDict):
+            value = AutoDict(value)
+            self[key] = value
+        return value
+
+    def __deepcopy__(self, memo):
+        return AutoDict(copy.deepcopy(dict(self), memo))
 
 
 class DatabaseManagerClass:
@@ -14,7 +29,7 @@ class DatabaseManagerClass:
             cls._instance._initialized = False
             cls._instance._db_ref = None
             cls._instance._app = None
-            cls._instance.data = {}
+            cls._instance.data = AutoDict()
         return cls._instance
 
     def initialize(
@@ -56,12 +71,26 @@ class DatabaseManagerClass:
 
         try:
             snapshot = self._db_ref.get()
-            self.data = snapshot if snapshot is not None else {}
-            print("SUCCESSFULLY LOADED FIREBASE RTDB INTO LOCAL MEMORY.\n")
+            if snapshot is not None:
+                self.data = self._convert_to_autodict(snapshot)
+            else:
+                self.data = AutoDict()
+            print("SUCCESSFULLY LOADED CLOUD FIREBASE RTDB INTO LOCAL MEMORY.\n")
             return self.data
         except Exception as e:
-            Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to load FIREBASE RTDB. Error: {e}")
+            Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to load Firebase RTDB. Error: {e}")
             raise
+
+    def _convert_to_autodict(self, data: Any) -> Any:
+        if isinstance(data, dict):
+            result = AutoDict()
+            for key, value in data.items():
+                result[key] = self._convert_to_autodict(value)
+            return result
+        elif isinstance(data, list):
+            return [self._convert_to_autodict(item) for item in data]
+        else:
+            return data
 
     def save(self) -> bool:
         if not self._initialized:
@@ -69,13 +98,30 @@ class DatabaseManagerClass:
             raise RuntimeError("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
 
         try:
-            self._db_ref.set(self.data)
+            regular_dict = self._convert_to_regular_dict(self.data)
+            self._db_ref.set(regular_dict)
             return True
         except Exception as e:
-            Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to save to FIREBASE RTDB. Error: {e}")
+            Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to save to Firebase RTDB. Error: {e}")
             return False
 
-    def peek(self, path: list) -> any:
+    def _convert_to_regular_dict(self, data: Any) -> Any:
+        if isinstance(data, AutoDict):
+            result = {}
+            for key, value in data.items():
+                result[key] = self._convert_to_regular_dict(value)
+            return result
+        elif isinstance(data, dict):
+            result = {}
+            for key, value in data.items():
+                result[key] = self._convert_to_regular_dict(value)
+            return result
+        elif isinstance(data, list):
+            return [self._convert_to_regular_dict(item) for item in data]
+        else:
+            return data
+
+    def peek(self, path: list) -> Any:
         if not self._initialized:
             Logger.log("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
             raise RuntimeError("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
@@ -83,7 +129,7 @@ class DatabaseManagerClass:
         try:
             value = self.data
             for key in path:
-                if isinstance(value, dict) and key in value:
+                if isinstance(value, (dict, AutoDict)) and key in value:
                     value = value[key]
                 else:
                     return None
@@ -91,6 +137,27 @@ class DatabaseManagerClass:
         except Exception as e:
             Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to peek at path {path}. Error: {e}")
             return None
+
+    def set_value(self, path: list, value: Any) -> bool:
+        if not self._initialized:
+            Logger.log("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
+            raise RuntimeError("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
+
+        if not path:
+            Logger.log("[DATABASE MANAGER] - ERROR: Path cannot be empty.")
+            return False
+
+        try:
+            current = self.data
+            for key in path[:-1]:
+                if key not in current or not isinstance(current[key], (dict, AutoDict)):
+                    current[key] = AutoDict()
+                current = current[key]
+            current[path[-1]] = value
+            return True
+        except Exception as e:
+            Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to set value at path {path}. Error: {e}")
+            return False
 
     def destroy(self, path: list) -> bool:
         if not self._initialized:
@@ -102,17 +169,17 @@ class DatabaseManagerClass:
             return False
 
         try:
-            parent = self.data
+            current = self.data
             for key in path[:-1]:
-                if isinstance(parent, dict) and key in parent:
-                    parent = parent[key]
+                if isinstance(current, (dict, AutoDict)) and key in current:
+                    current = current[key]
                 else:
                     Logger.log(f"[DATABASE MANAGER] - ERROR: Path {path} does not exist.")
                     return False
 
             final_key = path[-1]
-            if isinstance(parent, dict) and final_key in parent:
-                del parent[final_key]
+            if isinstance(current, (dict, AutoDict)) and final_key in current:
+                del current[final_key]
                 return True
             else:
                 Logger.log(f"[DATABASE MANAGER] - ERROR: Key {final_key} not found.")

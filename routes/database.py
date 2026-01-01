@@ -6,14 +6,9 @@ from Services import Utilities
 router = APIRouter(prefix="/database", tags=["Tools & Services"])
 
 @router.get("/data")
-def get_data(path: str = ""):
+def get_data():
     try:
-        if not path:
-            return DM.data
-
-        path_parts = path.split("/")
-
-        value = DM.peek(path_parts)
+        value = DM.peek([])
 
         if value is None:
             return JSONResponse(status_code=404, content={ "success": False, "result": "ERROR: Data does not exist." })
@@ -24,41 +19,33 @@ def get_data(path: str = ""):
         return JSONResponse(status_code=500, content={ "success": False, "result": f"ERROR: Failed to get data; {e}" })
 
 @router.post("/data")
-def set_data(path: str):
+def set_data():
     try:
-        path_parts = path.split("/")
+        ID = Utilities.GenerateRandomID(12)
 
         sample_data = {
-            "ID": Utilities.GenerateRandomID(12),
+            "ID": ID,
             "value": Utilities.GenerateRandomInt(1, 100)
         }
 
-        target = DM.data
-        for part in path_parts[:-1]:
-            if part not in target:
-                target[part] = {}
-            target = target[part]
-
-        target[path_parts[-1]] = sample_data
+        DM.data["SAMPLE_1"]["TEST"]["BRANCH"][ID] = sample_data
 
         DM.save()
 
-        return JSONResponse(status_code=200, content={ "success": True, "result": f"SUCCESS: Data set successfully. Path: {path}" })
+        return JSONResponse(status_code=200, content={ "success": True, "result": f"SUCCESS: Data set successfully." })
 
     except Exception as e:
         return JSONResponse(status_code=500, content={ "success": False, "result": f"ERROR: Failed to set data. Error: {e}" })
 
 @router.delete("/data")
-def delete_data(path: str):
+def delete_data():
     try:
-        path_parts = path.split("/")
-
-        destroy = DM.destroy(path_parts)
+        destroy = DM.destroy([]) # destroys the root. you could also do something like DM.destroy(["SAMPLE_1", "TEST", "BRANCH", "some_id"])
 
         if destroy:
             DM.save()
 
-            return JSONResponse(status_code=200, content={ "success": True, "result": f"SUCCESS: Data deleted successfully. Path: {path}" })
+            return JSONResponse(status_code=200, content={ "success": True, "result": f"SUCCESS: Data deleted successfully." })
         else:
             return JSONResponse(status_code=404, content={ "success": False, "result": "ERROR: Data does not exist." })
 
