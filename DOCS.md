@@ -42,25 +42,19 @@ Saves local data back to Firebase. This method **MUST** be used for changes to p
 DatabaseManager.save()
 ```
 
-### `reload()`
-Reloads in-memory database from Firebase RTDB (alias for `load()`).
-```python
-DatabaseManager.reload()
-```
-
 **Sample Usage:**
 ```python
 # Import DatabaseManager
 from Services import DatabaseManager as DM
 
 # Read data
-user = DM.peek(["Accounts"]["123"])
+user = DM.peek(["Accounts", "123"]) # use list indices separated by commas for class methods
 
 # Modify data
-DM.data["Accounts"]["123"] = newAccount
+DM.data["Accounts"]["123"] = newAccount # use direct-indexing for data attribute
 
 # Delete data
-DM.destroy(["Accounts"]["123"])
+DM.destroy(["Accounts", "123"]) # use list indices separated by commas for class methods
 
 # Save changes
 DM.save()
@@ -87,7 +81,7 @@ result = emailer.send_email(
     subject="Welcome to PlanPerfect!",
     template="welcome", # assuming you have a email template -> /templates/welcome.html
     variables={
-        "name": "John Doe",
+        "name": "John Appleseed",
         "activation_link": "https://app.planperfect.com/activate/xyz"
     }
 )
@@ -169,4 +163,4 @@ decoded = Utilities.DecodeFromBase64("SGVsbG8gV29ybGQ=")
 
 ---
 
-**Documentation last updated on** `1 Jan 9.10PM`
+**Documentation last updated on** `1 Jan 11.32PM`
