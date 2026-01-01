@@ -12,7 +12,7 @@ class DatabasePath:
 
     def __getitem__(self, key: str) -> 'DatabasePath':
         new_path = DatabasePath(self._manager, self._path + [key])
-        path_str = '/'.join(new_path._path)
+        path_str = '/'.join(map(str, new_path._path))
         ref = self._manager._db_ref.child(path_str)
         new_path._value = ref.get()
         new_path._fetched = True
@@ -20,7 +20,7 @@ class DatabasePath:
 
     def __setitem__(self, key: str, value: Any):
         path = self._path + [key]
-        path_str = '/'.join(path)
+        path_str = '/'.join(map(str, path))
         ref = self._manager._db_ref.child(path_str)
         ref.set(value)
 
@@ -64,7 +64,7 @@ class PeekPath:
         else:
             path = list(key) if hasattr(key, '__iter__') else [key]
 
-        path_str = '/'.join(path)
+        path_str = '/'.join(map(str, path))
         ref = self._manager._db_ref.child(path_str)
         return ref.get()
 
@@ -82,11 +82,11 @@ class DestroyPath:
             Logger.log("[DATABASE MANAGER] - ERROR: Cannot delete root of database.")
             return
 
-        path_str = '/'.join(self._path)
+        path_str = '/'.join(map(str, self._path))
         ref = self._manager._db_ref.child(path_str)
 
         if len(self._path) > 1:
-            parent_path = '/'.join(self._path[:-1])
+            parent_path = '/'.join(map(str, self._path[:-1]))
             parent_ref = self._manager._db_ref.child(parent_path)
             parent_data = parent_ref.get()
 

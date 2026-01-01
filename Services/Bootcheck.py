@@ -113,7 +113,7 @@ class Bootcheck:
                 print(f"BOOTCHECK - ERROR: Check failed at: {check_name}. Startup aborted.\n")
                 return False
 
-        print("BOOTCHECK COMPLETE. SYSTEM STARTING...\n")
+        print("BOOTCHECK COMPLETE, SYSTEM READY. SERVER STARTING...\n")
         return True
 
 
