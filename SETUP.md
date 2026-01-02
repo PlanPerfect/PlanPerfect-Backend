@@ -9,4 +9,4 @@
 - Install Dependancies
   - `pip install -r requirements.txt`
 - Running the server
-  - `python main.py` or `python3 main.py`
+  - `python app.py` or `python3 app.py`

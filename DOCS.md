@@ -102,7 +102,7 @@ result = emailer.send_email(
 
 ## Logger
 
-Simple file-based logging with timestamps. Logs available at `/logs`
+Simple file-based logging with timestamps. Logs available at `/sample/logs-page`
 
 **Usage:**
 ```python

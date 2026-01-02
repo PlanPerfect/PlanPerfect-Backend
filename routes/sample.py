@@ -7,7 +7,7 @@ from Services import Logger
 from datetime import datetime
 import re
 
-router = APIRouter(prefix="/database", tags=["Tools & Services"])
+router = APIRouter(prefix="/sample", tags=["Tools & Services"])
 
 LOG_FILE = 'app.log'
 
@@ -228,7 +228,7 @@ async def logs_page(request: Request):
                 <div class="nav-links">
                     <a href="/" class="nav-link">Home</a>
                     <a href="/docs" class="nav-link">API</a>
-                    <a href="/logs" class="nav-link active">Logs</a>
+                    <a href="/sample/logs-page" class="nav-link active">Logs</a>
                 </div>
             </div>
         </nav>
