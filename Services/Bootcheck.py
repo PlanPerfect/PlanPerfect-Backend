@@ -16,6 +16,7 @@ class Bootcheck:
         "SMTP_APP_PASSWORD",
         "FIREBASE_DATABASE_URL",
         "FIREBASE_CREDENTIALS_PATH",
+        "CLOUDSYNC_ENABLED"
     ]
 
     @staticmethod
@@ -72,9 +73,8 @@ class Bootcheck:
                     'databaseURL': database_url
                 })
 
-            test_ref = db.reference('/test_connection')
-            test_ref.set({'test': 'connection_check', 'timestamp': datetime.now().isoformat()})
-            test_ref.delete()
+            test_ref = db.reference('/')
+            test_ref.get()
 
             apps = firebase_admin._apps.copy()
             for app_name, app in apps.items():

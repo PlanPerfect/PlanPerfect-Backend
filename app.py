@@ -1,5 +1,7 @@
 import os
 import sys
+import psutil
+import asyncio
 import uvicorn
 from datetime import datetime
 from dotenv import load_dotenv
@@ -13,12 +15,34 @@ from routes.sample import router as sample_router
 
 from Services import DatabaseManager as DM
 from Services import Bootcheck
+from Services import Logger
 
 load_dotenv()
 
+async def monitor_server_load():
+    LOAD_THRESHOLD = 90.0
+    CHECK_INTERVAL = 5
+
+    while True:
+        try:
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory_percent = psutil.virtual_memory().percent
+
+            if cpu_percent > LOAD_THRESHOLD or memory_percent > LOAD_THRESHOLD:
+                if DM._cloudsync_enabled and DM._listener:
+                    DM.stop_cloudsync()
+                    print(f"[SYSTEM] - Server peaking capacity (CPU: {cpu_percent}%). CloudSync stopped.\n")
+
+            await asyncio.sleep(CHECK_INTERVAL)
+        except Exception as e:
+            Logger.log(f"[SYSTEM] - ERROR: Server monitor failed: {e}")
+            await asyncio.sleep(CHECK_INTERVAL)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    monitor_task = asyncio.create_task(monitor_server_load())
     yield
+    monitor_task.cancel()
 
 app = FastAPI(title="PlanPerfect Backend", version="1.0.0", swagger_ui_parameters={"defaultModelsExpandDepth": -1}, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
