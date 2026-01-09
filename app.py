@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 # import routers
 from routes.sample import router as sample_router
@@ -45,6 +46,15 @@ async def lifespan(app: FastAPI):
     monitor_task.cancel()
 
 app = FastAPI(title="PlanPerfect Backend", version="1.0.0", swagger_ui_parameters={"defaultModelsExpandDepth": -1}, lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.getenv("VITE_FRONTEND_URL"), "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(sample_router)

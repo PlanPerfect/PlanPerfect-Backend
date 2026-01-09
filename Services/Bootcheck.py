@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, db
 from firebase_admin.exceptions import FirebaseError
@@ -16,7 +15,9 @@ class Bootcheck:
         "SMTP_APP_PASSWORD",
         "FIREBASE_DATABASE_URL",
         "FIREBASE_CREDENTIALS_PATH",
-        "CLOUDSYNC_ENABLED"
+        "CLOUDSYNC_ENABLED",
+        "VITE_FRONTEND_URL",
+        "API_KEY",
     ]
 
     @staticmethod
