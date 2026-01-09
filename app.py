@@ -1,5 +1,6 @@
 import os
 import sys
+import signal
 import uvicorn
 from datetime import datetime
 from dotenv import load_dotenv
@@ -156,13 +157,24 @@ if __name__ == '__main__':
             credentials_path=os.getenv("FIREBASE_CREDENTIALS_PATH")
         )
 
+    def signal_handler(signum, frame):
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+
     print(f"Server running at \033[94mhttp://localhost:{port}\033[0m\n")
 
-    uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=port,
-        reload=False,
-        log_level="error",
-        access_log=False
-    )
+    try:
+        uvicorn.run(
+            "app:app",
+            host="0.0.0.0",
+            port=port,
+            reload=False,
+            log_level="error",
+            access_log=False
+        )
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"Server error: {e}")
+        sys.exit(1)
