@@ -103,7 +103,7 @@ class DatabaseManagerClass:
                     self.data = self._convert_to_autodict(snapshot)
                 else:
                     self.data = AutoDict()
-                print("[DATABASE MANAGER] - LIVE TAIL: Changes detected in RTDB Console. In-memory copy synced.")
+                print("[DATABASE MANAGER] - LIVE TAIL: Changes detected in RTDB Console. In-memory copy synced.\n")
             except Exception as e:
                 Logger.log(f"[DATABASE MANAGER] - ERROR: CloudSync listener failed. Error: {e}")
 
