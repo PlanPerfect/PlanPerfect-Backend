@@ -1,13 +1,12 @@
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
 from gradio_client import Client, handle_file
+from middleware.auth import checkHeaders
 import cv2
-import numpy as np
 import re
 import tempfile
 import os
 import base64
-from PIL import Image
 from collections import Counter
 
 router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"])
@@ -23,6 +22,7 @@ def get_ocr_model():
     return _ocr_model
 
 @router.post("/roomSegmentation")
+@checkHeaders
 async def room_segmentation(file: UploadFile = File(...)):
     """
     Performs room segmentation on uploaded floor plan image using Hugging Face API.
@@ -98,6 +98,7 @@ async def room_segmentation(file: UploadFile = File(...)):
         )
 
 @router.post("/unitInformationExtraction")
+@checkHeaders
 async def unit_information_extraction(file: UploadFile = File(...)):
     """
     Extracts unit information from floor plan using OCR.
