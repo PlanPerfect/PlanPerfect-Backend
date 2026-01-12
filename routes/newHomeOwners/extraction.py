@@ -6,6 +6,7 @@ import numpy as np
 import re
 import tempfile
 import os
+import base64
 from PIL import Image
 from collections import Counter
 
@@ -50,15 +51,31 @@ async def room_segmentation(file: UploadFile = File(...)):
             api_name="/predict"
         )
         
-        # Clean up temporary file
-        os.unlink(tmp_file_path)
+        #handle result
+        if isinstance(result, str):
+            segmented_path = result
+        elif isinstance(result, dict):
+            segmented_path = result.get("path") or result.get("url")
+        else:
+            raise ValueError("Unexpected response from segmentation API")
+
+        if not segmented_path or not os.path.exists(segmented_path):
+            raise ValueError(f"Segmented image not found at {segmented_path}")
+
+        # Convert to base64 for frontend
+        with open(segmented_path, "rb") as f:
+            img_bytes = f.read()
+        data_url = f"data:image/webp;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
+
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            os.unlink(tmp_file_path)
         
         return JSONResponse(
             status_code=200,
             content={
                 "success": True,
                 "result": {
-                    "segmented_image": result,
+                    "segmented_image": data_url,
                     "message": "Room segmentation completed successfully"
                 }
             }
