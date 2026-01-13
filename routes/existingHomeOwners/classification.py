@@ -26,21 +26,15 @@ async def analyze_room_style(file: UploadFile = File(...)):
             api_name="/predict"
         )
 
-        # Parse result - model returns (style, confidence)
-        if isinstance(result, dict):
-            # If model returns a dictionary
+        if isinstance(result, (list, tuple)) and len(result) == 2:
+            detected_style, confidence = result
+        elif isinstance(result, dict):
             detected_style = result.get("style", "Unknown")
             confidence = result.get("confidence", 0.0)
-        elif isinstance(result, (list, tuple)) and len(result) >= 2:
-            # If model returns a tuple/list [style, confidence]
-            detected_style = result[0]
-            confidence = result[1]
         else:
-            # Fallback
-            detected_style = str(result)
-            confidence = 0.0
+            raise ValueError(f"Unexpected model output: {result}")
+
         
-        # Clean up temporary file
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
         
@@ -51,7 +45,6 @@ async def analyze_room_style(file: UploadFile = File(...)):
                 "result": {
                     "detected_style": detected_style,
                     "confidence": float(confidence) if confidence else 0.0,
-                    # "detected_furniture": detected_furniture if isinstance(detected_furniture, list) else [],
                     "message": "Style classification completed successfully"
                 }
             }
