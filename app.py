@@ -3,7 +3,6 @@ import sys
 import signal
 import uvicorn
 import warnings
-import warnings
 from datetime import datetime
 from dotenv import load_dotenv
 from fastapi import FastAPI

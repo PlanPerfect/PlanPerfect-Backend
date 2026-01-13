@@ -27,6 +27,7 @@ async def analyze_room_style(file: UploadFile = File(...)):
         )
 
 <<<<<<< HEAD
+<<<<<<< HEAD
         if isinstance(result, (list, tuple)) and len(result) == 2:
             detected_style, confidence = result
         elif isinstance(result, dict):
@@ -37,6 +38,8 @@ async def analyze_room_style(file: UploadFile = File(...)):
 
         
 =======
+=======
+>>>>>>> joshua
         # Parse result - model returns (style, confidence)
         if isinstance(result, dict):
             # If model returns a dictionary
@@ -52,7 +55,10 @@ async def analyze_room_style(file: UploadFile = File(...)):
             confidence = 0.0
         
         # Clean up temporary file
+<<<<<<< HEAD
 >>>>>>> jesh
+=======
+>>>>>>> joshua
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
         
@@ -64,9 +70,13 @@ async def analyze_room_style(file: UploadFile = File(...)):
                     "detected_style": detected_style,
                     "confidence": float(confidence) if confidence else 0.0,
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
                     # "detected_furniture": detected_furniture if isinstance(detected_furniture, list) else [],
 >>>>>>> jesh
+=======
+                    # "detected_furniture": detected_furniture if isinstance(detected_furniture, list) else [],
+>>>>>>> joshua
                     "message": "Style classification completed successfully"
                 }
             }
