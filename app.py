@@ -34,8 +34,6 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-app.include_router(sample_router)
-
 SERVER_START_TIME = datetime.now()
 
 @app.get("/", include_in_schema=False)
