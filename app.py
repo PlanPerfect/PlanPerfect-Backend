@@ -3,6 +3,7 @@ import sys
 import signal
 import uvicorn
 import warnings
+import warnings
 from datetime import datetime
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -33,8 +34,7 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-app.include_router(style_classification_router)
-app.include_router(newHomeOwners_extraction_router)
+app.include_router(sample_router)
 
 SERVER_START_TIME = datetime.now()
 
