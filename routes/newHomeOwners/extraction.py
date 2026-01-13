@@ -1,7 +1,7 @@
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, UploadFile, Depends
 from fastapi.responses import JSONResponse
 from gradio_client import Client, handle_file
-from middleware.auth import checkHeaders
+from middleware.auth import _verify_api_key
 import cv2
 import re
 import tempfile
@@ -9,7 +9,7 @@ import os
 import base64
 from collections import Counter
 
-router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"])
+router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"], dependencies=[Depends(_verify_api_key)])
 
 # Lazy load OCR model only when needed
 _ocr_model = None
@@ -22,14 +22,13 @@ def get_ocr_model():
     return _ocr_model
 
 @router.post("/roomSegmentation")
-@checkHeaders
 async def room_segmentation(file: UploadFile = File(...)):
     """
     Performs room segmentation on uploaded floor plan image using Hugging Face API.
-    
+
     Args:
         file: Uploaded floor plan image file
-        
+
     Returns:
         JSON response with segmented image URL and metadata
     """
@@ -41,16 +40,16 @@ async def room_segmentation(file: UploadFile = File(...)):
             content = await file.read()
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
-        
+
         # Connect to Hugging Face API
         client = Client("https://tallmanager267-sg-room-segmentation.hf.space/")
-        
+
         # Perform room segmentation
         result = client.predict(
             pil_img=handle_file(tmp_file_path),
             api_name="/predict"
         )
-        
+
         #handle result
         if isinstance(result, str):
             segmented_path = result
@@ -69,7 +68,7 @@ async def room_segmentation(file: UploadFile = File(...)):
 
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
-        
+
         return JSONResponse(
             status_code=200,
             content={
@@ -80,7 +79,7 @@ async def room_segmentation(file: UploadFile = File(...)):
                 }
             }
         )
-        
+
     except Exception as e:
         # Clean up temporary file if it exists
         if tmp_file_path and os.path.exists(tmp_file_path):
@@ -88,7 +87,7 @@ async def room_segmentation(file: UploadFile = File(...)):
                 os.unlink(tmp_file_path)
             except:
                 pass
-            
+
         return JSONResponse(
             status_code=500,
             content={
@@ -98,14 +97,13 @@ async def room_segmentation(file: UploadFile = File(...)):
         )
 
 @router.post("/unitInformationExtraction")
-@checkHeaders
 async def unit_information_extraction(file: UploadFile = File(...)):
     """
     Extracts unit information from floor plan using OCR.
-    
+
     Args:
         file: Uploaded floor plan image file
-        
+
     Returns:
         JSON response with extracted unit info (rooms, type, sizes, room counts)
     """
@@ -117,13 +115,13 @@ async def unit_information_extraction(file: UploadFile = File(...)):
             content = await file.read()
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
-        
+
         # Process the floor plan
         results = process_floorplan_image(tmp_file_path)
-        
+
         # Clean up temporary file
         os.unlink(tmp_file_path)
-        
+
         # Format the response
         response_data = {
             "unit_rooms": results["unit_rooms"],
@@ -132,7 +130,7 @@ async def unit_information_extraction(file: UploadFile = File(...)):
             "room_counts": dict(results["room_counts"]),
             "detected_lines": results.get("detected_lines", [])
         }
-        
+
         return JSONResponse(
             status_code=200,
             content={
@@ -140,7 +138,7 @@ async def unit_information_extraction(file: UploadFile = File(...)):
                 "result": response_data
             }
         )
-        
+
     except Exception as e:
         # Clean up temporary file if it exists
         if tmp_file_path and os.path.exists(tmp_file_path):
@@ -148,7 +146,7 @@ async def unit_information_extraction(file: UploadFile = File(...)):
                 os.unlink(tmp_file_path)
             except:
                 pass
-            
+
         return JSONResponse(
             status_code=500,
             content={
@@ -169,7 +167,7 @@ def process_floorplan_image(img_path):
     image_bgr = cv2.imread(img_path)
     if image_bgr is None:
         raise ValueError(f"Image not found: {img_path}")
-    
+
     image_rgb = image_bgr[:, :, ::-1]  # BGR -> RGB
 
     # Get OCR model and perform OCR
@@ -209,16 +207,16 @@ def process_floorplan_image(img_path):
         if rooms_pattern.match(line):
             cleaned_line = reject_room_pattern_words.sub('', line).strip()
             unit_rooms = cleaned_line
-            
+
         match_type = unit_type_pattern.search(line)
         if match_type:
-            unit_types.append(match_type.group(0)) 
-            
+            unit_types.append(match_type.group(0))
+
         match_size = unit_size_pattern.search(line)
         if match_size:
             num, unit = match_size.groups()
             unit_sizes.append(f"{num} {unit}")
-            
+
     # Count room names
     room_keywords = ["WC", "BATH", "BALCONY", "BEDROOM", "KITCHEN", "LIVING", "LEDGE"]
     room_counter = Counter()

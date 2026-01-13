@@ -1,14 +1,13 @@
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, UploadFile, Depends
 from fastapi.responses import JSONResponse
 from gradio_client import Client, handle_file
-from middleware.auth import checkHeaders
+from middleware.auth import _verify_api_key
 import tempfile
 import os
 
-router = APIRouter(prefix="/existingHomeOwners/styleClassification", tags=["Existing Home Owners Style Classification"])
+router = APIRouter(prefix="/existingHomeOwners/styleClassification", tags=["Existing Home Owners Style Classification"], dependencies=[Depends(_verify_api_key)])
 
 @router.post("/styleAnalysis")
-@checkHeaders
 async def analyze_room_style(file: UploadFile = File(...)):
     tmp_file_path = None
     try:
