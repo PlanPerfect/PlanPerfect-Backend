@@ -18,17 +18,14 @@ async def analyze_room_style(file: UploadFile = File(...)):
             content = await file.read()
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
-        
+
         client = Client("jiaxinnnnn/Interior-Style-Classification-Deployment")
-        
+
         result = client.predict(
             handle_file(tmp_file_path),
             api_name="/predict"
         )
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
         if isinstance(result, (list, tuple)) and len(result) == 2:
             detected_style, confidence = result
         elif isinstance(result, dict):
@@ -37,37 +34,10 @@ async def analyze_room_style(file: UploadFile = File(...)):
         else:
             raise ValueError(f"Unexpected model output: {result}")
 
-        
-=======
-=======
->>>>>>> joshua
-=======
->>>>>>> lincoln
-        # Parse result - model returns (style, confidence)
-        if isinstance(result, dict):
-            # If model returns a dictionary
-            detected_style = result.get("style", "Unknown")
-            confidence = result.get("confidence", 0.0)
-        elif isinstance(result, (list, tuple)) and len(result) >= 2:
-            # If model returns a tuple/list [style, confidence]
-            detected_style = result[0]
-            confidence = result[1]
-        else:
-            # Fallback
-            detected_style = str(result)
-            confidence = 0.0
-        
         # Clean up temporary file
-<<<<<<< HEAD
-<<<<<<< HEAD
->>>>>>> jesh
-=======
->>>>>>> joshua
-=======
->>>>>>> lincoln
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
-        
+
         return JSONResponse(
             status_code=200,
             content={
@@ -75,23 +45,11 @@ async def analyze_room_style(file: UploadFile = File(...)):
                 "result": {
                     "detected_style": detected_style,
                     "confidence": float(confidence) if confidence else 0.0,
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-                    # "detected_furniture": detected_furniture if isinstance(detected_furniture, list) else [],
->>>>>>> jesh
-=======
-                    # "detected_furniture": detected_furniture if isinstance(detected_furniture, list) else [],
->>>>>>> joshua
-=======
-                    # "detected_furniture": detected_furniture if isinstance(detected_furniture, list) else [],
->>>>>>> lincoln
                     "message": "Style classification completed successfully"
                 }
             }
         )
-        
+
     except Exception as e:
         # Clean up temporary file if it exists
         if tmp_file_path and os.path.exists(tmp_file_path):
@@ -99,7 +57,7 @@ async def analyze_room_style(file: UploadFile = File(...)):
                 os.unlink(tmp_file_path)
             except:
                 pass
-            
+
         return JSONResponse(
             status_code=500,
             content={
