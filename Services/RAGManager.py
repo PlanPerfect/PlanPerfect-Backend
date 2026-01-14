@@ -1,45 +1,34 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from pinecone import Pinecone
 from mistralai import Mistral
-from groq import Groq
 import re
 import os
 import time
 from dotenv import load_dotenv
+from Services import Logger
 
 load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = "planperfect-rag-manager-v1"
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
 EMBEDDING_MODEL = "mistral-embed"
-# CHAT_MODEL = "llama-3.3-70b-versatile"
-# CHAT_MODEL = "llama-3.1-70b-versatile"
-# CHAT_MODEL = "llama-3.1-8b-instant"
-# CHAT_MODEL = "llama3-70b-8192"
-# CHAT_MODEL = "llama3-8b-8192"
 
-CHAT_MODEL = "llama-3.3-70b-versatile"
 
-from typing import List, Dict
-import re
-
-class DocumentProcessor:
+class _DocumentProcessor:
     @staticmethod
-    def load_document(file_path: str) -> str:
+    def _load_document(file_path: str) -> str:
         with open(file_path, 'r', encoding='utf-8') as f:
             return f.read()
 
     @staticmethod
-    def clean_text(text: str) -> str:
+    def _clean_text(text: str) -> str:
         text = re.sub(r'\s+', ' ', text)
         text = re.sub(r'[^\w\s.,!?;:()\-\']', '', text)
         return text.strip()
 
     @staticmethod
-    def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[Dict]:
+    def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[Dict]:
         words = text.split()
         total_words = len(words)
         chunks = []
@@ -53,7 +42,6 @@ class DocumentProcessor:
 
         i = 0
         chunk_id = 0
-        last_progress = -1
 
         while i < total_words:
             end_idx = min(i + words_per_chunk, total_words)
@@ -79,7 +67,7 @@ class DocumentProcessor:
         return chunks
 
 
-class MistralEmbeddings:
+class _EmbeddingManager:
     def __init__(self, api_key: str):
         self.client = Mistral(api_key=api_key)
         self.model = EMBEDDING_MODEL
@@ -109,16 +97,17 @@ class MistralEmbeddings:
         return response.data[0].embedding
 
 
-class PineconeVectorStore:
+class _VectorManager:
     def __init__(self, api_key: str, index_name: str):
         self.pc = Pinecone(api_key=api_key)
         self.index_name = index_name
 
         try:
             self.index = self.pc.Index(index_name)
-            print(f"SUCCESSFULLY CONNECTED TO PINECONE: {index_name}")
+            print(f"SUCCESSFULLY CONNECTED TO PINECONE: \033[94m{index_name}\033[0m\n")
         except Exception as e:
-            raise Exception(f"Could not connect to index '{index_name}'. Make sure it exists in your Pinecone dashboard. Error: {str(e)}")
+            Logger.log(f"[RAG MANAGER] - ERROR: Failed to connect to Pinecone. Error: {str(e)}")
+            raise
 
     def add_documents(self, chunks: List[Dict], embeddings: List[List[float]]):
         vectors = []
@@ -169,31 +158,61 @@ class PineconeVectorStore:
         return self.index.describe_index_stats()
 
 
-class RAGManager:
-    def __init__(self, mistral_api_key: str, pinecone_api_key: str, index_name: str):
-        self.embeddings = MistralEmbeddings(mistral_api_key)
-        self.vector_store = PineconeVectorStore(pinecone_api_key, index_name)
-        self.llm = Groq(api_key=GROQ_API_KEY)
-        self.chat_model = CHAT_MODEL
-        self.conversation_history = []
+class RAGManagerClass:
+    _instance = None
 
-    def ingest_document(self, file_path: str):
-        processor = DocumentProcessor()
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._embeddings = None
+            cls._instance._vector_store = None
+            cls._instance._initialized = False
+            cls._instance._conversation_history = []
+        return cls._instance
 
-        raw_text = processor.load_document(file_path)
-        clean_text = processor.clean_text(raw_text)
+    def initialize(self, document_path: Optional[str] = None, force_reingest: bool = False):
+        if self._initialized and not force_reingest:
+            print("⚠️ [RAG MANAGER] - RAGManager already initialized. Use force_reingest=True to reinitialize.\n")
+            return
 
-        chunks = processor.chunk_text(clean_text, chunk_size=500, overlap=50)
+        self._embeddings = _EmbeddingManager(MISTRAL_API_KEY)
+        self._vector_store = _VectorManager(PINECONE_API_KEY, PINECONE_INDEX_NAME)
+
+        stats = self._vector_store.get_stats()
+        vector_count = stats.total_vector_count if hasattr(stats, 'total_vector_count') else stats.get('total_vector_count', 0)
+
+        if document_path and (force_reingest or vector_count == 0):
+            if os.path.exists(document_path):
+                self._ingest_document(document_path)
+            else:
+                print(f"⚠️ [RAG MANAGER] - Document not found: {document_path}\n")
+
+        self._initialized = True
+        print("RAG MANAGER INTIALISED. DOCUMENTS READY.\n")
+
+    def _ingest_document(self, file_path: str):
+        if not self._embeddings or not self._vector_store:
+            raise RuntimeError("RAGManager not initialized. Call initialize() first.")
+
+        processor = _DocumentProcessor()
+
+        raw_text = processor._load_document(file_path)
+        clean_text = processor._clean_text(raw_text)
+
+        chunks = processor._chunk_text(clean_text, chunk_size=500, overlap=50)
 
         texts = [chunk['text'] for chunk in chunks]
-        embeddings = self.embeddings.embed_texts(texts)
+        embeddings = self._embeddings.embed_texts(texts)
 
-        self.vector_store.add_documents(chunks, embeddings)
+        self._vector_store.add_documents(chunks, embeddings)
 
-    def retrieve_context(self, query: str, top_k: int = 3) -> tuple[str, List[float]]:
-        query_embedding = self.embeddings.embed_query(query)
+    def retrieve_query(self, query: str, top_k: int = 5, include_history: bool = True) -> str:
+        if not self._initialized:
+            raise RuntimeError("RAGManager not initialized. Call initialize() first.")
 
-        results = self.vector_store.search(query_embedding, top_k=top_k)
+        query_embedding = self._embeddings.embed_query(query)
+
+        results = self._vector_store.search(query_embedding, top_k=top_k)
 
         context_parts = []
         scores = results['scores'][0] if results['scores'] else []
@@ -202,21 +221,20 @@ class RAGManager:
             score = scores[i] if i < len(scores) else 0
             context_parts.append(f"[Context {i+1}] (similarity: {score:.3f})\n{doc}")
 
-        return "\n\n".join(context_parts), scores
+        context = "\n\n".join(context_parts)
 
-    def generate_response(self, query: str, context: str) -> str:
         history_str = ""
-        if self.conversation_history:
+        if include_history and self._conversation_history:
             history_str = "\n\nPrevious Conversation:\n"
-            for msg in self.conversation_history[-10:]:
+            for msg in self._conversation_history[-10:]:
                 role = "User" if msg["role"] == "user" else "Assistant"
                 history_str += f"{role}: {msg['content']}\n"
 
         prompt = f"""I want you to act as a document that I am having a conversation with. Using the provided context, answer the user's question to the best of your ability using the resources provided.
 
-Your responses should be natural and conversational. Do NOT say phrases like "according to the context" or "based on the provided information" or reference "Context 1" or "Context 2". Simply answer the question directly as if the information is your own knowledge.
+Your responses should be natural and conversational. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". Simply answer the question directly as if the information is your own knowledge.
 
-If there is nothing in the context relevant to the question at hand, just say "Hey there! Unfortunately, I only have knowledge on generic Interior Design Principles. If you have any questions on Interior Design, I am here to help!" and stop after that. Refuse to answer any question not about the info. Never break character.
+If there is nothing in the context relevant to the question at hand, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!" and stop after that. Refuse to answer any question not about the info. Never break character.
 ------------
 {context}
 ------------
@@ -224,99 +242,26 @@ If there is nothing in the context relevant to the question at hand, just say "H
 ------------
 REMEMBER:
 - Answer naturally and directly without meta-commentary about the context
-- Do NOT mention "Context 1", "Context 2", or similar references
-- Do NOT say "according to the context" or similar phrases
+- Do NOT mention "Context 1", "Context 2", or similar references about the context
+- Do NOT say "according to the context", or "based on the provided information" or similar phrases
 - Use the conversation history to provide context-aware responses
-- If there is no relevant information, just say "Hey there! Unfortunately, I only have knowledge on generic Interior Design Principles. If you have any questions on Interior Design, I am here to help!"
+- If there is no relevant information, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!"
 - Never break character
 
 User Question: {query}
 
 Answer:"""
 
-        response = self.llm.chat.completions.create(
-            model=self.chat_model,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
-        )
+        return prompt
 
-        return response.choices[0].message.content
-
-    def chat(self, query: str, top_k: int = 3) -> Dict:
-        context, scores = self.retrieve_context(query, top_k=top_k)
-
-        print(f"💭 Generating response with {self.chat_model}...")
-
-        response = self.generate_response(query, context)
-
-        self.conversation_history.append({"role": "user", "content": query})
-        self.conversation_history.append({"role": "assistant", "content": response})
-
-        with open("rag.log", "a", encoding="utf-8") as log_file:
-            log_file.write(f"---\n")
-            log_file.write(f"Query: {query}\n")
-            log_file.write(f"Chat Model: {self.chat_model}\n")
-            log_file.write(f"Retrieved Context:\n{context}")
-            log_file.write(f"\nResponse:\n{response}\n")
-            log_file.write(f"---\n\n")
-
-        return {
-            'query': query,
-            'context': context,
-            'response': response,
-            'scores': scores
-        }
+    def add_to_history(self, role: str, content: str):
+        self._conversation_history.append({"role": role, "content": content})
 
     def clear_history(self):
-        self.conversation_history = []
-        print("🗑️  Conversation history cleared")
+        self._conversation_history = []
+
+    def get_history(self) -> List[Dict]:
+        return self._conversation_history.copy()
 
 
-def main():
-    try:
-        chatbot = RAGManager(
-            mistral_api_key=MISTRAL_API_KEY,
-            pinecone_api_key=PINECONE_API_KEY,
-            index_name=PINECONE_INDEX_NAME
-        )
-    except Exception as e:
-        print(f"\n❌ Error: {str(e)}")
-        return
-
-    document_path = "rag_context.txt"
-
-    if os.path.exists(document_path):
-        chatbot.ingest_document(document_path)
-    else:
-        print(f"\n⚠️  Document not found: {document_path}")
-        print("   Continuing with existing vectors in Pinecone...")
-
-    print("\n" + "="*60)
-    print("Type 'quit' to exit, or 'clear' to clear conversation history.")
-    print("="*60)
-
-    while True:
-        query = input("\n🗣️  You: ").strip()
-
-        if query.lower() in ['quit', 'exit', 'q']:
-            print("\n👋 Goodbye!")
-            break
-
-        if query.lower() == 'clear':
-            chatbot.clear_history()
-            continue
-
-        if not query:
-            continue
-
-        try:
-            result = chatbot.chat(query, top_k=5)
-            print(f"\n🤖 Assistant: {result['response']}")
-
-        except Exception as e:
-            print(f"\n❌ Error: {str(e)}")
-
-
-if __name__ == "__main__":
-    main()
+RAGManager = RAGManagerClass()

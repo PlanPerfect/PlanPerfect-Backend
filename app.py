@@ -15,6 +15,7 @@ from routes.existingHomeOwners.classification import router as style_classificat
 from routes.newHomeOwners.extraction import router as newHomeOwners_extraction_router
 
 from Services import DatabaseManager as DM
+from Services import RAGManager as RAG
 from Services import Bootcheck
 
 warnings.simplefilter("ignore", FutureWarning)
@@ -159,6 +160,12 @@ if __name__ == '__main__':
         DM.initialize(
             database_url=os.getenv("FIREBASE_DATABASE_URL"),
             credentials_path=os.getenv("FIREBASE_CREDENTIALS_PATH")
+        )
+
+    if not RAG._initialized:
+        RAG.initialize(
+            document_path=os.getenv("RAG_DOCUMENT_PATH"),
+            force_reingest=True
         )
 
     def signal_handler(signum, frame):
