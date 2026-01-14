@@ -65,7 +65,6 @@ async def generate_design_document(
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_seg_file:
                     tmp_seg_file.write(segmented_image_data)
                     tmp_segmented_path = tmp_seg_file.name
-                print(f"Segmented floor plan saved to: {tmp_segmented_path}")
             except Exception as e:
                 print(f"Error processing segmented image: {e}")
                 tmp_segmented_path = None
@@ -208,7 +207,6 @@ Be specific, practical, and ensure all recommendations align with the {budget} b
             response_text = response_text.split("```")[1].split("```")[0].strip()
         
         design_data = json.loads(response_text)
-        print("Design Data Generated Successfully")
         
         # Generate PDF
         pdf_buffer = generate_pdf(
