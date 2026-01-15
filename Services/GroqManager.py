@@ -105,26 +105,6 @@ class _RateLimitManager:
             Logger.log(f"[GROQ MANAGER] - Error parsing reset time '{reset_str}': {str(e)}")
             return datetime.now() + timedelta(seconds=60)
 
-    def nearly_depleted(self, request_threshold: int = 5, token_threshold: int = 1000) -> bool:
-        if self.requests_remaining is not None and self.requests_remaining <= request_threshold:
-            return True
-        if self.tokens_remaining is not None and self.tokens_remaining <= token_threshold:
-            return True
-        return False
-
-    def switch_model(self) -> bool:
-        if self.nearly_depleted(request_threshold=3, token_threshold=500):
-            return True
-
-        now = datetime.now()
-        if self.tokens_reset_time and self.tokens_remaining:
-            time_until_reset = (self.tokens_reset_time - now).total_seconds()
-            if time_until_reset > 30 and self.tokens_limit:
-                if self.tokens_remaining < (self.tokens_limit * 0.2):
-                    return True
-
-        return False
-
     def get_wait_time(self) -> float:
         now = datetime.now()
         wait_times = []
@@ -146,10 +126,10 @@ class _RateLimitManager:
 
 class _ModelManager:
     MODELS = [
-        "llama-3.3-70b-versatile",      # 30 RPM, 12K TPM
-        "llama-3.1-8b-instant",         # 30 RPM, 6K TPM
-        "openai/gpt-oss-120b",          # 30 RPM, 8K TPM
-        "openai/gpt-oss-20b"            # 30 RPM, 8K TPM
+        "llama-3.3-70b-versatile",      # 30 RPM, 1K RPD, 12K TPM, 100K TPD
+        "llama-3.1-8b-instant",         # 30 RPM, 14.4K RPD, 6K TPM, 500K TPD
+        "openai/gpt-oss-120b",          # 30 RPM, 1K RPD, 8K TPM, 200K TPD
+        "openai/gpt-oss-20b"            # 30 RPM, 1K RPD, 8K TPM, 200K TPD
     ]
 
     def __init__(self):
@@ -158,24 +138,6 @@ class _ModelManager:
             model: _RateLimitManager() for model in self.MODELS
         }
         self.rate_limit_cooldowns: Dict[str, datetime] = {}
-
-    def _wait_seconds_until_reset_for_model(self, model: str) -> Optional[float]:
-        rate_limit_mgr = self.model_rate_limits.get(model)
-        if not rate_limit_mgr:
-            return None
-        now = datetime.now()
-        candidates = []
-        if rate_limit_mgr.requests_reset_time:
-            dt = (rate_limit_mgr.requests_reset_time - now).total_seconds()
-            if dt > 0:
-                candidates.append(dt)
-        if rate_limit_mgr.tokens_reset_time:
-            dt = (rate_limit_mgr.tokens_reset_time - now).total_seconds()
-            if dt > 0:
-                candidates.append(dt)
-        if candidates:
-            return min(candidates)
-        return None
 
     def get_current_model(self) -> str:
         original_index = self.current_model_index
@@ -222,11 +184,6 @@ class _ModelManager:
         if model in self.model_rate_limits:
             self.model_rate_limits[model].update_headers(headers)
 
-    def switch_model_proactively(self, model: str) -> bool:
-        if model in self.model_rate_limits:
-            return self.model_rate_limits[model].switch_model()
-        return False
-
     def mark_rate_limited(self, model: str, retry_after: Optional[str] = None):
         now = datetime.now()
 
@@ -248,12 +205,13 @@ class _ModelManager:
 
         self.current_model_index = (self.current_model_index + 1) % len(self.MODELS)
 
-    def get_next_model(self) -> str:
-        self.current_model_index = (self.current_model_index + 1) % len(self.MODELS)
-        return self.get_current_model()
+    def all_models_rate_limited(self) -> bool:
+        """Check if all models are currently rate-limited"""
+        return len(self.rate_limit_cooldowns) >= len(self.MODELS)
 
 class GroqManagerClass:
     _instance = None
+    FALLBACK_MESSAGE = "I apologize, but I'm currently experiencing high traffic and all available models are rate-limited. Please try again in a moment."
 
     def __new__(cls):
         if cls._instance is None:
@@ -272,7 +230,7 @@ class GroqManagerClass:
         self._model_manager = _ModelManager()
         self._initialized = True
 
-        print(f"GROQ MANAGER INITIALIZED. USING \033[94m{self._model_manager.get_current_model()}\033[0m\n")
+        print(f"GROQ MANAGER INITIALIZED.\n")
 
     def chat(self, prompt: str) -> str:
         if not self._initialized:
@@ -284,6 +242,10 @@ class GroqManagerClass:
         attempts = 0
 
         while attempts < max_retries:
+            if self._model_manager.all_models_rate_limited():
+                self._log_all_models_exhausted()
+                return self.FALLBACK_MESSAGE
+
             current_model = self._model_manager.get_current_model()
 
             try:
@@ -295,17 +257,12 @@ class GroqManagerClass:
                 )
 
                 headers = self._http_client.last_response_headers
-
                 self._model_manager.update_rate_limit_info(current_model, headers)
 
                 assistant_response = response.choices[0].message.content
 
                 self._log_success(current_model)
                 self._log(model=current_model, prompt=prompt, response=assistant_response)
-
-                if self._model_manager.switch_model_proactively(current_model):
-                    next_model = self._model_manager.get_next_model()
-                    self._log_proactive_switch(current_model, next_model)
 
                 return assistant_response
 
@@ -318,8 +275,7 @@ class GroqManagerClass:
                         retry_after = e.response.headers.get('retry-after')
 
                     self._model_manager.mark_rate_limited(current_model, retry_after)
-
-                    self._log_rate_limit_hit(current_model)
+                    self._log_rate_limit_hit(current_model, str(e))
 
                     attempts += 1
 
@@ -328,12 +284,14 @@ class GroqManagerClass:
                         continue
                     else:
                         self._log_all_models_exhausted()
-                        raise RuntimeError(f"All models exhausted after {max_retries} attempts. Last error: {str(e)}")
+                        Logger.log(f"[GROQ MANAGER] - All retry attempts exhausted. Returning fallback message.")
+                        return self.FALLBACK_MESSAGE
                 else:
                     Logger.log(f"[GROQ MANAGER] - Error: {str(e)}")
                     raise
 
-        raise RuntimeError(f"Chat completion failed after {max_retries} attempts")
+        self._log_all_models_exhausted()
+        return self.FALLBACK_MESSAGE
 
     def _log_success(self, model: str):
         rate_limit_mgr = self._model_manager.model_rate_limits.get(model)
@@ -354,18 +312,29 @@ class GroqManagerClass:
             log_file.write(f"Requests resetting in: {requests_reset}\n")
             log_file.write(f"Remaining Tokens (TPM): {remaining_tokens}\n")
             log_file.write(f"Tokens resetting in: {tokens_reset}\n")
-
             log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             log_file.write(f"-------------------------------------------\n\n")
 
-    def _log_rate_limit_hit(self, model: str):
-        rate_limit_mgr = self._model_manager.model_rate_limits.get(model)
-        if not rate_limit_mgr:
-            return
+    def _log_rate_limit_hit(self, model: str, error_message: str):
+        tpd_limit = "N/A"
+        tpd_used = "N/A"
+        tpd_requested = "N/A"
+
+        limit_match = re.search(r'Limit (\d+)', error_message)
+        used_match = re.search(r'Used (\d+)', error_message)
+        requested_match = re.search(r'Requested (\d+)', error_message)
+
+        if limit_match:
+            tpd_limit = limit_match.group(1)
+        if used_match:
+            tpd_used = used_match.group(1)
+        if requested_match:
+            tpd_requested = requested_match.group(1)
 
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             log_file.write(f"--------------RATE LIMIT HIT--------------\n")
             log_file.write(f"Model: {model}\n")
+            log_file.write(f"TPD Limit: {tpd_limit}, Used: {tpd_used}, Requested: {tpd_requested}\n")
             log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             log_file.write(f"------------------------------------------\n\n")
 
@@ -373,17 +342,18 @@ class GroqManagerClass:
         best_model = None
         best_wait = None
 
-        for model in self.MODELS:
-            wait = self._wait_seconds_until_reset_for_model(model)
-            if wait is not None:
-                if best_wait is None or wait < best_wait:
-                    best_wait = wait
-                    best_model = model
+        for model in self._model_manager.MODELS:
+            if model in self._model_manager.model_rate_limits:
+                wait = self._model_manager.model_rate_limits[model].get_wait_time()
+                if wait is not None:
+                    if best_wait is None or wait < best_wait:
+                        best_wait = wait
+                        best_model = model
 
-        if best_model is None and self.rate_limit_cooldowns:
+        if best_model is None and self._model_manager.rate_limit_cooldowns:
             now = datetime.now()
             min_model, min_time = min(
-                self.rate_limit_cooldowns.items(),
+                self._model_manager.rate_limit_cooldowns.items(),
                 key=lambda x: (x[1] - now).total_seconds()
             )
             best_model = min_model
@@ -401,28 +371,6 @@ class GroqManagerClass:
                 log_file.write("No reset times or cooldowns known. Fallback wait 60s\n")
                 log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 log_file.write(f"------------------------------------------------------------\n\n")
-
-    def _log_proactive_switch(self, from_model: str, to_model: str):
-        rate_limit_mgr = self._model_manager.model_rate_limits.get(from_model)
-
-        reason = "Unknown"
-
-        if rate_limit_mgr:
-            if rate_limit_mgr.requests_remaining is not None and rate_limit_mgr.requests_remaining <= 3:
-                reason = f"Low requests ({rate_limit_mgr.requests_remaining} remaining)"
-            elif rate_limit_mgr.tokens_remaining is not None and rate_limit_mgr.tokens_remaining <= 500:
-                reason = f"Low tokens ({rate_limit_mgr.tokens_remaining} remaining)"
-            elif rate_limit_mgr.tokens_limit and rate_limit_mgr.tokens_remaining:
-                if rate_limit_mgr.tokens_remaining < (rate_limit_mgr.tokens_limit * 0.1):
-                    reason = f"Below 10% capacity ({rate_limit_mgr.tokens_remaining}/{rate_limit_mgr.tokens_limit} tokens)"
-
-        with open("rate_limit.log", "a", encoding="utf-8") as log_file:
-            log_file.write(f"--------------PROACTIVE MODEL SWITCH--------------\n")
-            log_file.write(f"From: {from_model}\n")
-            log_file.write(f"To: {to_model}\n")
-            log_file.write(f"Reason: {reason}\n")
-            log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            log_file.write(f"--------------------------------------------------\n\n")
 
     def _log(self, model: str, prompt: str, response: str):
         with open("rag.log", "a", encoding="utf-8") as log_file:
