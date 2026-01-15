@@ -1,19 +1,16 @@
-# for reference only - RAGClient.py
-from groq import Groq
-import os
+# RAGClient.py - For reference only
 from Services import RAGManager as RAG
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-CHAT_MODEL = "llama-3.3-70b-versatile"
-groq_client = Groq(api_key=GROQ_API_KEY)
-
+from Services import GroqManager as GM
 
 def main():
     if not RAG._initialized:
         RAG.initialize(
             document_path="rag_context.txt",
-            force_reingest=True
+            force_reingest=False
         )
+
+    if not GM._initialized:
+        GM.initialize()
 
     print("="*60)
     print("Type 'quit' to exit, 'clear' to clear conversation history")
@@ -35,33 +32,12 @@ def main():
             continue
 
         try:
-            llm_prompt = RAG.retrieve_query(
-                query=user_query,
-                top_k=5,
-                include_history=True
-            )
+            llm_prompt = RAG.retrieve_query(query=user_query)
 
-            response = groq_client.chat.completions.create(
-                model=CHAT_MODEL,
-                messages=[
-                    {"role": "user", "content": llm_prompt}
-                ],
-                temperature=0.7,
-                max_tokens=1024
-            )
-
-            assistant_response = response.choices[0].message.content
+            assistant_response = GM.chat(llm_prompt)
 
             RAG.add_to_history("user", user_query)
             RAG.add_to_history("assistant", assistant_response)
-
-            with open("rag.log", "a", encoding="utf-8") as log_file:
-                log_file.write(f"---\n")
-                log_file.write(f"Query: {user_query}\n")
-                log_file.write(f"Chat Model: {CHAT_MODEL}\n")
-                log_file.write(f"RAG Output:\n{llm_prompt}\n")
-                log_file.write(f"\nResponse:\n{assistant_response}\n")
-                log_file.write(f"---\n\n")
 
             print(f"\n🤖 Assistant: {assistant_response}")
 

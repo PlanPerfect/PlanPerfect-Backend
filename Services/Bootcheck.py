@@ -18,6 +18,11 @@ class Bootcheck:
         "CLOUDSYNC_ENABLED",
         "VITE_FRONTEND_URL",
         "API_KEY",
+        "PINECONE_API_KEY",
+        "PINECONE_INDEX_NAME",
+        "MISTRAL_API_KEY",
+        "GROQ_API_KEY",
+        "RAG_DOCUMENT_PATH"
     ]
 
     @staticmethod
@@ -48,6 +53,16 @@ class Bootcheck:
 
         if not os.path.exists(creds_path):
             print(f"BOOTCHECK - ERROR: Firebase Service Account Key file not found.\n")
+            return False
+
+        return True
+
+    @staticmethod
+    def check_rag_context_file():
+        rag_path = os.getenv("RAG_DOCUMENT_PATH")
+
+        if not os.path.exists(rag_path):
+            print(f"BOOTCHECK - ERROR: RAG context document file not found.\n")
             return False
 
         return True
@@ -105,6 +120,7 @@ class Bootcheck:
             ("Environment file check", Bootcheck.check_env_file),
             ("Environment variables check", Bootcheck.check_env_variables),
             ("Firebase key file check", Bootcheck.check_firebase_key_file),
+            ("RAG context file check", Bootcheck.check_rag_context_file),
             ("Firebase credentials validation", Bootcheck.validate_firebase_credentials),
             ("Python bytecode setting", Bootcheck.set_python_dont_write_bytecode)
         ]

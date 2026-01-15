@@ -10,7 +10,7 @@ from Services import Logger
 load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = "planperfect-rag-manager-v1"
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 EMBEDDING_MODEL = "mistral-embed"
 
@@ -73,29 +73,40 @@ class _EmbeddingManager:
         self.model = EMBEDDING_MODEL
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        embeddings = []
-        batch_size = 10
+        try:
+            embeddings = []
+            batch_size = 10
 
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            response = self.client.embeddings.create(
-                model=self.model,
-                inputs=batch
-            )
-            embeddings.extend([item.embedding for item in response.data])
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                response = self.client.embeddings.create(
+                    model=self.model,
+                    inputs=batch
+                )
+                embeddings.extend([item.embedding for item in response.data])
 
-            if i + batch_size < len(texts):
-                time.sleep(0.5)
+                if i + batch_size < len(texts):
+                    time.sleep(0.5)
 
-        return embeddings
+            return embeddings
+
+        except Exception as e:
+            Logger.log(f"EMBEDDING MANAGER - ERROR: {e}")
+            print(f"API KEY: {MISTRAL_API_KEY}")
+            raise
 
     def embed_query(self, query: str) -> List[float]:
-        response = self.client.embeddings.create(
-            model=self.model,
-            inputs=[query]
-        )
-        return response.data[0].embedding
+        try:
+            response = self.client.embeddings.create(
+                model=self.model,
+                inputs=[query]
+            )
+            return response.data[0].embedding
 
+        except Exception as e:
+            Logger.log(f"EMBEDDING MANAGER - ERROR: {e}")
+            print(f"API KEY: {MISTRAL_API_KEY}")
+            raise
 
 class _VectorManager:
     def __init__(self, api_key: str, index_name: str):
@@ -104,7 +115,7 @@ class _VectorManager:
 
         try:
             self.index = self.pc.Index(index_name)
-            print(f"SUCCESSFULLY CONNECTED TO PINECONE: \033[94m{index_name}\033[0m\n")
+            print(f"SUCCESSFULLY CONNECTED TO PINECONE INDEX: \033[94m{index_name}\033[0m\n")
         except Exception as e:
             Logger.log(f"[RAG MANAGER] - ERROR: Failed to connect to Pinecone. Error: {str(e)}")
             raise
@@ -172,7 +183,6 @@ class RAGManagerClass:
 
     def initialize(self, document_path: Optional[str] = None, force_reingest: bool = False):
         if self._initialized and not force_reingest:
-            print("⚠️ [RAG MANAGER] - RAGManager already initialized. Use force_reingest=True to reinitialize.\n")
             return
 
         self._embeddings = _EmbeddingManager(MISTRAL_API_KEY)
@@ -185,7 +195,7 @@ class RAGManagerClass:
             if os.path.exists(document_path):
                 self._ingest_document(document_path)
             else:
-                print(f"⚠️ [RAG MANAGER] - Document not found: {document_path}\n")
+                raise FileNotFoundError(f"Document not found: {document_path}")
 
         self._initialized = True
         print("RAG MANAGER INTIALISED. DOCUMENTS READY.\n")
