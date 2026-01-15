@@ -1,11 +1,12 @@
 from typing import Optional, Dict
 from groq import Groq
 import os
+import re
 import time
 import httpx
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 from Services import Logger
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -56,22 +57,53 @@ class _RateLimitManager:
         except Exception as e:
             Logger.log(f"[GROQ MANAGER] - Error parsing rate limit headers: {str(e)}")
 
+    @staticmethod
+    def _parse_retry_after(retry_after: Optional[str]) -> Optional[float]:
+        if not retry_after:
+            return None
+        s = str(retry_after).strip().lower()
+        try:
+            if re.match(r'^\d+(\.\d+)?$', s):
+                return float(s)
+
+            m = re.match(r'^(?:(\d+)(?:m))?(?:(\d+(\.\d+)?)(?:s))?$', s)
+            if m:
+                mins = int(m.group(1)) if m.group(1) else 0
+                secs = float(m.group(2)) if m.group(2) else 0.0
+                return mins * 60 + secs
+
+            num = re.findall(r'(\d+(\.\d+)?)', s)
+            if num:
+                return float(num[0][0])
+        except Exception:
+            pass
+        return None
+
     def _parse_reset_time(self, reset_str: str) -> datetime:
         try:
-            total_seconds = 0
+            s = str(reset_str).strip().lower()
 
-            if 'm' in reset_str:
-                parts = reset_str.split('m')
-                total_seconds += int(parts[0]) * 60
-                reset_str = parts[1]
+            m = re.match(r'^(\d+(\.\d+)?)(s)?$', s)
+            if m:
+                seconds = float(m.group(1))
+                return datetime.now() + timedelta(seconds=seconds)
 
-            if 's' in reset_str:
-                total_seconds += float(reset_str.rstrip('s'))
+            m = re.match(r'^(?:(\d+)(?:m))?(?:(\d+(\.\d+)?)(?:s))?$', s)
+            if m:
+                mins = int(m.group(1)) if m.group(1) else 0
+                secs = float(m.group(2)) if m.group(2) else 0.0
+                total = mins * 60 + secs
+                return datetime.now() + timedelta(seconds=total)
 
-            return datetime.now() + timedelta(seconds=total_seconds)
+            digits = re.findall(r'(\d+(\.\d+)?)', s)
+            if digits:
+                total = float(digits[0][0])
+                return datetime.now() + timedelta(seconds=total)
+
+            return datetime.now() + timedelta(seconds=60)
         except Exception as e:
             Logger.log(f"[GROQ MANAGER] - Error parsing reset time '{reset_str}': {str(e)}")
-            return datetime.now() + timedelta(minutes=1)
+            return datetime.now() + timedelta(seconds=60)
 
     def nearly_depleted(self, request_threshold: int = 5, token_threshold: int = 1000) -> bool:
         if self.requests_remaining is not None and self.requests_remaining <= request_threshold:
@@ -98,15 +130,19 @@ class _RateLimitManager:
         wait_times = []
 
         if self.tokens_reset_time:
-            wait_times.append((self.tokens_reset_time - now).total_seconds())
+            dt = (self.tokens_reset_time - now).total_seconds()
+            if dt > 0:
+                wait_times.append(dt)
 
         if self.requests_reset_time:
-            wait_times.append((self.requests_reset_time - now).total_seconds())
+            dt = (self.requests_reset_time - now).total_seconds()
+            if dt > 0:
+                wait_times.append(dt)
 
         if wait_times:
-            return max(0, min(wait_times)) + 1
+            return float(min(wait_times)) + 1.0
 
-        return 60
+        return 60.0
 
 class _ModelManager:
     MODELS = [
@@ -122,6 +158,24 @@ class _ModelManager:
             model: _RateLimitManager() for model in self.MODELS
         }
         self.rate_limit_cooldowns: Dict[str, datetime] = {}
+
+    def _wait_seconds_until_reset_for_model(self, model: str) -> Optional[float]:
+        rate_limit_mgr = self.model_rate_limits.get(model)
+        if not rate_limit_mgr:
+            return None
+        now = datetime.now()
+        candidates = []
+        if rate_limit_mgr.requests_reset_time:
+            dt = (rate_limit_mgr.requests_reset_time - now).total_seconds()
+            if dt > 0:
+                candidates.append(dt)
+        if rate_limit_mgr.tokens_reset_time:
+            dt = (rate_limit_mgr.tokens_reset_time - now).total_seconds()
+            if dt > 0:
+                candidates.append(dt)
+        if candidates:
+            return min(candidates)
+        return None
 
     def get_current_model(self) -> str:
         original_index = self.current_model_index
@@ -176,16 +230,18 @@ class _ModelManager:
     def mark_rate_limited(self, model: str, retry_after: Optional[str] = None):
         now = datetime.now()
 
+        cooldown_time = None
         if retry_after:
-            try:
-                cooldown_seconds = float(retry_after)
-                cooldown_time = now + timedelta(seconds=cooldown_seconds + 2)
-            except:
-                cooldown_time = now + timedelta(seconds=60)
-        elif model in self.model_rate_limits:
-            wait_time = self.model_rate_limits[model].get_wait_time()
-            cooldown_time = now + timedelta(seconds=wait_time)
-        else:
+            secs = _RateLimitManager._parse_retry_after(retry_after)
+            if secs:
+                cooldown_time = now + timedelta(seconds=secs + 2)
+
+        if not cooldown_time and model in self.model_rate_limits:
+            wait_secs = self.model_rate_limits[model].get_wait_time()
+            if wait_secs and wait_secs > 0:
+                cooldown_time = now + timedelta(seconds=wait_secs)
+
+        if not cooldown_time:
             cooldown_time = now + timedelta(seconds=60)
 
         self.rate_limit_cooldowns[model] = cooldown_time
@@ -287,8 +343,9 @@ class GroqManagerClass:
         remaining_requests = f"{rate_limit_mgr.requests_remaining}/{rate_limit_mgr.requests_limit}" if rate_limit_mgr.requests_remaining is not None else "N/A"
         remaining_tokens = f"{rate_limit_mgr.tokens_remaining}/{rate_limit_mgr.tokens_limit}" if rate_limit_mgr.tokens_remaining is not None else "N/A"
 
-        requests_reset = f"{rate_limit_mgr.requests_reset_time}"
-        tokens_reset = f"{rate_limit_mgr.tokens_reset_time}"
+        now = datetime.now()
+        requests_reset = f"Resetting in {int((rate_limit_mgr.requests_reset_time - now).total_seconds())}s" if rate_limit_mgr.requests_reset_time else "N/A"
+        tokens_reset = f"Resetting in {int((rate_limit_mgr.tokens_reset_time - now).total_seconds())}s" if rate_limit_mgr.tokens_reset_time else "N/A"
 
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             log_file.write(f"------------------SUCCESS------------------\n")
@@ -306,35 +363,44 @@ class GroqManagerClass:
         if not rate_limit_mgr:
             return
 
-        requests_reset = f"{rate_limit_mgr.requests_reset_time}"
-        tokens_reset = f"{rate_limit_mgr.tokens_reset_time}"
-
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             log_file.write(f"--------------RATE LIMIT HIT--------------\n")
             log_file.write(f"Model: {model}\n")
-            log_file.write(f"Requests resetting in: {requests_reset}\n")
-            log_file.write(f"Tokens resetting in: {tokens_reset}\n")
             log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             log_file.write(f"------------------------------------------\n\n")
 
     def _log_all_models_exhausted(self):
-        if not self._model_manager.rate_limit_cooldowns:
-            return
+        best_model = None
+        best_wait = None
 
-        now = datetime.now()
+        for model in self.MODELS:
+            wait = self._wait_seconds_until_reset_for_model(model)
+            if wait is not None:
+                if best_wait is None or wait < best_wait:
+                    best_wait = wait
+                    best_model = model
 
-        min_cooldown_model = min(
-            self._model_manager.rate_limit_cooldowns.items(),
-            key=lambda x: (x[1] - now).total_seconds()
-        )
-
-        wait_seconds = (min_cooldown_model[1] - now).total_seconds()
+        if best_model is None and self.rate_limit_cooldowns:
+            now = datetime.now()
+            min_model, min_time = min(
+                self.rate_limit_cooldowns.items(),
+                key=lambda x: (x[1] - now).total_seconds()
+            )
+            best_model = min_model
+            best_wait = (min_time - now).total_seconds()
 
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
-            log_file.write(f"--------------------ALL MODELS EXHAUSTED--------------------\n")
-            log_file.write(f"{min_cooldown_model[0]} available in {wait_seconds:.1f}s\n")
-            log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            log_file.write(f"------------------------------------------------------------\n\n")
+            if best_model and best_wait is not None:
+                wait_seconds = max(0, int(best_wait))
+                log_file.write(f"--------------------ALL MODELS EXHAUSTED--------------------\n")
+                log_file.write(f"{best_model} available in {wait_seconds:.1f}s\n")
+                log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.write(f"------------------------------------------------------------\n\n")
+            else:
+                log_file.write(f"--------------------ALL MODELS EXHAUSTED--------------------\n")
+                log_file.write("No reset times or cooldowns known. Fallback wait 60s\n")
+                log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.write(f"------------------------------------------------------------\n\n")
 
     def _log_proactive_switch(self, from_model: str, to_model: str):
         rate_limit_mgr = self._model_manager.model_rate_limits.get(from_model)

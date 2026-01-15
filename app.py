@@ -16,6 +16,7 @@ from routes.newHomeOwners.extraction import router as newHomeOwners_extraction_r
 
 from Services import DatabaseManager as DM
 from Services import RAGManager as RAG
+from Services import GroqManager as GM
 from Services import Bootcheck
 
 warnings.simplefilter("ignore", FutureWarning)
@@ -167,6 +168,9 @@ if __name__ == '__main__':
             document_path=os.getenv("RAG_DOCUMENT_PATH"),
             force_reingest=False
         )
+
+    if not GM._initialized:
+        GM.initialize()
 
     def signal_handler(signum, frame):
         os._exit(0)

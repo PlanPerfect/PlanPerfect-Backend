@@ -4,8 +4,8 @@ from mistralai import Mistral
 import re
 import os
 import time
-from dotenv import load_dotenv
 from Services import Logger
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -13,7 +13,6 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 EMBEDDING_MODEL = "mistral-embed"
-
 
 class _DocumentProcessor:
     @staticmethod
@@ -92,7 +91,6 @@ class _EmbeddingManager:
 
         except Exception as e:
             Logger.log(f"EMBEDDING MANAGER - ERROR: {e}")
-            print(f"API KEY: {MISTRAL_API_KEY}")
             raise
 
     def embed_query(self, query: str) -> List[float]:
@@ -105,7 +103,6 @@ class _EmbeddingManager:
 
         except Exception as e:
             Logger.log(f"EMBEDDING MANAGER - ERROR: {e}")
-            print(f"API KEY: {MISTRAL_API_KEY}")
             raise
 
 class _VectorManager:
@@ -240,9 +237,9 @@ class RAGManagerClass:
                 role = "User" if msg["role"] == "user" else "Assistant"
                 history_str += f"{role}: {msg['content']}\n"
 
-        prompt = f"""I want you to act as a document that I am having a conversation with. Using the provided context, answer the user's question to the best of your ability using the resources provided.
+        prompt = f"""I want you to act as a document that I am having a conversation with. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
 
-Your responses should be natural and conversational. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". Simply answer the question directly as if the information is your own knowledge.
+Your responses should be natural and conversational. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". DO NOT answer in markdown, only answer in plain text. Simply answer the question directly as if the information is your own knowledge.
 
 If there is nothing in the context relevant to the question at hand, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!" and stop after that. Refuse to answer any question not about the info. Never break character.
 ------------
@@ -254,7 +251,9 @@ REMEMBER:
 - Answer naturally and directly without meta-commentary about the context
 - Do NOT mention "Context 1", "Context 2", or similar references about the context
 - Do NOT say "according to the context", or "based on the provided information" or similar phrases
+- Do NOT answer in markdown, only in plain text.
 - Use the conversation history to provide context-aware responses
+- Answer in 2-3 concise sentences
 - If there is no relevant information, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!"
 - Never break character
 
