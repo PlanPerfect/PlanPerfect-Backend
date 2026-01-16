@@ -286,7 +286,6 @@ class GroqManagerClass:
                         continue
                     else:
                         self._log_all_models_exhausted()
-                        Logger.log(f"[GROQ MANAGER] - All retry attempts exhausted. Returning fallback message.")
                         return self.FALLBACK_MESSAGE
                 else:
                     Logger.log(f"[GROQ MANAGER] - Error: {str(e)}")
