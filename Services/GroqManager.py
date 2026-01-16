@@ -206,7 +206,6 @@ class _ModelManager:
         self.current_model_index = (self.current_model_index + 1) % len(self.MODELS)
 
     def all_models_rate_limited(self) -> bool:
-        """Check if all models are currently rate-limited"""
         return len(self.rate_limit_cooldowns) >= len(self.MODELS)
 
 class GroqManagerClass:
