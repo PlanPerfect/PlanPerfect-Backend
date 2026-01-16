@@ -7,7 +7,7 @@ pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
     safety_checker=None
 )
 
-pipe.enable_attention_slicing()
+# pipe.enable_attention_slicing()
 pipe.enable_model_cpu_offload()
 
 # extra VRAM optimization
