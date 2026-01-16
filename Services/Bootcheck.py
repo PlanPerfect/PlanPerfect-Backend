@@ -20,7 +20,7 @@ class Bootcheck:
         "API_KEY",
         "PINECONE_API_KEY",
         "PINECONE_INDEX_NAME",
-        "MISTRAL_API_KEY",
+        "GEMINI_API_KEY",
         "GROQ_API_KEY",
         "RAG_DOCUMENT_PATH"
     ]
