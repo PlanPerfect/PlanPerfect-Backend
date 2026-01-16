@@ -236,6 +236,9 @@ class GroqManagerClass:
         if not self._initialized:
             raise RuntimeError("GroqManager not initialized. Call initialize() first.")
 
+        if prompt is None:
+            return self.FALLBACK_MESSAGE
+
         temperature = 0.8
         max_tokens = 1024
         max_retries = 4

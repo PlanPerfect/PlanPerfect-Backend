@@ -1,6 +1,8 @@
 from typing import List, Dict, Optional
 from pinecone import Pinecone
-from mistralai import Mistral
+from google import genai
+from google.genai import types
+from datetime import datetime
 import re
 import os
 import time
@@ -11,8 +13,8 @@ load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-EMBEDDING_MODEL = "mistral-embed"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+EMBEDDING_MODEL = "gemini-embedding-001"
 
 class _DocumentProcessor:
     @staticmethod
@@ -68,42 +70,83 @@ class _DocumentProcessor:
 
 class _EmbeddingManager:
     def __init__(self, api_key: str):
-        self.client = Mistral(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
         self.model = EMBEDDING_MODEL
+        self.max_retries = 3
+        self.base_delay = 1
 
-    def embed_texts(self, texts: List[str]) -> List[List[float]]:
+    def _retry_with_backoff(self, func, *args, **kwargs):
+        for attempt in range(self.max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                error_msg = str(e).lower()
+
+                if '429' in error_msg or 'rate limit' in error_msg or 'quota' in error_msg:
+                    if attempt < self.max_retries - 1:
+                        delay = self.base_delay * (2 ** attempt)
+                        time.sleep(delay)
+                    else:
+                        with open("rate_limit.log", "a", encoding="utf-8") as log_file:
+                            log_file.write(f"--------------RATE LIMIT HIT--------------\n")
+                            log_file.write(f"Model: {self.model}\n")
+                            log_file.write(f"Max retries: {self.max_retries}\n")
+                            log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                            log_file.write(f"------------------------------------------\n\n")
+                        return None
+                else:
+                    return None
+        return None
+
+    def embed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
         try:
             embeddings = []
-            batch_size = 10
+            batch_size = 100
 
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i + batch_size]
-                response = self.client.embeddings.create(
-                    model=self.model,
-                    inputs=batch
-                )
-                embeddings.extend([item.embedding for item in response.data])
+
+                def _embed_batch():
+                    result = self.client.models.embed_content(
+                        model=self.model,
+                        contents=batch,
+                        config=types.EmbedContentConfig(output_dimensionality=1024)
+                    )
+                    return [e.values for e in result.embeddings]
+
+                batch_embeddings = self._retry_with_backoff(_embed_batch)
+
+                if batch_embeddings is None:
+                    return None
+
+                embeddings.extend(batch_embeddings)
 
                 if i + batch_size < len(texts):
-                    time.sleep(0.5)
+                    time.sleep(0.2)
 
             return embeddings
 
         except Exception as e:
-            Logger.log(f"EMBEDDING MANAGER - ERROR: {e}")
-            raise
+            Logger.log(f"[EMBEDDING MANAGER] - FATAL ERROR: {e}.")
+            return None
 
-    def embed_query(self, query: str) -> List[float]:
+    def embed_query(self, query: str) -> Optional[List[float]]:
         try:
-            response = self.client.embeddings.create(
-                model=self.model,
-                inputs=[query]
-            )
-            return response.data[0].embedding
+            def _embed_single():
+                result = self.client.models.embed_content(
+                    model=self.model,
+                    contents=query,
+                    config=types.EmbedContentConfig(output_dimensionality=1024)
+                )
+                return result.embeddings[0].values
+
+            result = self._retry_with_backoff(_embed_single)
+
+            return result
 
         except Exception as e:
-            Logger.log(f"EMBEDDING MANAGER - ERROR: {e}")
-            raise
+            Logger.log(f"[EMBEDDING MANAGER] - FATAL ERROR: {e}.")
+            return None
 
 class _VectorManager:
     def __init__(self, api_key: str, index_name: str):
@@ -136,31 +179,38 @@ class _VectorManager:
             batch = vectors[i:i + batch_size]
             self.index.upsert(vectors=batch)
 
-    def search(self, query_embedding: List[float], top_k: int = 3) -> Dict:
-        results = self.index.query(
-            vector=query_embedding,
-            top_k=top_k,
-            include_metadata=True
-        )
+    def search(self, query_embedding: Optional[List[float]], top_k: int = 3) -> Optional[Dict]:
+        if query_embedding is None:
+            return None
 
-        documents = []
-        scores = []
-        metadatas = []
+        try:
+            results = self.index.query(
+                vector=query_embedding,
+                top_k=top_k,
+                include_metadata=True
+            )
 
-        for match in results['matches']:
-            documents.append(match['metadata']['text'])
-            scores.append(match['score'])
-            metadatas.append({
-                'chunk_id': match['metadata']['chunk_id'],
-                'start_word': match['metadata']['start_word'],
-                'end_word': match['metadata']['end_word']
-            })
+            documents = []
+            scores = []
+            metadatas = []
 
-        return {
-            'documents': [documents],
-            'scores': [scores],
-            'metadatas': [metadatas]
-        }
+            for match in results['matches']:
+                documents.append(match['metadata']['text'])
+                scores.append(match['score'])
+                metadatas.append({
+                    'chunk_id': match['metadata']['chunk_id'],
+                    'start_word': match['metadata']['start_word'],
+                    'end_word': match['metadata']['end_word']
+                })
+
+            return {
+                'documents': [documents],
+                'scores': [scores],
+                'metadatas': [metadatas]
+            }
+
+        except Exception as e:
+            return None
 
     def get_stats(self):
         return self.index.describe_index_stats()
@@ -182,7 +232,7 @@ class RAGManagerClass:
         if self._initialized and not force_reingest:
             return
 
-        self._embeddings = _EmbeddingManager(MISTRAL_API_KEY)
+        self._embeddings = _EmbeddingManager(GEMINI_API_KEY)
         self._vector_store = _VectorManager(PINECONE_API_KEY, PINECONE_INDEX_NAME)
 
         stats = self._vector_store.get_stats()
@@ -213,13 +263,19 @@ class RAGManagerClass:
 
         self._vector_store.add_documents(chunks, embeddings)
 
-    def retrieve_query(self, query: str, top_k: int = 5, include_history: bool = True) -> str:
+    def retrieve_query(self, query: str, top_k: int = 5, include_history: bool = True) -> Optional[str]:
         if not self._initialized:
             raise RuntimeError("RAGManager not initialized. Call initialize() first.")
 
         query_embedding = self._embeddings.embed_query(query)
 
+        if query_embedding is None:
+            return None
+
         results = self._vector_store.search(query_embedding, top_k=top_k)
+
+        if results is None:
+            return None
 
         context_parts = []
         scores = results['scores'][0] if results['scores'] else []
@@ -239,27 +295,27 @@ class RAGManagerClass:
 
         prompt = f"""I want you to act as a document that I am having a conversation with. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
 
-Your responses should be natural and conversational. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". DO NOT answer in markdown, only answer in plain text. Simply answer the question directly as if the information is your own knowledge.
+    Your responses should be natural and conversational. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". DO NOT answer in markdown, only answer in plain text. Simply answer the question directly as if the information is your own knowledge.
 
-If there is nothing in the context relevant to the question at hand, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!" and stop after that. Refuse to answer any question not about the info. Never break character.
-------------
-{context}
-------------
-{history_str}
-------------
-REMEMBER:
-- Answer naturally and directly without meta-commentary about the context
-- Do NOT mention "Context 1", "Context 2", or similar references about the context
-- Do NOT say "according to the context", or "based on the provided information" or similar phrases
-- Do NOT answer in markdown, only in plain text.
-- Use the conversation history to provide context-aware responses
-- Answer in 2-3 concise sentences
-- If there is no relevant information, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!"
-- Never break character
+    If there is nothing in the context relevant to the question at hand, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!" and stop after that. Refuse to answer any question not about the info. Never break character.
+    ------------
+    {context}
+    ------------
+    {history_str}
+    ------------
+    REMEMBER:
+    - Answer naturally and directly without meta-commentary about the context
+    - Do NOT mention "Context 1", "Context 2", or similar references about the context
+    - Do NOT say "according to the context", or "based on the provided information" or similar phrases
+    - Do NOT answer in markdown, only in plain text.
+    - Use the conversation history to provide context-aware responses
+    - Answer in 2-3 concise sentences
+    - If there is no relevant information, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!"
+    - Never break character
 
-User Question: {query}
+    User Question: {query}
 
-Answer:"""
+    Answer:"""
 
         return prompt
 
