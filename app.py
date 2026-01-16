@@ -15,6 +15,7 @@ from routes.existingHomeOwners.classification import router as style_classificat
 from routes.newHomeOwners.extraction import router as newHomeOwners_extraction_router
 from routes.existingHomeOwners.imageGeneration import router as image_router
 from routes.newHomeOwners.documentLlm import router as document_llm_router
+from routes.chatbot.chatCompletions import router as chatbot_router
 
 from Services import DatabaseManager as DM
 from Services import RAGManager as RAG
@@ -41,6 +42,7 @@ app.include_router(style_classification_router)
 app.include_router(newHomeOwners_extraction_router)
 app.include_router(image_router)
 app.include_router(document_llm_router)
+app.include_router(chatbot_router)
 
 SERVER_START_TIME = datetime.now()
 
