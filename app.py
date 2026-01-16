@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # import routers
 from routes.existingHomeOwners.classification import router as style_classification_router
 from routes.newHomeOwners.extraction import router as newHomeOwners_extraction_router
+from routes.newHomeOwners.documentLlm import router as document_llm_router
 
 from Services import DatabaseManager as DM
 from Services import RAGManager as RAG
@@ -37,6 +38,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(style_classification_router)
 app.include_router(newHomeOwners_extraction_router)
+app.include_router(document_llm_router)
 
 SERVER_START_TIME = datetime.now()
 
