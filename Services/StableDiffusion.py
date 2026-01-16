@@ -7,5 +7,8 @@ pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
     safety_checker=None
 )
 
-pipe = pipe.to("cuda")
 pipe.enable_attention_slicing()
+pipe.enable_model_cpu_offload()
+
+# extra VRAM optimization
+pipe.unet.to(memory_format=torch.channels_last)

@@ -1,12 +1,34 @@
-# imageGeneration.py
 from fastapi import APIRouter, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from PIL import Image
 import uuid
 import json
+import torch
 
 from Services.StableDiffusion import pipe
-from Services.LLMGroq import generate_sd_prompt
+from Services.LLMGemini import generate_sd_prompt
+
+def extract_json(text: str) -> dict:
+    """
+    Safely extract JSON object from LLM output
+    """
+    try:
+        # Remove markdown code fences if present
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+
+        # Find first { and last }
+        start = text.find("{")
+        end = text.rfind("}") + 1
+
+        if start == -1 or end == -1:
+            raise ValueError("No JSON object found")
+
+        return json.loads(text[start:end])
+
+    except Exception as e:
+        raise ValueError(f"Failed to parse LLM JSON: {text}") from e
 
 
 router = APIRouter(prefix="/image", tags=["Image Generation"])
@@ -27,19 +49,20 @@ async def generate_image(
     # Generate prompt using LLM
     llm_response = generate_sd_prompt(styles, preferences)
 
-    parsed = json.loads(llm_response)
+    parsed = extract_json(llm_response)
 
     prompt = parsed["prompt"]
     negative_prompt = parsed["negative"]
+    torch.cuda.empty_cache()
 
     # Run Stable Diffusion img2img
     result = pipe(
         prompt=prompt,
         negative_prompt=negative_prompt,
-        image=init_image,
-        strength=0.65,
-        guidance_scale=7.5,
-        num_inference_steps=30
+        image=init_image.resize((512, 512)),
+        strength=0.6,
+        guidance_scale=7.0,
+        num_inference_steps=15               
     ).images[0]
 
 
