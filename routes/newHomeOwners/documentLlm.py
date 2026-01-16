@@ -10,12 +10,16 @@ from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, Table, TableStyle, KeepTogether
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+from reportlab.graphics import renderPDF
+from reportlab.graphics.shapes import Drawing
+from svglib.svglib import svg2rlg
 from datetime import datetime
+from pathlib import Path
 
-router = APIRouter( prefix="/newHomeOwners/documentLlm", tags=["LLM PDF Generation"], dependencies=[Depends(_verify_api_key)])
+router = APIRouter(prefix="/newHomeOwners/documentLlm", tags=["LLM PDF Generation"], dependencies=[Depends(_verify_api_key)])
 
 # Initialize Groq client
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -226,7 +230,7 @@ Be specific, practical, and ensure all recommendations align with the {budget} b
             pdf_buffer,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=interior_design_proposal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                "Content-Disposition": f"attachment; filename=interior_design_documentation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             }
         )
         
@@ -250,7 +254,6 @@ Be specific, practical, and ensure all recommendations align with the {budget} b
 def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, preferences, budget, unit_info):
     """
     Generate a professionally formatted PDF from design data with all provided parameters.
-    Includes both raw and segmented floor plan images.
     """
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -270,7 +273,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         parent=styles['Heading1'],
         fontSize=24,
         textColor=colors.HexColor('#D4AF37'),
-        spaceAfter=30,
+        spaceAfter=20,
         alignment=TA_CENTER,
         fontName='Helvetica-Bold'
     )
@@ -313,13 +316,97 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         fontName='Helvetica-Oblique'
     )
     
+    chatbot_cta_style = ParagraphStyle(
+        'ChatbotCTA',
+        parent=styles['Normal'],
+        fontSize=11,
+        textColor=colors.HexColor('#D4AF37'),
+        alignment=TA_CENTER,
+        spaceAfter=6,
+        spaceBefore=20,
+        fontName='Helvetica-Bold'
+    )
+    
     # Build PDF content
     story = []
     
-    # ========== TITLE PAGE ==========
-    story.append(Spacer(1, 1*inch))
-    story.append(Paragraph("Interior Design Proposal", title_style))
+    # ========== LOGO AND TITLE PAGE ==========
     story.append(Spacer(1, 0.3*inch))
+    
+    # Add logo and text
+    BASE_DIR = Path(__file__).resolve().parents[2]
+    logo_svg_path = BASE_DIR / "static" / "Logo.svg"
+    logo_text_path = BASE_DIR / "static" / "Logo-Text.png"
+
+    # Add SVG logo
+    if os.path.exists(logo_svg_path):
+        try:
+            # Convert SVG to ReportLab drawing
+            drawing = svg2rlg(str(logo_svg_path))
+            
+            # Calculate page center
+            page_width = letter[0] - doc.leftMargin - doc.rightMargin
+            
+            # Scale logo to appropriate size (e.g., 120 points width)
+            logo_width = 120
+            scale_factor = logo_width / drawing.width
+            drawing.width = logo_width
+            drawing.height = drawing.height * scale_factor
+            drawing.scale(scale_factor, scale_factor)
+            
+            # Center the drawing by wrapping in a table
+            from reportlab.platypus import Table
+            logo_table = Table([[drawing]], colWidths=[page_width])
+            logo_table.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            
+            story.append(logo_table)
+            story.append(Spacer(1, 0.15*inch))
+            logo_added = True
+            
+        except Exception as e:
+            print(f"Could not add SVG logo: {e}")
+    
+    # Add PNG logo text below the logo
+    if os.path.exists(logo_text_path):
+        try:
+            # Create image with appropriate width (e.g., 200 points)
+            logo_text_img = Image(str(logo_text_path), width=2.5*inch, height=0.6*inch, kind='proportional')
+            
+            # Center the logo text using a table
+            from reportlab.platypus import Table
+            page_width = letter[0] - doc.leftMargin - doc.rightMargin
+            logo_text_table = Table([[logo_text_img]], colWidths=[page_width])
+            logo_text_table.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            
+            story.append(logo_text_table)
+            story.append(Spacer(1, 0.3*inch))
+            logo_added = True
+            
+        except Exception as e:
+            print(f"Could not add logo text PNG: {e}")
+    
+    # Fallback if no logos were added
+    if not logo_added:
+        company_style = ParagraphStyle(
+            'CompanyName',
+            parent=styles['Normal'],
+            fontSize=18,
+            textColor=colors.HexColor('#D4AF37'),
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold',
+            spaceAfter=20
+        )
+        story.append(Paragraph("PlanPerfect", company_style))
+        story.append(Spacer(1, 0.2*inch))
+    
+    story.append(Paragraph("Interior Design Documentation", title_style))
+    story.append(Spacer(1, 0.2*inch))
     
     # Property information
     unit_rooms = unit_info.get('unit_rooms', 'Residential Unit')
@@ -427,15 +514,30 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         
         # Furniture table with notes
         if room.get('furniture_items'):
-            furniture_data = [['Item', 'Cost', 'Notes']]
+            # Create cell style for wrapping text
+            cell_style = ParagraphStyle(
+                'CellStyle',
+                parent=styles['Normal'],
+                fontSize=9,
+                leading=11
+            )
+            
+            # Header row
+            furniture_data = [[
+                Paragraph('<b>Item</b>', cell_style),
+                Paragraph('<b>Cost</b>', cell_style),
+                Paragraph('<b>Notes</b>', cell_style)
+            ]]
+            
+            # Data rows with Paragraphs for text wrapping
             for item in room['furniture_items']:
                 furniture_data.append([
-                    item['item'], 
-                    item['estimated_cost'],
-                    item.get('notes', '')
+                    Paragraph(item['item'], cell_style),
+                    Paragraph(item['estimated_cost'], cell_style),
+                    Paragraph(item.get('notes', ''), cell_style)
                 ])
             
-            furniture_table = Table(furniture_data, colWidths=[2.5*inch, 1.2*inch, 2.8*inch])
+            furniture_table = Table(furniture_data, colWidths=[2*inch, 1*inch, 3.5*inch])
             furniture_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D4AF37')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -443,6 +545,8 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('TOPPADDING', (0, 1), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
@@ -460,16 +564,29 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
     story.append(Paragraph("5. Budget Breakdown", heading_style))
     story.append(Paragraph(f"<b>Total Estimated Cost:</b> {design_data['budget_breakdown']['total_estimated']}", body_style))
     
-    # By room table
-    budget_data = [['Room', 'Amount', 'Breakdown']]
+    # Create cell style for wrapping text
+    cell_style = ParagraphStyle(
+        'CellStyle',
+        parent=styles['Normal'],
+        fontSize=9,
+        leading=11
+    )
+    
+    # By room table with wrapped text
+    budget_data = [[
+        Paragraph('<b>Room</b>', cell_style),
+        Paragraph('<b>Amount</b>', cell_style),
+        Paragraph('<b>Breakdown</b>', cell_style)
+    ]]
+    
     for item in design_data['budget_breakdown']['by_room']:
         budget_data.append([
-            item['room'], 
-            item['amount'],
-            item.get('breakdown', '')
+            Paragraph(item['room'], cell_style),
+            Paragraph(item['amount'], cell_style),
+            Paragraph(item.get('breakdown', ''), cell_style)
         ])
     
-    budget_table = Table(budget_data, colWidths=[2*inch, 1.5*inch, 3*inch])
+    budget_table = Table(budget_data, colWidths=[1.5*inch, 1.2*inch, 3.8*inch])
     budget_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D4AF37')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -477,8 +594,11 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, 0), 10),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('TOPPADDING', (0, 1), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
         ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
     ]))
     story.append(budget_table)
     story.append(Spacer(1, 0.2*inch))
@@ -538,6 +658,42 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             story.append(Paragraph("<b>Annual Maintenance:</b>", subheading_style))
             for item in maint['annual']:
                 story.append(Paragraph(f"• {item}", body_style))
+    
+    # ========== CHATBOT CTA AT END ==========
+    story.append(Spacer(1, 0.5*inch))
+    
+    # Add separator line
+    from reportlab.platypus import HRFlowable
+    story.append(HRFlowable(
+        width="80%",
+        thickness=1,
+        color=colors.HexColor('#D4AF37'),
+        spaceAfter=20,
+        spaceBefore=20,
+        hAlign='CENTER'
+    ))
+    
+    # Chatbot CTA
+    story.append(Paragraph("Want a More Personalized Design Experience?", chatbot_cta_style))
+    
+    cta_text_style = ParagraphStyle(
+        'CTAText',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor('#555555'),
+        alignment=TA_CENTER,
+        spaceAfter=10
+    )
+    
+    story.append(Paragraph(
+        "Chat with our AI Design Assistant for tailored recommendations, instant answers to your design questions, and personalized style guidance!",
+        cta_text_style
+    ))
+    
+    story.append(Paragraph(
+        '<b>Visit our chatbot at:</b> www.planperfect.com/chatbot',
+        cta_text_style
+    ))
     
     # Build PDF
     doc.build(story)
