@@ -14,8 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from routes.existingHomeOwners.classification import router as style_classification_router
 from routes.newHomeOwners.extraction import router as newHomeOwners_extraction_router
 from routes.existingHomeOwners.imageGeneration import router as image_router
+from routes.newHomeOwners.documentLlm import router as document_llm_router
 
 from Services import DatabaseManager as DM
+from Services import RAGManager as RAG
+from Services import LLMManager as LLM
 from Services import Bootcheck
 
 warnings.simplefilter("ignore", FutureWarning)
@@ -37,6 +40,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(style_classification_router)
 app.include_router(newHomeOwners_extraction_router)
 app.include_router(image_router)
+app.include_router(document_llm_router)
 
 SERVER_START_TIME = datetime.now()
 
@@ -162,6 +166,15 @@ if __name__ == '__main__':
             database_url=os.getenv("FIREBASE_DATABASE_URL"),
             credentials_path=os.getenv("FIREBASE_CREDENTIALS_PATH")
         )
+
+    if not RAG._initialized:
+        RAG.initialize(
+            document_path=os.getenv("RAG_DOCUMENT_PATH"),
+            force_reingest=False
+        )
+
+    if not LLM._initialized:
+        LLM.initialize()
 
     def signal_handler(signum, frame):
         os._exit(0)
