@@ -1,6 +1,6 @@
 # RAGClient.py - For reference only
 from Services import RAGManager as RAG
-from Services import GroqManager as GM
+from Services import LLMManager as LLM
 
 def main():
     if not RAG._initialized:
@@ -9,8 +9,8 @@ def main():
             force_reingest=False
         )
 
-    if not GM._initialized:
-        GM.initialize()
+    if not LLM._initialized:
+        LLM.initialize()
 
     print("="*60)
     print("Type 'quit' to exit, 'clear' to clear conversation history")
@@ -34,7 +34,7 @@ def main():
         try:
             llm_prompt = RAG.retrieve_query(query=user_query)
 
-            assistant_response = GM.chat(llm_prompt)
+            assistant_response = LLM.chat(llm_prompt)
 
             RAG.add_to_history("user", user_query)
             RAG.add_to_history("assistant", assistant_response)

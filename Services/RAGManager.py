@@ -293,9 +293,9 @@ class RAGManagerClass:
                 role = "User" if msg["role"] == "user" else "Assistant"
                 history_str += f"{role}: {msg['content']}\n"
 
-        prompt = f"""I want you to act as a document that I am having a conversation with. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
+        prompt = f"""I want you to act as a document that I am having a conversation with. If I tell you my name, I want you to greet me with my name in your reply. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
 
-    Your responses should be natural and conversational. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". DO NOT answer in markdown, only answer in plain text. Simply answer the question directly as if the information is your own knowledge.
+    Your responses should be natural and conversational. IMPORTANT: You can use the conversation history to answer contextual questions. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". DO NOT answer in markdown, only answer in plain text. Simply answer the question directly as if the information is your own knowledge.
 
     If there is nothing in the context relevant to the question at hand, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!" and stop after that. Refuse to answer any question not about the info. Never break character.
     ------------
@@ -305,10 +305,12 @@ class RAGManagerClass:
     ------------
     REMEMBER:
     - Answer naturally and directly without meta-commentary about the context
+    - Greet the user by name together with the reply if they provide it
     - Do NOT mention "Context 1", "Context 2", or similar references about the context
     - Do NOT say "according to the context", or "based on the provided information" or similar phrases
     - Do NOT answer in markdown, only in plain text.
-    - Use the conversation history to provide context-aware responses
+    - You CAN answer questions about the conversation using the conversation history provided
+    - You CAN use the conversation history to provide context-aware responses
     - Answer in 2-3 concise sentences
     - If there is no relevant information, just say "Hey there! Unfortunately, I only have knowledge on Interior Design Principles. If you have any questions on Interior Design, I'd be happy to help!"
     - Never break character
