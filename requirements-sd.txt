@@ -1,0 +1,7 @@
+# Additional dependencies for SD
+accelerate
+diffusers
+google-generativeai
+safetensors
+transformers
+uvicorn
