@@ -7,6 +7,8 @@ firebaseServiceAccountKey.json
 
 # Ignore system files
 app.log
+rag.log
+rate_limit.log
 
 # Ignore virtual environment directories
 planperfect-env
