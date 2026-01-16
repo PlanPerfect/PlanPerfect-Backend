@@ -15,11 +15,7 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from datetime import datetime
 
-router = APIRouter(
-    prefix="/newHomeOwners/documentLlm", 
-    tags=["LLM PDF Generation"], 
-    dependencies=[Depends(_verify_api_key)]
-)
+router = APIRouter( prefix="/newHomeOwners/documentLlm", tags=["LLM PDF Generation"], dependencies=[Depends(_verify_api_key)])
 
 # Initialize Groq client
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
