@@ -167,3 +167,6 @@ huggingface-hub==0.20.3
 groq>=0.11.0
 reportlab>=4.0.0
 svglib>=1.0.0
+groq>=0.11.0
+reportlab>=4.0.0
+svglib>=1.0.0
