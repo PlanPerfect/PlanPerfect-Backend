@@ -16,6 +16,8 @@ from routes.newHomeOwners.extraction import router as newHomeOwners_extraction_r
 from routes.newHomeOwners.documentLlm import router as document_llm_router
 
 from Services import DatabaseManager as DM
+from Services import RAGManager as RAG
+from Services import LLMManager as LLM
 from Services import Bootcheck
 
 warnings.simplefilter("ignore", FutureWarning)
@@ -162,6 +164,15 @@ if __name__ == '__main__':
             database_url=os.getenv("FIREBASE_DATABASE_URL"),
             credentials_path=os.getenv("FIREBASE_CREDENTIALS_PATH")
         )
+
+    if not RAG._initialized:
+        RAG.initialize(
+            document_path=os.getenv("RAG_DOCUMENT_PATH"),
+            force_reingest=False
+        )
+
+    if not LLM._initialized:
+        LLM.initialize()
 
     def signal_handler(signum, frame):
         os._exit(0)
