@@ -132,7 +132,8 @@ async def detect_furniture(file: UploadFile = File(...)):
             cropped_images.append({
                 "class": class_name,
                 "filename": filename,
-                "confidence": round(item["confidence"])
+                "timestamp": timestamp,
+                "confidence": f"{round(item['confidence'] * 100)}%"
             })
 
         original_image.close()

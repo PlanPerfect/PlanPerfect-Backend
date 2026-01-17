@@ -22,7 +22,8 @@ class Bootcheck:
         "PINECONE_INDEX_NAME",
         "GEMINI_API_KEY",
         "GROQ_API_KEY",
-        "RAG_DOCUMENT_PATH"
+        "RAG_DOCUMENT_PATH",
+        "UNSPLASH_ACCESS_KEY"
     ]
 
     @staticmethod
