@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
 from PIL import Image
 import uuid
 import json
@@ -7,6 +8,20 @@ import torch
 
 from Services.StableDiffusion import pipe
 from Services.LLMGemini import generate_sd_prompt
+
+def run_stable_diffusion(init_image: Image.Image, prompt: str):
+    return pipe(
+        prompt=prompt + ", real interior photograph, natural proportions",
+        negative_prompt=(
+            "cartoon, anime, illustration, painting, sketch, lowres, blurry, "
+            "distorted geometry, warped walls, bent lines, duplicated furniture, "
+            "bad perspective, fisheye distortion, oversharpened, noise, jpeg artifacts"
+        ),
+        image=init_image,
+        strength=0.45,
+        guidance_scale=7.5,
+        num_inference_steps=20
+    ).images[0]
 
 def extract_json(text: str) -> dict:
     """
@@ -73,7 +88,6 @@ router = APIRouter(prefix="/image", tags=["Image Generation"])
 async def generate_image(
     file: UploadFile = File(...),
     styles: str = Form(...),
-    preferences: str = Form(...)
 ):
     try:
         # Save input image
@@ -90,7 +104,7 @@ async def generate_image(
 
         for attempt in range(max_retries):
             try:
-                llm_response = generate_sd_prompt(styles, preferences)
+                llm_response = generate_sd_prompt(styles)
                 parsed = extract_json(llm_response)
                 break
             except ValueError as e:
@@ -105,30 +119,20 @@ async def generate_image(
                     break
 
         prompt = parsed["prompt"]
-        negative_prompt = parsed["negative"]
 
         # Ensure prompts aren't empty
         if not prompt or prompt.strip() == "":
             prompt = "detailed, high quality, professional photograph"
-        if not negative_prompt:
-            negative_prompt = "blurry, low quality, distorted"
+        
 
         torch.cuda.empty_cache()
 
-        if init_image.mode != "RGB":
-            init_image = init_image.convert("RGB")
+        # if init_image.mode != "RGB":
+        #     init_image = init_image.convert("RGB")
         init_image = init_image.resize((512, 512))
 
         # Run Stable Diffusion img2img
-        result = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=init_image.resize((512, 512)),
-            strength=0.35,
-            guidance_scale=7.0,
-            num_inference_steps=15
-        ).images[0]
-
+        result = await run_in_threadpool( run_stable_diffusion, init_image, prompt)
         output_path = f"static/output_{uuid.uuid4()}.png"
         result.save(output_path)
 
