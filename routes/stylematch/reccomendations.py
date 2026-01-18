@@ -50,6 +50,12 @@ async def get_recommendations(request: RecommendationRequest):
                 timeout=10.0
             )
 
+            if response.status_code == 429:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Rate limit exceeded. Please try again later."
+                )
+
             if response.status_code != 200:
                 raise HTTPException(
                     status_code=response.status_code,
@@ -83,5 +89,7 @@ async def get_recommendations(request: RecommendationRequest):
         raise HTTPException(status_code=504, detail="Request to Unsplash timed out")
     except httpx.RequestError as e:
         raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
