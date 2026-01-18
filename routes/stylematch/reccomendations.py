@@ -56,6 +56,12 @@ async def get_recommendations(request: RecommendationRequest):
                     detail="Rate limit exceeded. Please try again later."
                 )
 
+            if response.status_code == 403:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Rate limit exceeded. Please try again later."
+                )
+
             if response.status_code != 200:
                 raise HTTPException(
                     status_code=response.status_code,

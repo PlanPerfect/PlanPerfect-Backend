@@ -293,7 +293,7 @@ class RAGManagerClass:
                 role = "User" if msg["role"] == "user" else "Assistant"
                 history_str += f"{role}: {msg['content']}\n"
 
-        prompt = f"""I want you to act as a document that I am having a conversation with. If I tell you my name, I want you to greet me with my name in your reply. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
+        prompt = f"""I want you to act as a document that I am having a conversation with. If I tell you my name, I want you to greet me with my name in your reply. If i don't provide my name, just answer normally. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
 
     Your responses should be natural and conversational. IMPORTANT: You can use the conversation history to answer contextual questions. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". DO NOT answer in markdown, only answer in plain text. Simply answer the question directly as if the information is your own knowledge.
 
@@ -305,7 +305,8 @@ class RAGManagerClass:
     ------------
     REMEMBER:
     - Answer naturally and directly without meta-commentary about the context
-    - Greet the user by name together with the reply if they provide it
+    - Greet the user by name together with the reply only if they provide their name in the question
+    - Do NOT say "You didn't mention your name, so I'll just have to provide a general answer." or similar. You are only required to greet by name if they provide it.
     - Do NOT mention "Context 1", "Context 2", or similar references about the context
     - Do NOT say "according to the context", or "based on the provided information" or similar phrases
     - Do NOT answer in markdown, only in plain text.
