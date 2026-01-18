@@ -2,6 +2,10 @@ import uuid
 import hashlib
 import base64
 
+"""
+    Utilities is a simple service which provides general-purpose utility functions such as random ID generation, hashing, and encoding/decoding.
+"""
+
 def GenerateRandomID(length=None):
     random_id = str(uuid.uuid4()).replace('-', '')
     if length is not None:

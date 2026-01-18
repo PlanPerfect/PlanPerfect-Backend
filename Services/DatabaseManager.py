@@ -6,6 +6,11 @@ from typing import Optional, Any
 from Services import Logger
 
 class AutoDict(dict):
+    """
+        DatabaseManager is a service which behaves as a DBMS for Firebase Realtime Database.
+        It allows for modifying data in-memory with nested dictionary structures, and syncing changes after modifications.
+        To support real-time updates, in-memory data is automatically updated when changes are made in the Firebase RTDB console if CloudSync is enabled.
+    """
     def __missing__(self, key):
         value = self[key] = type(self)()
         return value

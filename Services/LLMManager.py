@@ -14,6 +14,12 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+"""
+    LLMManager is a service which serves as a high-level wrapper for all LLM calls, rate-limit management and smart model selection.
+    It supports both Groq and Gemini LLMs, automatically switching between models based on rate-limit status.
+    It handles rate-limit parsing, cooldown tracking, logging, and provides a unified chat pipeline which integrates with RAGManager.
+"""
+
 class RateLimitCapturingClient(httpx.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

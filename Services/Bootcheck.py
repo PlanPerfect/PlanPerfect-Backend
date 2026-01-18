@@ -6,6 +6,11 @@ from firebase_admin import credentials, db
 from firebase_admin.exceptions import FirebaseError
 
 class Bootcheck:
+    """
+        Bootcheck is a service which runs on system startup.
+        It checks for the presence and validity of specified environment variables & important files.
+        If any checks fail, it prints an error message and aborts the startup process.
+    """
     REQUIRED_ENV_VARS = [ # IMPORTANT: add all .env variable keys here
         "PORT",
         "DEV_MODE",

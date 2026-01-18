@@ -11,6 +11,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+"""
+    RAGManager is a service that encapsulates Retrieval-Augmented Generation (RAG) capabilities into a unified pipeline.
+    It manages document ingestion, text chunking, embedding generation, vector storage, retrieval and prompt construction.
+    RAGManager provides cobversation history management to enable context-aware interactions with LLMs, and is heavily integrated with LLMManager.
+"""
+
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")

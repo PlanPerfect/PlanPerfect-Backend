@@ -2,6 +2,11 @@
 from Services import RAGManager as RAG
 from Services import LLMManager as LLM
 
+"""
+    RAGClient is a simple command-line interface to interact with the RAG and LLM services.
+    It serves as a simple simulation of a chatbot interface, allowing for testing retrieval and generation capabilities.
+"""
+
 def main():
     if not RAG._initialized:
         RAG.initialize(

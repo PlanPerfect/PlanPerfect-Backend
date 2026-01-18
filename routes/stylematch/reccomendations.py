@@ -48,7 +48,7 @@ async def get_recommendations(request: RecommendationRequest):
                 params=params,
                 headers={"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"},
                 timeout=10.0
-            )
+            ) # call Unsplash API to get style-matched images
 
             if response.status_code == 429:
                 return JSONResponse(
