@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from middleware.auth import _verify_api_key
 from gradio_client import Client, handle_file
 from PIL import Image
-import pillow_avif
+import pillow_avif # DONT REMOVE: this import is not unused, its internally used by Pillow.
 import tempfile
 import os
 import asyncio
@@ -23,15 +23,14 @@ executor = ThreadPoolExecutor(max_workers=8)
 
 
 def run_furniture_detection(file_path: str):
-    """Blocking function to run furniture detection with extended timeout"""
     client = Client(
         "Joshua-is-tired/PlanPerfect-Furniture-Detection",
         httpx_kwargs={
             "timeout": httpx.Timeout(
-                timeout=300.0,  # 5 minutes total
-                connect=60.0,   # 1 minute to connect
-                read=240.0,     # 4 minutes to read
-                write=60.0      # 1 minute to write
+                timeout=300.0,
+                connect=60.0,
+                read=240.0,
+                write=60.0
             )
         }
     )
@@ -44,15 +43,6 @@ def run_furniture_detection(file_path: str):
 
 @router.post("/detect-furniture")
 async def detect_furniture(file: UploadFile = File(...)):
-    """
-    Detect furniture in the uploaded room image.
-
-    Args:
-        file: Uploaded room image file
-
-    Returns:
-        JSON response with detected furniture items and their confidence scores
-    """
     tmp_file_path = None
     png_file_path = None
 
@@ -141,9 +131,7 @@ async def detect_furniture(file: UploadFile = File(...)):
         return JSONResponse(
             status_code=200,
             content={
-                "success": True,
-                "detections": detection_data,
-                "images": cropped_images
+                "detections": cropped_images
             }
         )
 
@@ -151,8 +139,7 @@ async def detect_furniture(file: UploadFile = File(...)):
         return JSONResponse(
             status_code=504,
             content={
-                "success": False,
-                "error": "Detection service timed out. Please try with a smaller image."
+                "error": "ERROR: Service timeout. Please try again with a smaller image."
             }
         )
 
@@ -160,7 +147,6 @@ async def detect_furniture(file: UploadFile = File(...)):
         return JSONResponse(
             status_code=500,
             content={
-                "success": False,
                 "error": str(e)
             }
         )
