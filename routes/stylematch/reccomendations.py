@@ -51,21 +51,15 @@ async def get_recommendations(request: RecommendationRequest):
             )
 
             if response.status_code == 429:
-                raise HTTPException(
+                return JSONResponse(
                     status_code=429,
-                    detail="Rate limit exceeded. Please try again later."
+                    content={ "error": "UERROR: Too many requests. Please try again later." }
                 )
 
             if response.status_code == 403:
-                raise HTTPException(
+                return JSONResponse(
                     status_code=403,
-                    detail="Rate limit exceeded. Please try again later."
-                )
-
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail="Failed to fetch recommendations from Unsplash"
+                    content={ "error": "UERROR: Too many requests. Please try again later." }
                 )
 
             data = response.json()
@@ -86,16 +80,9 @@ async def get_recommendations(request: RecommendationRequest):
                     "match": random.randint(85, 99)
                 })
 
-            return JSONResponse(content={
-                "success": True,
-                "recommendations": recommendations
-            })
+            return JSONResponse(status_code=200, content={ "recommendations": recommendations })
 
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Request to Unsplash timed out")
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
-    except HTTPException:
-        raise
+        return JSONResponse(status_code=504, content={ "error": "ERROR: Service timeout. Please try again." })
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        return JSONResponse(status_code=500, content={ "error": str(e) })
