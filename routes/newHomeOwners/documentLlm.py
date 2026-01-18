@@ -18,7 +18,6 @@ from datetime import datetime
 from pathlib import Path
 
 from Services import RAGManager as RAG
-from Services.SanitizePdf import SanitizeTextForPDF 
 
 router = APIRouter(prefix="/newHomeOwners/documentLlm", tags=["LLM PDF Generation"], dependencies=[Depends(_verify_api_key)])
 
@@ -242,7 +241,7 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
                     "content": prompt
                 }
             ],
-            model="openai/gpt-oss-120b",
+            model="llama-3.3-70b-versatile",
             temperature=0.7,
             max_tokens=4096,
             response_format={"type": "json_object"}
@@ -250,12 +249,26 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
         
         # Extract response
         response_text = chat_completion.choices[0].message.content
+
+        if chat_completion.model.startswith("gpt"):
+            response_text_cleaned = (
+                response_text
+                .replace("\u202f", " ")
+                .replace("–", "-")
+                .replace("—", "-")
+                .replace("“", '"')
+                .replace("”", '"')
+                .replace("‘", "'")
+                .replace("’", "'")
+            )
+        else:
+            response_text_cleaned = response_text
         
         # Parse JSON response
         if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
+            response_text = response_text_cleaned.split("```json")[1].split("```")[0].strip()
         elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
+            response_text = response_text_cleaned.split("```")[1].split("```")[0].strip()
         
         design_data = json.loads(response_text)
         
@@ -553,63 +566,63 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
     
     pref_style = preferences.get('style', 'Not specified')
     if pref_style and pref_style != 'Not selected':
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>Selected Style:</b> {pref_style}"), body_style))
+        story.append(Paragraph(f"<b>Selected Style:</b> {pref_style}", body_style))
     else:
         story.append(Paragraph(f"<b>Design Style(s):</b> Open to recommendations", body_style))
     
     if preferences.get('colors') and len(preferences['colors']) > 0:
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>Suggested Colors:</b> {', '.join(preferences['colors'])}"), body_style))
+        story.append(Paragraph(f"<b>Suggested Colors:</b> {', '.join(preferences['colors'])}", body_style))
     else:
         story.append(Paragraph(f"<b>Color Palette:</b> Open to designer recommendations", body_style))
     
     if preferences.get('materials') and len(preferences['materials']) > 0:
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>Suggested Materials:</b> {', '.join(preferences['materials'])}"), body_style))
+        story.append(Paragraph(f"<b>Suggested Materials:</b> {', '.join(preferences['materials'])}", body_style))
     else:
         story.append(Paragraph(f"<b>Key Materials:</b> Open to designer recommendations", body_style))
     
     if preferences.get('special_requirements') and preferences['special_requirements'].strip():
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>Special Requirements:</b> {preferences['special_requirements']}"), body_style))
+        story.append(Paragraph(f"<b>Special Requirements:</b> {preferences['special_requirements']}", body_style))
     
     story.append(Spacer(1, 0.3*inch))
 
     # ========== EXECUTIVE SUMMARY ==========
     story.append(Paragraph("1. Executive Summary", heading_style))
-    story.append(Paragraph(SanitizeTextForPDF(design_data['executive_summary']['project_overview']), body_style))
+    story.append(Paragraph(design_data['executive_summary']['project_overview'], body_style))
     story.append(Paragraph("<b>Design Philosophy:</b>", subheading_style))
-    story.append(Paragraph(SanitizeTextForPDF(design_data['executive_summary']['design_philosophy']), body_style))
+    story.append(Paragraph(design_data['executive_summary']['design_philosophy'], body_style))
     story.append(Paragraph("<b>Key Recommendations:</b>", subheading_style))
     for rec in design_data['executive_summary']['key_recommendations']:
-        story.append(Paragraph(SanitizeTextForPDF(f"• {rec}"), body_style))
+        story.append(Paragraph(f"• {rec}", body_style))
     story.append(Spacer(1, 0.3*inch))
     
     # ========== SPACE ANALYSIS ==========
     story.append(Paragraph("2. Space Analysis", heading_style))
-    story.append(Paragraph(SanitizeTextForPDF(f"<b>Total Area:</b> {design_data['space_analysis'].get('total_area', 'N/A')}"), body_style))
+    story.append(Paragraph(f"<b>Total Area:</b> {design_data['space_analysis'].get('total_area', 'N/A')}", body_style))
     story.append(Paragraph("<b>Room Breakdown:</b>", subheading_style))
     for room in design_data['space_analysis']['room_breakdown']:
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>{room['room_name']}:</b> {room['analysis']}"), body_style))
+        story.append(Paragraph(f"<b>{room['room_name']}:</b> {room['analysis']}", body_style))
     story.append(Spacer(1, 0.3*inch))
     
     # ========== DESIGN CONCEPT ==========
     story.append(Paragraph("3. Design Concept", heading_style))
-    story.append(Paragraph(SanitizeTextForPDF(f"<b>Style Direction:</b> {design_data['design_concept']['style_direction']}"), body_style))
+    story.append(Paragraph(f"<b>Style Direction:</b> {design_data['design_concept']['style_direction']}", body_style))
     
     story.append(Paragraph("<b>Color Palette:</b>", subheading_style))
     for color in design_data['design_concept']['color_palette']:
-        story.append(Paragraph(SanitizeTextForPDF(f"• {color}"), body_style))
+        story.append(Paragraph(f"• {color}", body_style))
     
     story.append(Paragraph("<b>Materials:</b>", subheading_style))
     for material in design_data['design_concept']['materials']:
-        story.append(Paragraph(SanitizeTextForPDF(f"• {material}"), body_style))
+        story.append(Paragraph(f"• {material}", body_style))
     
-    story.append(Paragraph(SanitizeTextForPDF(f"<b>Lighting Strategy:</b> {design_data['design_concept']['lighting_strategy']}"), body_style))
+    story.append(Paragraph(f"<b>Lighting Strategy:</b> {design_data['design_concept']['lighting_strategy']}", body_style))
     story.append(PageBreak())
     
     # ========== ROOM RECOMMENDATIONS ==========
     story.append(Paragraph("4. Room-Specific Recommendations", heading_style))
     for room in design_data['room_recommendations']:
-        story.append(Paragraph(SanitizeTextForPDF(room['room_name']), subheading_style))
-        story.append(Paragraph(SanitizeTextForPDF(room['design_approach']), body_style))
+        story.append(Paragraph(room['room_name'], subheading_style))
+        story.append(Paragraph(room['design_approach'], body_style))
         
         # Furniture table with notes
         if room.get('furniture_items'):
@@ -631,9 +644,9 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             # Data rows with Paragraphs for text wrapping
             for item in room['furniture_items']:
                 furniture_data.append([
-                    Paragraph(SanitizeTextForPDF(item['item']), cell_style),
-                    Paragraph(SanitizeTextForPDF(item['estimated_cost']), cell_style),
-                    Paragraph(SanitizeTextForPDF(item.get('notes', '')), cell_style)
+                    Paragraph(item['item'], cell_style),
+                    Paragraph(item['estimated_cost'], cell_style),
+                    Paragraph(item.get('notes', ''), cell_style)
                 ])
             
             furniture_table = Table(furniture_data, colWidths=[2*inch, 1*inch, 3.5*inch])
@@ -653,16 +666,16 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             story.append(furniture_table)
             story.append(Spacer(1, 0.2*inch))
         
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>Color Specifications:</b> {room['color_specs']}"), body_style))
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>Lighting:</b> {room['lighting']}"), body_style))
+        story.append(Paragraph(f"<b>Color Specifications:</b> {room['color_specs']}", body_style))
+        story.append(Paragraph(f"<b>Lighting:</b> {room['lighting']}", body_style))
         story.append(Spacer(1, 0.2*inch))
     
     story.append(PageBreak())
     
     # ========== BUDGET BREAKDOWN ==========
     story.append(Paragraph("5. Estimated Budget Breakdown", heading_style))
-    story.append(Paragraph(SanitizeTextForPDF(f"<b>Total Estimated Cost:</b> {design_data['budget_breakdown']['total_estimated']}"), body_style))
-    story.append(Paragraph(SanitizeTextForPDF(f"<b>Buffer Amount:</b> {design_data['budget_breakdown']['buffer_amount']}"), body_style))
+    story.append(Paragraph(f"<b>Total Estimated Cost:</b> {design_data['budget_breakdown']['total_estimated']}", body_style))
+    story.append(Paragraph(f"<b>Buffer Amount:</b> {design_data['budget_breakdown']['buffer_amount']}", body_style))
     
     # Create cell style for wrapping text
     cell_style = ParagraphStyle(
@@ -681,9 +694,9 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
     
     for item in design_data['budget_breakdown']['by_room']:
         budget_data.append([
-            Paragraph(SanitizeTextForPDF(item['room']), cell_style),
-            Paragraph(SanitizeTextForPDF(item['amount']), cell_style),
-            Paragraph(SanitizeTextForPDF(item.get('breakdown', '')), cell_style)
+            Paragraph(item['room'], cell_style),
+            Paragraph(item['amount'], cell_style),
+            Paragraph(item.get('breakdown', ''), cell_style)
         ])
     
     budget_table = Table(budget_data, colWidths=[1.5*inch, 1.2*inch, 3.8*inch])
@@ -705,37 +718,37 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
     
     story.append(Paragraph("<b>Priority Items (Must-Have):</b>", subheading_style))
     for item in design_data['budget_breakdown']['priority_items']:
-        story.append(Paragraph(SanitizeTextForPDF(f"• {item}"), body_style))
+        story.append(Paragraph(f"• {item}", body_style))
     
     story.append(Paragraph("<b>Optional Items (Nice-to-Have):</b>", subheading_style))
     for item in design_data['budget_breakdown'].get('optional_items', []):
-        story.append(Paragraph(SanitizeTextForPDF(f"• {item}"), body_style))
+        story.append(Paragraph(f"• {item}", body_style))
     
     if design_data['budget_breakdown'].get('cost_saving_tips'):
         story.append(Paragraph("<b>Cost-Saving Tips:</b>", subheading_style))
         for tip in design_data['budget_breakdown']['cost_saving_tips']:
-            story.append(Paragraph(SanitizeTextForPDF(f"• {tip}"), body_style))
+            story.append(Paragraph(f"• {tip}", body_style))
     
     story.append(PageBreak())
     
     # ========== TIMELINE ==========
     story.append(Paragraph("6. Estimated Implementation Timeline", heading_style))
     if design_data['timeline'].get('total_duration'):
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>Estimate Total Project Duration:</b> {design_data['timeline']['total_duration']}"), body_style))
+        story.append(Paragraph(f"<b>Estimate Total Project Duration:</b> {design_data['timeline']['total_duration']}", body_style))
     
     for phase in design_data['timeline']['phases']:
-        story.append(Paragraph(SanitizeTextForPDF(f"<b>{phase['phase']}</b> ({phase['duration']})"), subheading_style))
+        story.append(Paragraph(f"<b>{phase['phase']}</b> ({phase['duration']})", subheading_style))
         if phase.get('budget_allocation'):
-            story.append(Paragraph(SanitizeTextForPDF(f"Estimated Budget: {phase['budget_allocation']}"), body_style))
+            story.append(Paragraph(f"Estimated Budget: {phase['budget_allocation']}", body_style))
         story.append(Paragraph("<b>Tasks:</b>", body_style))
         for task in phase['tasks']:
-            story.append(Paragraph(SanitizeTextForPDF(f"• {task}"), body_style))
+            story.append(Paragraph(f"• {task}", body_style))
         story.append(Spacer(1, 0.1*inch))
     
     # ========== NEXT STEPS ==========
     story.append(Paragraph("7. Next Steps", heading_style))
     for step in design_data['next_steps']:
-        story.append(Paragraph(SanitizeTextForPDF(f"• {step}"), body_style))
+        story.append(Paragraph(f"• {step}", body_style))
     
     # ========== MAINTENANCE GUIDE ==========
     if design_data.get('maintenance_guide'):
@@ -747,17 +760,17 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         if maint.get('daily'):
             story.append(Paragraph("<b>Daily Maintenance:</b>", subheading_style))
             for item in maint['daily']:
-                story.append(Paragraph(SanitizeTextForPDF(f"• {item}"), body_style))
+                story.append(Paragraph(f"• {item}", body_style))
         
         if maint.get('monthly'):
             story.append(Paragraph("<b>Monthly Maintenance:</b>", subheading_style))
             for item in maint['monthly']:
-                story.append(Paragraph(SanitizeTextForPDF(f"• {item}"), body_style))
+                story.append(Paragraph(f"• {item}", body_style))
         
         if maint.get('annual'):
             story.append(Paragraph("<b>Annual Maintenance:</b>", subheading_style))
             for item in maint['annual']:
-                story.append(Paragraph(SanitizeTextForPDF(f"• {item}"), body_style))
+                story.append(Paragraph(f"• {item}", body_style))
     
     # ========== CHATBOT CTA AT END ==========
     story.append(Spacer(1, 0.5*inch))
