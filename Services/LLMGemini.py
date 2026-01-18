@@ -28,7 +28,7 @@ def extract_json(text: str) -> dict:
 
 # ─── Gemini setup ─────────────────────────────────────────────
 
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 model = genai.GenerativeModel(
     model_name="gemini-2.5-flash",
@@ -36,30 +36,29 @@ model = genai.GenerativeModel(
         "You generate Stable Diffusion prompts. "
         "Use short, comma-separated visual tags. "
         "Focus on materials, lighting, camera, and style. "
-        "Return valid JSON only. "
+        "Return valid JSON only with no extra text. "
+        "Keep prompts concise (under 120 words total). "
         "If unsafe, return {\"prompt\":\"\",\"negative\":\"\"}."
     )
 )
 
-def generate_sd_prompt(styles: str, preferences: str) -> str:
+def generate_sd_prompt(styles: str) -> str:
     prompt = f"""
-Styles: {styles}
-Preferences: {preferences}
+        Styles: {styles}
 
-Generate:
-1. Stable Diffusion prompt (comma-separated tags)
-2. Negative prompt
+        Generate a Stable Diffusion prompt and negative prompt.
 
-Return JSON only:
-{{ "prompt": "...", "negative": "..." }}
-"""
+        Return ONLY valid JSON (no markdown, no extra text):
+        {{ "prompt": "...", "negative": "..." }}
+
+        Keep both prompts concise.
+    """
 
     response = model.generate_content(
         prompt,
         generation_config={
-            "temperature": 0.4,
-            "max_output_tokens": 512,
-            # optional but helpful
+            "temperature": 0.3,
+            "max_output_tokens": 2048,  # Increased from 512
             "response_mime_type": "application/json"
         }
     )
