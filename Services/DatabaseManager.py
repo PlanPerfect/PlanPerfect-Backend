@@ -37,7 +37,7 @@ class DatabaseManagerClass:
             cls._instance._app = None
             cls._instance.data = AutoDict()
             cls._instance._listener = None
-            cls._instance._cloudsync_enabled = False
+            cls._instance._cloudsync_enabled = False # enable real-time sync with Firebase RTDB console
             cls._instance._first_sync = True
         return cls._instance
 
@@ -83,7 +83,7 @@ class DatabaseManagerClass:
             raise RuntimeError("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
 
         try:
-            snapshot = self._db_ref.get()
+            snapshot = self._db_ref.get() # fetch database snapshot
             if snapshot is not None:
                 self.data = self._convert_to_autodict(snapshot)
             else:
@@ -125,7 +125,7 @@ class DatabaseManagerClass:
         else:
             return data
 
-    def save(self) -> bool:
+    def save(self) -> bool: # save in-memory data back to Firebase RTDB
         if not self._initialized:
             Logger.log("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
             raise RuntimeError("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
@@ -154,7 +154,7 @@ class DatabaseManagerClass:
         else:
             return data
 
-    def peek(self, path: list) -> Any:
+    def peek(self, path: list) -> Any: # peek at value at given path without modifying data
         if not self._initialized:
             Logger.log("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
             raise RuntimeError("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
@@ -171,7 +171,7 @@ class DatabaseManagerClass:
             Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to peek at path {path}. Error: {e}")
             return None
 
-    def set_value(self, path: list, value: Any) -> bool:
+    def set_value(self, path: list, value: Any) -> bool: # set value at given path
         if not self._initialized:
             Logger.log("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
             raise RuntimeError("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
@@ -192,7 +192,7 @@ class DatabaseManagerClass:
             Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to set value at path {path}. Error: {e}")
             return False
 
-    def destroy(self, path: list) -> bool:
+    def destroy(self, path: list) -> bool: # delete value at given path
         if not self._initialized:
             Logger.log("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")
             raise RuntimeError("[DATABASE MANAGER] - ERROR: DatabaseManager not initialized. Call DM.initialize() first.")

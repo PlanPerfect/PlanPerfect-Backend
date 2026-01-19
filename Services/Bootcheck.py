@@ -32,7 +32,7 @@ class Bootcheck:
     ]
 
     @staticmethod
-    def check_env_file():
+    def check_env_file(): # check if .env file exists
         if not os.path.exists('.env'):
             print("BOOTCHECK - ERROR: Environment file not found. Please create a .env file with the required environment variables.\n")
             return False
@@ -40,7 +40,7 @@ class Bootcheck:
         return True
 
     @staticmethod
-    def check_env_variables():
+    def check_env_variables(): # check if all required env vars are set
         missing_vars = []
 
         for var in Bootcheck.REQUIRED_ENV_VARS:
@@ -54,7 +54,7 @@ class Bootcheck:
         return True
 
     @staticmethod
-    def check_firebase_key_file():
+    def check_firebase_key_file(): # check if firebase key file exists
         creds_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
 
         if not os.path.exists(creds_path):
@@ -64,7 +64,7 @@ class Bootcheck:
         return True
 
     @staticmethod
-    def check_rag_context_file():
+    def check_rag_context_file(): # check if RAG context document file exists
         rag_path = os.getenv("RAG_DOCUMENT_PATH")
 
         if not os.path.exists(rag_path):
@@ -74,7 +74,7 @@ class Bootcheck:
         return True
 
     @staticmethod
-    def validate_firebase_credentials():
+    def validate_firebase_credentials(): # validate firebase credentials by attempting a test read
         database_url = os.getenv("FIREBASE_DATABASE_URL")
         creds_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
 
