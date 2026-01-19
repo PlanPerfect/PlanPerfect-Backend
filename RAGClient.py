@@ -1,4 +1,4 @@
-# RAGClient.py - For reference only
+# RAGClient.py - For reference only. This cannot be used for production.
 from Services import RAGManager as RAG
 from Services import LLMManager as LLM
 
@@ -10,8 +10,8 @@ from Services import LLMManager as LLM
 def main():
     if not RAG._initialized:
         RAG.initialize(
-            document_path="rag_context.txt",
-            force_reingest=False
+            document_path="rag_context.txt", # ingest the rag_context.txt document
+            force_reingest=False # dont ingest if already ingested before
         )
 
     if not LLM._initialized:
@@ -37,12 +37,12 @@ def main():
             continue
 
         try:
-            llm_prompt = RAG.retrieve_query(query=user_query)
+            llm_prompt = RAG.retrieve_query(query=user_query) # retrieve prompt with context from RAG
 
-            assistant_response = LLM.chat(llm_prompt)
+            assistant_response = LLM.chat(llm_prompt) # get response from LLM
 
-            RAG.add_to_history("user", user_query)
-            RAG.add_to_history("assistant", assistant_response)
+            RAG.add_to_history("user", user_query) # add user query to conversation history
+            RAG.add_to_history("assistant", assistant_response) # add assistant response to conversation history
 
             print(f"\n🤖 Assistant: {assistant_response}")
 
