@@ -291,37 +291,42 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
                     "content": prompt
                 }
             ],
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             temperature=0.7,
-            max_tokens=3072,
+            max_tokens=5120,
             response_format={"type": "json_object"}
         )
         
         # Extract response content
         response_text = chat_completion.choices[0].message.content
 
-        # Clean up encoding issues for GPT models in response text
-        if chat_completion.model.startswith("gpt"):
-            response_text_cleaned = (
-                response_text
-                .replace("\u202f", " ")
-                .replace("–", "-")
-                .replace("—", "-")
-                .replace("“", '"')
-                .replace("”", '"')
-                .replace("‘", "'")
-                .replace("’", "'")
-            )
+        # Always clean up encoding issues regardless of model
+        response_text_cleaned = (
+            response_text
+            .replace("\u202f", " ")
+            .replace("\u00a0", " ")
+            .replace("–", "-")
+            .replace("—", "-")
+            .replace("'", "'")
+            .replace("'", "'")
+            .replace("‑", "-")
+            .replace("\u2011", "-")
+            .replace("×", "x")
+            .replace("\u00d7", "x")
+            .replace("■", "")
+            .replace("\u25a0", "")
+        )
+
+        # Extract JSON from code blocks if present
+        if "```json" in response_text_cleaned:
+            json_str = response_text_cleaned.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text_cleaned:
+            json_str = response_text_cleaned.split("```")[1].split("```")[0].strip()
         else:
-            response_text_cleaned = response_text
-        
-        # Parse JSON response into a structured dictionary
-        if "```json" in response_text:
-            response_text = response_text_cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text_cleaned.split("```")[1].split("```")[0].strip()
-        
-        design_data = json.loads(response_text)
+            json_str = response_text_cleaned
+
+        # Parse the fully cleaned JSON
+        design_data = json.loads(json_str)
         
         # Apply conversation overrides 
         final_preferences, final_budget = apply_conversation_overrides(
