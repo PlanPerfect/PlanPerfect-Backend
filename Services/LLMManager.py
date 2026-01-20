@@ -14,7 +14,13 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-class RateLimitCapturingClient(httpx.Client):
+"""
+    LLMManager is a service which serves as a high-level wrapper for all LLM calls, rate-limit management and smart model selection.
+    It supports both Groq and Gemini LLMs, automatically switching between models based on rate-limit status.
+    It handles rate-limit parsing, cooldown tracking, logging, and provides a unified chat pipeline which integrates with RAGManager.
+"""
+
+class RateLimitCapturingClient(httpx.Client): # custom HTTPX client to capture x-rate-limit response headers
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.last_response_headers = {}
@@ -24,7 +30,7 @@ class RateLimitCapturingClient(httpx.Client):
         self.last_response_headers = dict(response.headers)
         return response
 
-class _RateLimitManager:
+class _RateLimitManager: # manages rate limit info for a single model
     def __init__(self):
         self.requests_remaining: Optional[int] = None
         self.tokens_remaining: Optional[int] = None
@@ -60,7 +66,7 @@ class _RateLimitManager:
             Logger.log(f"[LLM MANAGER] - Error parsing rate limit headers: {str(e)}")
 
     @staticmethod
-    def _parse_retry_after(retry_after: Optional[str]) -> Optional[float]:
+    def _parse_retry_after(retry_after: Optional[str]) -> Optional[float]: # parse Retry-After header to seconds
         if not retry_after:
             return None
         s = str(retry_after).strip().lower()
@@ -81,7 +87,7 @@ class _RateLimitManager:
             pass
         return None
 
-    def _parse_reset_time(self, reset_str: str) -> datetime:
+    def _parse_reset_time(self, reset_str: str) -> datetime: # parse reset time string to datetime
         try:
             s = str(reset_str).strip().lower()
 
@@ -107,7 +113,7 @@ class _RateLimitManager:
             Logger.log(f"[LLM MANAGER] - Error parsing reset time '{reset_str}': {str(e)}")
             return datetime.now() + timedelta(seconds=60)
 
-    def get_wait_time(self) -> float:
+    def get_wait_time(self) -> float: # get wait time in seconds until rate limits reset
         now = datetime.now()
         wait_times = []
 
@@ -126,7 +132,7 @@ class _RateLimitManager:
 
         return 60.0
 
-class _ModelManager:
+class _ModelManager: # manages available models and their rate-limit status. Backbone of the smart model-switching mechanism.
     MODELS = [
         {"name": "llama-3.3-70b-versatile", "provider": "groq"},      # 30 RPM, 1K RPD, 12K TPM, 100K TPD
         {"name": "llama-3.1-8b-instant", "provider": "groq"},         # 30 RPM, 14.4K RPD, 6K TPM, 500K TPD
@@ -142,7 +148,7 @@ class _ModelManager:
         }
         self.rate_limit_cooldowns: Dict[str, datetime] = {}
 
-    def get_current_model(self) -> Dict:
+    def get_current_model(self) -> Dict: # get the current available model, switch if rate-limited
         original_index = self.current_model_index
         attempts = 0
 
@@ -160,7 +166,7 @@ class _ModelManager:
 
         return self.MODELS[self.current_model_index]
 
-    def _model_available(self, model_name: str) -> bool:
+    def _model_available(self, model_name: str) -> bool: # check if model is not currently rate-limited
         if model_name not in self.rate_limit_cooldowns:
             return True
 
@@ -171,7 +177,7 @@ class _ModelManager:
 
         return False
 
-    def _get_model_with_shortest_cd(self) -> Dict:
+    def _get_model_with_shortest_cd(self) -> Dict: # get model with shortest cooldown time
         if not self.rate_limit_cooldowns:
             return self.MODELS[0]
 
@@ -187,11 +193,11 @@ class _ModelManager:
 
         return self.MODELS[0]
 
-    def update_rate_limit_info(self, model_name: str, headers: Dict[str, str]):
+    def update_rate_limit_info(self, model_name: str, headers: Dict[str, str]): # update for tracking and logging
         if model_name in self.model_rate_limits:
             self.model_rate_limits[model_name].update_headers(headers)
 
-    def mark_rate_limited(self, model_name: str, retry_after: Optional[str] = None):
+    def mark_rate_limited(self, model_name: str, retry_after: Optional[str] = None): # mark model as rate-limited and set cooldown
         now = datetime.now()
 
         cooldown_time = None
@@ -212,10 +218,10 @@ class _ModelManager:
 
         self.current_model_index = (self.current_model_index + 1) % len(self.MODELS)
 
-    def all_models_rate_limited(self) -> bool:
+    def all_models_rate_limited(self) -> bool: # DANGER: all models rate-limited
         return len(self.rate_limit_cooldowns) >= len(self.MODELS)
 
-class LLMManagerClass:
+class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and model-switching
     _instance = None
     FALLBACK_MESSAGE = "I apologize, but I'm currently experiencing high traffic and all available models are rate-limited. Please try again in a moment."
 
@@ -240,7 +246,7 @@ class LLMManagerClass:
 
         print(f"LLM MANAGER INITIALIZED.\n")
 
-    def chat(self, prompt: str) -> str:
+    def chat(self, prompt: str) -> str: # main chat method with smart model switching and rate-limit handling
         if not self._initialized:
             raise RuntimeError("LLMManager not initialized. Call initialize() first.")
 
@@ -323,7 +329,7 @@ class LLMManagerClass:
 
         return response.text
 
-    def _log_success(self, model_name: str, provider: str):
+    def _log_success(self, model_name: str, provider: str): # logging call
             if provider == "groq":
                 rate_limit_mgr = self._model_manager.model_rate_limits.get(model_name)
                 if rate_limit_mgr:
@@ -345,7 +351,7 @@ class LLMManagerClass:
                     log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     log_file.write(f"------------------------------------------\n\n")
 
-    def _log_rate_limit_hit(self, model_name: str, provider: str, error_message: str):
+    def _log_rate_limit_hit(self, model_name: str, provider: str, error_message: str): # logging call
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             log_file.write(f"--------------RATE LIMIT HIT--------------\n")
             log_file.write(f"Provider: {provider}\n")
@@ -374,7 +380,7 @@ class LLMManagerClass:
             log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             log_file.write(f"------------------------------------------\n\n")
 
-    def _log_all_models_exhausted(self):
+    def _log_all_models_exhausted(self): # logging call
         best_model = None
         best_wait = None
 
@@ -409,7 +415,7 @@ class LLMManagerClass:
                 log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 log_file.write(f"------------------------------------------------------------\n\n")
 
-    def _log(self, model: str, provider: str, prompt: str, response: str):
+    def _log(self, model: str, provider: str, prompt: str, response: str): # logging call
         with open("rag.log", "a", encoding="utf-8") as log_file:
                 log_file.write(f"---\n")
                 log_file.write(f"Provider: {provider}\n")

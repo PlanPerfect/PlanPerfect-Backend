@@ -1,5 +1,6 @@
 # Ignore Python cache files and environment files
 __pycache__/
+.DS_Store
 
 # Ignore sensitive environment files
 .env
@@ -9,6 +10,7 @@ firebaseServiceAccountKey.json
 app.log
 rag.log
 rate_limit.log
+static/predictions
 
 # Ignore virtual environment directories
 planperfect-env
