@@ -57,8 +57,9 @@ def extract_json(text: str) -> dict:
         parsed = json.loads(text[start:end])
 
         # Validate required fields
-        if "prompt" not in parsed or "negative" not in parsed:
-            raise ValueError("Missing required fields in JSON")
+        if "prompt" not in parsed:
+            raise ValueError("Missing required field: prompt")
+
 
         return parsed
 
@@ -82,7 +83,6 @@ def extract_json(text: str) -> dict:
     except Exception as e:
         raise ValueError(f"Unexpected error parsing LLM response: {str(e)}") from e
 
-
 # ================================
 # Gemini model setup
 # ================================
@@ -98,27 +98,39 @@ to create realistic and livable interior design images.
 
 """
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
-    system_instruction=(
-        "You are an interior design assistant."
+    model_name="gemini-2.5-flash-lite",
+system_instruction=(
+    "You are an interior design assistant."
 
-        "Your task is to generate Stable Diffusion prompts strictly for "
-        "REALISTIC, LIVABLE INTERIOR DESIGN."
+    "Your task is to generate Stable Diffusion prompts for "
+    "REALISTIC, LIVABLE INTERIOR DESIGN."
 
-        "Rules:"
-        "- Focus on room type, interior layout, materials, furniture, and lighting\n"
-        "- Lighting must be functional and realistic (no cinematic or dramatic lighting)\n"
-        "- Avoid camera terms (wide angle, lens, cinematic, shot, depth of field)\n"
-        "- Avoid mood or atmosphere words (dystopian, gritty, dark, moody, cyberpunk)\n"
-        "- Describe spaces that look professionally designed and livable\n\n"
+    "RULES:"
+    "- Use short, comma-separated phrases (no full sentences)\n"
+    "- Keep prompt under 60 tokens\n"
+    "- Avoid camera, cinematic, mood, or artistic language\n"
+    "- Describe real homes that look professionally designed\n"
 
-        "Return ONLY valid JSON with this structure:\n"
-        "{ \"prompt\": \"...\", \"negative\": \"...\" }\n\n"
+    "COLOR & MATERIAL RULES (MANDATORY):"
+    "- Always specify wall color and finish\n"
+    "- Always specify floor material and tone\n"
+    "- Always specify main furniture upholstery color\n"
+    "- Always specify rug or textile accent colors\n"
+    "- Color palette MUST change according to selected styles\n"
 
-        "Do not include markdown, explanations, or extra text."
+    "PROMPT ORDER (IMPORTANT):"
+    "- Walls and finishes first\n"
+    "- Flooring second\n"
+    "- Furniture colors and materials\n"
+    "- Rugs and accent textiles\n"
+    "- Room type and style last\n"
+
+    "Return ONLY valid JSON:\n"
+    "{ \"prompt\": \"...\" }\n"
+
+    "Do not include markdown, explanations, or extra text."
     )
 )
-
 
 # ================================
 # Prompt generation
@@ -139,18 +151,22 @@ def generate_sd_prompt(styles: str) -> dict:
     Returns:
         Dictionary containing:
         - prompt
-        - negative
     """
     prompt = f"""
-    Styles: {styles}
+        Styles: {styles}
 
-    Generate a Stable Diffusion prompt and negative prompt.
+        Generate a Stable Diffusion prompt under 60 tokens.
 
-    Return ONLY valid JSON (no markdown, no extra text):
-    {{ "prompt": "...", "negative": "..." }}
+        Requirements:
+        - Use comma-separated phrases only
+        - Explicitly assign colors to walls, floors, furniture, and rugs
+        - Color palette must clearly reflect the selected styles
+        - No negative prompt
 
-    Keep both prompts concise.
+        Return ONLY valid JSON:
+        {{ "prompt": "..." }}
     """
+
 
     response = model.generate_content(
         prompt,
@@ -159,7 +175,7 @@ def generate_sd_prompt(styles: str) -> dict:
             # that the LLM sticks to the system prompt of generating 
             # realistic interior design prompts
             "temperature": 0.3,
-            "max_output_tokens": 2048, # fixed token size to prevent overly long outputs
+            "max_output_tokens": 1024, # fixed token size to prevent overly long outputs
             "response_mime_type": "application/json"
         }
     )

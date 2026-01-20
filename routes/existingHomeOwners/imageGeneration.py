@@ -25,10 +25,27 @@ from fastapi.responses import FileResponse
 from fastapi.concurrency import run_in_threadpool
 from PIL import Image
 import uuid
-import json
 import torch
 from Services.StableDiffusion import pipe
 from Services.LLMGemini import generate_sd_prompt
+
+def choose_base_resolution(image: Image.Image):
+    """
+    Decide a safe base resolution for SD img2img
+    based on input image size and aspect ratio.
+    """
+    w, h = image.size
+    min_side = min(w, h)
+
+    if min_side >= 768:
+        base = 512
+    elif min_side >= 512:
+        base = 448
+    else:
+        base = 384
+
+    return base
+
 
 def run_stable_diffusion(init_image: Image.Image, prompt: str):
     """
@@ -63,7 +80,7 @@ def run_stable_diffusion(init_image: Image.Image, prompt: str):
         image=init_image,
         strength=0.45,
         guidance_scale=7.5,
-        num_inference_steps=20
+        num_inference_steps=25
     ).images[0]
 
 router = APIRouter(prefix="/image", tags=["Image Generation"])
@@ -89,7 +106,7 @@ async def generate_image(
             try:
                 llm_response = generate_sd_prompt(styles)
                 parsed = llm_response
-                if "prompt" not in parsed or "negative" not in parsed:
+                if "prompt" not in parsed:
                     raise ValueError("Missing required fields in JSON")
                 break
             except ValueError as e:
@@ -99,7 +116,9 @@ async def generate_image(
                     print("All retries failed, using fallback prompts")
                     parsed = {
                         "prompt": f"{styles}, detailed, high quality, professional",
-                        "negative": "blurry, low quality, distorted, ugly, bad anatomy"
+                        "negative": "cartoon, anime, illustration, painting, sketch, lowres, blurry, "
+                                    "distorted geometry, warped walls, bent lines, duplicated furniture, "
+                                    "bad perspective, fisheye distortion, oversharpened, noise, jpeg artifacts"
                     }
                     break
 
@@ -112,14 +131,33 @@ async def generate_image(
         # Clear GPU cache before generation, helps with faster genration of images
         torch.cuda.empty_cache()
 
-        # Resize input image to 512x512, increasing image size for better details 
-        # or decreasing for faster generation. 
-        init_image = init_image.resize((512, 512))
+        base_size = choose_base_resolution(init_image)
 
-        # Run Stable Diffusion img2img
+        init_image = init_image.resize((base_size, base_size), Image.LANCZOS)
+
+        # # Run Stable Diffusion img2img
         result = await run_in_threadpool( run_stable_diffusion, init_image, prompt)
+
+        hires_image = result.resize(
+            (result.width * 2, result.height * 2),
+            Image.LANCZOS
+        )
+
+        hires_result = await run_in_threadpool(
+            lambda: pipe(
+                prompt=prompt + ", ultra detailed interior photograph, sharp focus, architectural photography",
+                negative_prompt=(
+                    "cartoon, anime, illustration, distorted geometry, warped walls, "
+                    "duplicated furniture, bad perspective"
+                ),
+                image=hires_image,
+                strength=0.20,         
+                guidance_scale=7.0,
+                num_inference_steps=30
+            ).images[0]
+        )
         output_path = f"static/output_{uuid.uuid4()}.png"
-        result.save(output_path)
+        hires_result.save(output_path, quality=95)  # Higher quality PNG
 
         return FileResponse(output_path)
 
