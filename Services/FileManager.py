@@ -79,6 +79,17 @@ class FileManagerClass:
             Logger.log(f"[FILE MANAGER] - ERROR: Failed to store file. Error: {str(e)}")
             raise
 
+    def delete_file(self, file_id: str) -> bool:
+        if not self._initialized:
+            raise RuntimeError("FileManager not initialized. Call initialize() first.")
+
+        try:
+            result = cloudinary.uploader.destroy(file_id, resource_type="image")
+            return result.get('result') == 'ok'
+        except Exception as e:
+            Logger.log(f"[FILE MANAGER] - ERROR: Failed to delete file {file_id}. Error: {str(e)}")
+            return False
+
     def get_optimized_url(self, file_id: str) -> str:
         if not self._initialized:
             raise RuntimeError("FileManager not initialized. Call initialize() first.")

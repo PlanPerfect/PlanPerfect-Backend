@@ -22,6 +22,7 @@ from routes.stylematch.reccomendations import router as stylematch_reccomendatio
 from Services import DatabaseManager as DM
 from Services import RAGManager as RAG
 from Services import LLMManager as LLM
+from Services import FileManager as FM
 from Services import Bootcheck
 
 warnings.simplefilter("ignore", FutureWarning)
@@ -181,6 +182,9 @@ if __name__ == '__main__':
 
     if not LLM._initialized:
         LLM.initialize()
+
+    if not FM._initialized:
+        FM.initialize()
 
     def signal_handler(signum, frame):
         os._exit(0)
