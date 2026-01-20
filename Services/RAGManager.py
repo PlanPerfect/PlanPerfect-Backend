@@ -11,12 +11,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+"""
+    RAGManager is a service that encapsulates Retrieval-Augmented Generation (RAG) capabilities into a unified pipeline.
+    It manages document ingestion, text chunking, embedding generation, vector storage, retrieval and prompt construction.
+    RAGManager provides cobversation history management to enable context-aware interactions with LLMs, and is heavily integrated with LLMManager.
+"""
+
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 EMBEDDING_MODEL = "gemini-embedding-001"
 
-class _DocumentProcessor:
+class _DocumentProcessor: # handles document loading, cleaning, and chunking
     @staticmethod
     def _load_document(file_path: str) -> str:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -24,9 +30,9 @@ class _DocumentProcessor:
 
     @staticmethod
     def _clean_text(text: str) -> str:
-        text = re.sub(r'\s+', ' ', text)
-        text = re.sub(r'[^\w\s.,!?;:()\-\']', '', text)
-        return text.strip()
+        text = re.sub(r'\s+', ' ', text) # normalize whitespace
+        text = re.sub(r'[^\w\s.,!?;:()\-\']', '', text) # remove unwanted characters
+        return text.strip() # remove leading/trailing whitespace
 
     @staticmethod
     def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[Dict]:
@@ -45,7 +51,7 @@ class _DocumentProcessor:
         chunk_id = 0
 
         while i < total_words:
-            end_idx = min(i + words_per_chunk, total_words)
+            end_idx = min(i + words_per_chunk, total_words) # loop and slice text into chunks
 
             chunk_text = ' '.join(words[i:end_idx])
             chunks.append({
@@ -56,9 +62,9 @@ class _DocumentProcessor:
                     'start_word': i,
                     'end_word': end_idx
                 }
-            })
+            }) # store chunks
 
-            i = end_idx - overlap_words
+            i = end_idx - overlap_words # create overlap for context awareness
 
             if end_idx >= total_words:
                 break
@@ -68,14 +74,14 @@ class _DocumentProcessor:
         return chunks
 
 
-class _EmbeddingManager:
+class _EmbeddingManager: # handles text embedding
     def __init__(self, api_key: str):
         self.client = genai.Client(api_key=api_key)
         self.model = EMBEDDING_MODEL
         self.max_retries = 3
         self.base_delay = 1
 
-    def _retry_with_backoff(self, func, *args, **kwargs):
+    def _retry_with_backoff(self, func, *args, **kwargs): # backoff for rate limiting
         for attempt in range(self.max_retries):
             try:
                 return func(*args, **kwargs)
@@ -98,7 +104,7 @@ class _EmbeddingManager:
                     return None
         return None
 
-    def embed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
+    def embed_texts(self, texts: List[str]) -> Optional[List[List[float]]]: # embed list of texts
         try:
             embeddings = []
             batch_size = 100
@@ -111,7 +117,7 @@ class _EmbeddingManager:
                         model=self.model,
                         contents=batch,
                         config=types.EmbedContentConfig(output_dimensionality=1024)
-                    )
+                    ) # call Gemini embedding API
                     return [e.values for e in result.embeddings]
 
                 batch_embeddings = self._retry_with_backoff(_embed_batch)
@@ -137,7 +143,7 @@ class _EmbeddingManager:
                     model=self.model,
                     contents=query,
                     config=types.EmbedContentConfig(output_dimensionality=1024)
-                )
+                ) # call Gemini embedding API
                 return result.embeddings[0].values
 
             result = self._retry_with_backoff(_embed_single)
@@ -148,7 +154,7 @@ class _EmbeddingManager:
             Logger.log(f"[EMBEDDING MANAGER] - FATAL ERROR: {e}.")
             return None
 
-class _VectorManager:
+class _VectorManager: # handles vector storage and retrieval with Pinecone
     def __init__(self, api_key: str, index_name: str):
         self.pc = Pinecone(api_key=api_key)
         self.index_name = index_name
@@ -160,7 +166,7 @@ class _VectorManager:
             Logger.log(f"[RAG MANAGER] - ERROR: Failed to connect to Pinecone. Error: {str(e)}")
             raise
 
-    def add_documents(self, chunks: List[Dict], embeddings: List[List[float]]):
+    def add_documents(self, chunks: List[Dict], embeddings: List[List[float]]): # gather document chunks
         vectors = []
         for chunk, embedding in zip(chunks, embeddings):
             vectors.append({
@@ -177,7 +183,7 @@ class _VectorManager:
         batch_size = 100
         for i in range(0, len(vectors), batch_size):
             batch = vectors[i:i + batch_size]
-            self.index.upsert(vectors=batch)
+            self.index.upsert(vectors=batch) # upsert batch to Pinecone
 
     def search(self, query_embedding: Optional[List[float]], top_k: int = 3) -> Optional[Dict]:
         if query_embedding is None:
@@ -188,13 +194,13 @@ class _VectorManager:
                 vector=query_embedding,
                 top_k=top_k,
                 include_metadata=True
-            )
+            ) # search based on cosine similarity
 
             documents = []
             scores = []
             metadatas = []
 
-            for match in results['matches']:
+            for match in results['matches']: # extract results
                 documents.append(match['metadata']['text'])
                 scores.append(match['score'])
                 metadatas.append({
@@ -216,7 +222,7 @@ class _VectorManager:
         return self.index.describe_index_stats()
 
 
-class RAGManagerClass:
+class RAGManagerClass: # singleton RAGManager class for RAG operations
     _instance = None
 
     def __new__(cls):
@@ -228,7 +234,7 @@ class RAGManagerClass:
             cls._instance._conversation_history = []
         return cls._instance
 
-    def initialize(self, document_path: Optional[str] = None, force_reingest: bool = False):
+    def initialize(self, document_path: Optional[str] = None, force_reingest: bool = False): # ingest txt document and upsert to Pinecone
         if self._initialized and not force_reingest:
             return
 
@@ -263,7 +269,7 @@ class RAGManagerClass:
 
         self._vector_store.add_documents(chunks, embeddings)
 
-    def retrieve_query(self, query: str, top_k: int = 5, include_history: bool = True) -> Optional[str]:
+    def retrieve_query(self, query: str, top_k: int = 5, include_history: bool = True) -> Optional[str]: # retrieve relevant documents and construct prompt template
         if not self._initialized:
             raise RuntimeError("RAGManager not initialized. Call initialize() first.")
 
@@ -287,13 +293,13 @@ class RAGManagerClass:
         context = "\n\n".join(context_parts)
 
         history_str = ""
-        if include_history and self._conversation_history:
+        if include_history and self._conversation_history: # include last 10 messages in conversation history
             history_str = "\n\nPrevious Conversation:\n"
             for msg in self._conversation_history[-10:]:
                 role = "User" if msg["role"] == "user" else "Assistant"
                 history_str += f"{role}: {msg['content']}\n"
 
-        prompt = f"""I want you to act as a document that I am having a conversation with. If I tell you my name, I want you to greet me with my name in your reply. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
+        prompt = f"""I want you to act as a document that I am having a conversation with. If I tell you my name, I want you to greet me with my name in your reply. If i don't provide my name, just answer normally. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
 
     Your responses should be natural and conversational. IMPORTANT: You can use the conversation history to answer contextual questions. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". DO NOT answer in markdown, only answer in plain text. Simply answer the question directly as if the information is your own knowledge.
 
@@ -305,7 +311,8 @@ class RAGManagerClass:
     ------------
     REMEMBER:
     - Answer naturally and directly without meta-commentary about the context
-    - Greet the user by name together with the reply if they provide it
+    - Greet the user by name together with the reply only if they provide their name in the question
+    - Do NOT say "You didn't mention your name, so I'll just have to provide a general answer." or similar. You are only required to greet by name if they provide it.
     - Do NOT mention "Context 1", "Context 2", or similar references about the context
     - Do NOT say "according to the context", or "based on the provided information" or similar phrases
     - Do NOT answer in markdown, only in plain text.
@@ -321,13 +328,13 @@ class RAGManagerClass:
 
         return prompt
 
-    def add_to_history(self, role: str, content: str):
+    def add_to_history(self, role: str, content: str): # add message to conversation history
         self._conversation_history.append({"role": role, "content": content})
 
-    def clear_history(self):
+    def clear_history(self): # clear conversation history
         self._conversation_history = []
 
-    def get_history(self) -> List[Dict]:
+    def get_history(self) -> List[Dict]: # get conversation history
         return self._conversation_history.copy()
 
 

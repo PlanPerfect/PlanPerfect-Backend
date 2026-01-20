@@ -5,6 +5,10 @@ from email.message import EmailMessage
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 
 class Emailer:
+    """
+        Emailer is a service which dispatches emails using SMTP with Jinja2 templating.
+    """
+
     def __init__(self, templates_dir: str = "templates"):
         self.sender = os.getenv("EMAIL_SENDER")
         self.password = os.getenv("SMTP_APP_PASSWORD")
