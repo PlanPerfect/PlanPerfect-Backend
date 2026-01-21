@@ -6,9 +6,10 @@ import warnings
 from datetime import datetime
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File, HTTPException
 
 # import routers
 from routes.existingHomeOwners.classification import router as style_classification_router
@@ -157,6 +158,22 @@ def index():
     </html>
     """
     return HTMLResponse(content=html_content)
+
+@app.post("/upload")
+async def upload_image(file: UploadFile = File(...)):
+    try:
+        result = FM.store_file(file)
+        return {"data": result}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+@app.get("/pdf/{file_id:path}")
+async def get_pdf(file_id: str):
+    try:
+        return FM.get_pdf_file(file_id)
+    except Exception as e:
+        raise JSONResponse(status_code=404, detail=f"PDF not found: {str(e)}")
 
 if __name__ == '__main__':
     load_dotenv()
