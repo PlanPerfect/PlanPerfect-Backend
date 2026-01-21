@@ -10,12 +10,6 @@ from Services import Logger
 import os
 import io
 
-"""
-FileManager handles Cloudinary file uploads and optimized URL generation.
-Supports images and PDFs with intelligent optimization.
-Implements a singleton pattern for consistent cloud access.
-"""
-
 class FileManagerClass:
     _instance = None
 
@@ -53,10 +47,8 @@ class FileManagerClass:
 
     def _get_resource_type(self, filename: str) -> Literal["image", "raw"]:
         extension = self._get_file_extension(filename)
-        if extension in self.SUPPORTED_IMAGE_TYPES:
+        if extension in self.SUPPORTED_IMAGE_TYPES or extension in self.SUPPORTED_DOCUMENT_TYPES:
             return "image"
-        elif extension in self.SUPPORTED_DOCUMENT_TYPES:
-            return "raw"
         else:
             raise ValueError(f"Unsupported file type: {extension}")
 
@@ -89,19 +81,22 @@ class FileManagerClass:
                 file_content,
                 folder=folder_path,
                 public_id=public_id,
-                resource_type=resource_type
+                resource_type=resource_type,
+                context=f"alt={filename}|caption={filename}"
             )
 
             file_id = upload_result['public_id']
 
-            if resource_type == "image":
-                url = self.get_optimized_url(file_id)
+            extension = self._get_file_extension(filename)
+            if extension in self.SUPPORTED_DOCUMENT_TYPES:
+                url = self.get_pdf_url(file_id, filename=filename)
             else:
-                url = self.get_pdf_url(file_id)
+                url = self.get_optimized_url(file_id)
 
             return {
                 "file_id": file_id,
-                "url": url
+                "url": url,
+                "filename": filename
             }
 
         except Exception as e:
@@ -135,16 +130,22 @@ class FileManagerClass:
             Logger.log(f"[FILE MANAGER] - ERROR: Failed to generate optimized URL. Error: {str(e)}")
             raise
 
-    def get_pdf_url(self, file_id: str) -> str:
+    def get_pdf_url(self, file_id: str, download: bool = False, filename: Optional[str] = None) -> str:
         if not self._initialized:
             raise RuntimeError("FileManager not initialized. Call initialize() first.")
 
         try:
-            url, _ = cloudinary_url(
-                file_id,
-                resource_type="raw",
-                secure=True
-            )
+            params = {
+                'format': 'pdf',
+                'secure': True
+            }
+
+            if filename:
+                params['attachment'] = filename
+            elif download:
+                params['flags'] = 'attachment'
+
+            url, _ = cloudinary_url(file_id, **params)
             return url
         except Exception as e:
             Logger.log(f"[FILE MANAGER] - ERROR: Failed to generate PDF URL. Error: {str(e)}")
