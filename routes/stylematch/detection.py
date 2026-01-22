@@ -53,11 +53,20 @@ async def detect_furniture(
         return JSONResponse(
             status_code=400,
             content={
-                "error": "UERROR: One or more required fields missing."
+                "error": "UERROR: One or more required fields are invalid / missing."
             }
         )
 
     try:
+        user = DM.peek(["Users", x_user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
         suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             content = await file.read()
