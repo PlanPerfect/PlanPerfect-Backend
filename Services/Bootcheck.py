@@ -28,8 +28,8 @@ class Bootcheck:
         "GEMINI_API_KEY",
         "GROQ_API_KEY",
         "RAG_DOCUMENT_PATH",
-        "UNSPLASH_ACCESS_KEY",
-        "CLOUDINARY_URL"
+        "CLOUDINARY_URL",
+        "PEXELS_API_KEY"
     ]
 
     @staticmethod
