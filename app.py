@@ -18,6 +18,7 @@ from routes.newHomeOwners.documentLlm import router as document_llm_router
 from routes.chatbot.chatCompletions import router as chatbot_router
 from routes.stylematch.detection import router as stylematch_detection_router
 from routes.stylematch.reccomendations import router as stylematch_reccomendations_router
+from routes.auth.authentication import router as auth_router
 
 from Services import DatabaseManager as DM
 from Services import RAGManager as RAG
@@ -48,6 +49,7 @@ app.include_router(document_llm_router)
 app.include_router(chatbot_router)
 app.include_router(stylematch_detection_router)
 app.include_router(stylematch_reccomendations_router)
+app.include_router(auth_router)
 
 SERVER_START_TIME = datetime.now()
 
