@@ -100,6 +100,24 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         spaceBefore=20,
         fontName='Helvetica-Bold'
     )
+
+    highlight_box_style = ParagraphStyle(
+        'HighlightBox',
+        parent=styles['Normal'],
+        fontSize=11,
+        leading=14,
+        textColor=colors.HexColor('#333333'),
+        fontName='Helvetica'
+    )
+
+    disclaimer_style = ParagraphStyle(
+        'Disclaimer',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=colors.HexColor('#666666'),
+        fontName='Helvetica-Oblique',
+        spaceAfter=12
+    )
     
     # Build PDF content
     story = []
@@ -197,10 +215,168 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             story.append(Paragraph(f"<b>Unit Sizes:</b> {', '.join(set(unit_sizes))}", styles['Normal']))
     
     if budget:
-        story.append(Paragraph(f"<b>Budget:</b> {budget}", styles['Normal']))
+        story.append(Paragraph(f"<b>Client's Budget:</b> {budget}", styles['Normal']))
     
     story.append(Paragraph(f"<b>Generated On:</b> {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
     story.append(Spacer(1, 0.5*inch))
+
+    # ========== QUOTATION RANGE SECTION (RIGHT AFTER BUDGET) ==========
+    if design_data and design_data.get('quotation_range'):
+        quotation_range = design_data['quotation_range']
+        
+        # Quotation box heading
+        story.append(Paragraph("Quotation ", subheading_style))
+        
+        # Create highlighted quotation box
+        min_quote = safe_get(quotation_range, 'minimum_quote', default='TBD')
+        max_quote = safe_get(quotation_range, 'maximum_quote', default='TBD')
+        recommended_quote = safe_get(quotation_range, 'recommended_quote', default='TBD')
+        quote_basis = safe_get(quotation_range, 'quote_basis', default='')
+        property_class = safe_get(quotation_range, 'property_classification', default='')
+        scope_level = safe_get(quotation_range, 'scope_level', default='')
+        
+        # Quotation range text
+        quotation_content = f"""
+<b>Estimated Project Range:</b> {min_quote} - {max_quote}<br/>
+<b>Recommended Quotation:</b> {recommended_quote}<br/>  
+<b>Scope Level:</b> {scope_level}<br/>
+<b>Basis:</b> {quote_basis}
+"""
+        
+        # Create table for quotation box with golden background
+        quotation_para = Paragraph(quotation_content, highlight_box_style)
+        quotation_table = Table([[quotation_para]], colWidths=[6.5*inch])
+        quotation_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF9E6')),
+            ('BOX', (0, 0), (-1, -1), 2, colors.HexColor('#D4AF37')),
+            ('LEFTPADDING', (0, 0), (-1, -1), 15),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 15),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ]))
+        
+        story.append(quotation_table)
+        story.append(Spacer(1, 0.2*inch))
+        
+        # Cost factors
+        cost_factors = safe_get(quotation_range, 'cost_factors', default=[])
+        if cost_factors and len(cost_factors) > 0:
+            story.append(Paragraph("<b>Key Cost Factors:</b>", body_style))
+            for factor in cost_factors:
+                story.append(Paragraph(f"• {factor}", body_style))
+        
+        story.append(Spacer(1, 0.3*inch))
+    
+        story.append(PageBreak())
+    
+    # ========== QUOTATION BREAKDOWN SECTION ==========
+    if design_data and design_data.get('quotation_breakdown'):
+        quotation_breakdown = design_data['quotation_breakdown']
+        story.append(Paragraph("Detailed Quotation Breakdown", heading_style))
+        story.append(Paragraph("This breakdown provides transparency on how your quotation is calculated based on Singapore 2026 market rates.", body_style))
+        story.append(Spacer(1, 0.2*inch))
+        
+        # Create detailed breakdown table
+        cell_style = ParagraphStyle(
+            'CellStyle',
+            parent=styles['Normal'],
+            fontSize=9,
+            leading=11
+        )
+        
+        # Table header
+        breakdown_data = [[
+            Paragraph('<b>Category</b>', cell_style),
+            Paragraph('<b>Description</b>', cell_style),
+            Paragraph('<b>Quantity</b>', cell_style),
+            Paragraph('<b>Unit Cost</b>', cell_style),
+            Paragraph('<b>Subtotal</b>', cell_style)
+        ]]
+        
+        # Define categories in order
+        categories = [
+            ('carpentry', 'Carpentry'),
+            ('flooring', 'Flooring'),
+            ('painting', 'Painting'),
+            ('electrical', 'Electrical Works'),
+            ('plumbing', 'Plumbing'),
+            ('masonry', 'Masonry & Tiling'),
+            ('furniture_fixtures', 'Furniture & Fixtures'),
+            ('design_consultation', 'Design & Consultation'),
+            ('contingency', 'Contingency Buffer')
+        ]
+        
+        # Add each category to table
+        for key, display_name in categories:
+            if key in quotation_breakdown:
+                item = quotation_breakdown[key]
+                description = safe_get(item, 'description', default=display_name)
+                quantity = safe_get(item, 'quantity', default='-')
+                unit_cost = safe_get(item, 'unit_cost', default='-')
+                subtotal = safe_get(item, 'subtotal', default='TBD')
+                
+                breakdown_data.append([
+                    Paragraph(f'<b>{display_name}</b>', cell_style),
+                    Paragraph(description, cell_style),
+                    Paragraph(str(quantity), cell_style),
+                    Paragraph(str(unit_cost), cell_style),
+                    Paragraph(f'<b>{subtotal}</b>', cell_style)
+                ])
+        
+        # Add total row
+        total_quotation = safe_get(quotation_breakdown, 'total_quotation', default='TBD')
+        breakdown_data.append([
+            Paragraph('<b>TOTAL QUOTATION</b>', cell_style),
+            Paragraph('', cell_style),
+            Paragraph('', cell_style),
+            Paragraph('', cell_style),
+            Paragraph(f'<b>{total_quotation}</b>', cell_style)
+        ])
+        
+        # Create and style the table
+        breakdown_table = Table(breakdown_data, colWidths=[1.2*inch, 2*inch, 1*inch, 1.1*inch, 1.2*inch])
+        breakdown_table.setStyle(TableStyle([
+            # Header styling
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D4AF37')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('TOPPADDING', (0, 0), (-1, 0), 12),
+            
+            # Data rows styling
+            ('BACKGROUND', (0, 1), (-1, -2), colors.beige),
+            ('TOPPADDING', (0, 1), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            
+            # Total row styling
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#FFF9E6')),
+            ('LINEABOVE', (0, -1), (-1, -1), 2, colors.HexColor('#D4AF37')),
+            ('FONTSIZE', (0, -1), (-1, -1), 11),
+            
+            # Grid
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (3, 1), (4, -1), 'RIGHT'),
+        ]))
+        
+        story.append(breakdown_table)
+        story.append(Spacer(1, 0.3*inch))
+        
+        # Add disclaimer
+        disclaimer_style = ParagraphStyle(
+            'Disclaimer',
+            parent=styles['Normal'],
+            fontSize=8,
+            textColor=colors.HexColor('#666666'),
+            fontName='Helvetica-Oblique',
+            spaceAfter=12
+        )
+        story.append(Paragraph("<b>Note:</b> This quotation is based on standard specifications and Singapore 2026 market rates. Final costs may vary based on actual product selection, site conditions, and unforeseen circumstances. The contingency buffer covers unexpected costs and variations.", disclaimer_style))
+        
+        story.append(PageBreak())
     
     # Add raw floor plan image - optional
     if raw_floor_plan_path and os.path.exists(raw_floor_plan_path):
@@ -573,6 +749,42 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         '<b>Visit our chatbot at:</b> www.planperfect.com/chatbot',
         cta_text_style
     ))
+
+    # Add separator line
+    story.append(HRFlowable(
+        width="80%",
+        thickness=1,
+        color=colors.HexColor('#D4AF37'),
+        spaceAfter=20,
+        spaceBefore=20,
+        hAlign='CENTER'
+    ))
+
+    story.append(Paragraph(
+        "<b>Note:</b> This document is for informational purposes only and does not constitute a binding agreement. Final designs and quotations are subject to change based on further consultations and site assessments.",
+        cta_text_style
+    ))
+
+    # Add separator line
+    story.append(HRFlowable(
+        width="80%",
+        thickness=1,
+        color=colors.HexColor('#D4AF37'),
+        spaceAfter=20,
+        spaceBefore=20,
+        hAlign='CENTER'
+    ))
+
+    story.append(Paragraph(
+        "Thank you for choosing PlanPerfect for your interior design needs!",
+        cta_text_style
+    ))
+
+    story.append(Paragraph(
+        "© 2026 PlanPerfect. All rights reserved.",
+        cta_text_style
+    ))
+    
     
     # Build PDF
     doc.build(story)
