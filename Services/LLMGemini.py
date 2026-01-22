@@ -107,7 +107,7 @@ system_instruction=(
 
     "RULES:"
     "- Use short, comma-separated phrases (no full sentences)\n"
-    "- Keep prompt under 60 tokens\n"
+    "- Keep prompt under 70 tokens\n"
     "- Avoid camera, cinematic, mood, or artistic language\n"
     "- Describe real homes that look professionally designed\n"
 

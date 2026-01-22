@@ -34,7 +34,7 @@ pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
 # Hardware-specific optimisations
 # ================================
 if use_cuda:
-    # Offloada parts of the model to CPU, reduces GPU memory usage
+    # Offloads parts of the model to CPU, reduces GPU memory usage
     pipe.enable_model_cpu_offload()
 
     # Use channels_last memory format for improved performance
