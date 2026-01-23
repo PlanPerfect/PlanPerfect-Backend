@@ -170,6 +170,33 @@ CLIENT PREFERENCES (Initial):
 
 BUDGET: {budget or 'Not specified'}
 
+SINGAPORE RENOVATION COST REFERENCE (2026):
+Home renovation costs in Singapore are projected to rise by 5-7% in 2026. Use these ranges to provide realistic quotations:
+
+HDB BTO/New Units:
+- 3-Room: S$36,000 – S$45,000
+- 4-Room: S$51,000 – S$65,000
+- 5-Room: S$67,000 – S$83,000
+
+HDB Resale Units (20-40% higher due to hacking, rewiring, plumbing):
+- 3-Room: S$51,000 – S$62,000
+- 4-Room: S$64,000 – S$82,000
+- 5-Room: S$84,000 – S$97,000
+
+Condominiums:
+- New: S$40,000 – S$75,000
+- Resale: S$80,000 – S$105,000
+
+Landed Properties:
+- New: S$100,000 – S$250,000+
+- Resale: S$300,000 – S$1.5M+
+
+Component Costs (2026):
+- Carpentry: S$250 – S$400 per foot run
+- Flooring: Vinyl S$4-S$8 psf, Premium tiles/marble S$10-S$47.50 psf
+- Electrical: S$1,500-S$4,000 (new), S$4,000-S$15,000 (full rewiring)
+- Plumbing: S$1,500 – S$4,000 (bathroom/kitchen updates)
+
 {formatted_chat_history}
 
 CRITICAL INSTRUCTIONS FOR HANDLING CONVERSATION HISTORY:
@@ -191,6 +218,8 @@ CRITICAL INSTRUCTIONS FOR HANDLING CONVERSATION HISTORY:
 
 9. **ALWAYS PROVIDE SUGGESTIONS**: Even if the user didn't specify colors or materials, you MUST provide professional recommendations based on the chosen design style. Never leave these fields as "Not specified" or "Open to recommendations".
 
+10. **QUOTATION REQUIREMENTS**: You MUST provide a detailed quotation breakdown that adds up to the total quotation amount. Base your quotation on the Singapore 2026 renovation cost reference provided above and the property type.
+
 Return JSON with this structure (be detailed and specific):
 {{
   "detected_preferences_override": {{
@@ -199,6 +228,71 @@ Return JSON with this structure (be detailed and specific):
     "materials": ["ALWAYS provide 3-5 specific material suggestions that match the design style, even if user didn't specify"],
     "budget": "detected budget from conversation if mentioned, otherwise use initial budget",
     "special_notes": "any important details from conversation"
+  }},
+  "quotation_range": {{
+    "minimum_quote": "Minimum realistic quote in SGD (e.g., S$51,000) based on property type and Singapore 2026 market rates",
+    "maximum_quote": "Maximum realistic quote in SGD (e.g., S$65,000) based on property type and Singapore 2026 market rates",
+    "recommended_quote": "Your recommended quote in SGD based on client's budget, requirements, and property type",
+    "quote_basis": "Brief explanation of how you arrived at this range (e.g., 'Requiring moderate renovation with quality finishes'). Don't need to mention property type here.",
+    "scope_level": "Light/Moderate/Extensive - based on requirements",
+    "cost_factors": ["Factor 1 affecting cost with brief explanation", "Factor 2 affecting cost", "Factor 3 affecting cost"]
+  }},
+  "quotation_breakdown": {{
+    "carpentry": {{
+      "description": "Custom wardrobes, cabinets, built-in furniture",
+      "quantity": "e.g., 40 feet run",
+      "unit_cost": "e.g., S$300 per foot run",
+      "subtotal": "S$12,000"
+    }},
+    "flooring": {{
+      "description": "Flooring materials and installation",
+      "quantity": "e.g., 850 sqft",
+      "unit_cost": "e.g., S$6 per sqft",
+      "subtotal": "S$5,100"
+    }},
+    "painting": {{
+      "description": "Wall painting and preparation",
+      "quantity": "Entire unit",
+      "unit_cost": "Flat rate or per sqft",
+      "subtotal": "S$3,500"
+    }},
+    "electrical": {{
+      "description": "Electrical works, lighting, wiring",
+      "quantity": "Based on scope",
+      "unit_cost": "Package or itemized",
+      "subtotal": "S$4,500"
+    }},
+    "plumbing": {{
+      "description": "Plumbing works, fixtures",
+      "quantity": "Kitchen and bathrooms",
+      "unit_cost": "Package or itemized",
+      "subtotal": "S$3,200"
+    }},
+    "masonry": {{
+      "description": "Hacking, tiling, masonry work",
+      "quantity": "Based on scope",
+      "unit_cost": "Package or itemized",
+      "subtotal": "S$4,800"
+    }},
+    "furniture_fixtures": {{
+      "description": "Furniture, curtains, accessories",
+      "quantity": "As per design",
+      "unit_cost": "Itemized or package",
+      "subtotal": "S$8,500"
+    }},
+    "design_consultation": {{
+      "description": "Design consultation and project management",
+      "quantity": "Full project",
+      "unit_cost": "Professional fees",
+      "subtotal": "S$3,000"
+    }},
+    "contingency": {{
+      "description": "Buffer for unforeseen costs (typically 10-15%)",
+      "quantity": "Percentage of total",
+      "unit_cost": "Buffer amount",
+      "subtotal": "S$4,460"
+    }},
+    "total_quotation": "S$49,060 (MUST equal sum of all subtotals above)"
   }},
   "executive_summary": {{
     "project_overview": "4-5 sentence comprehensive overview including property type, size, and goals. If user provided name, mention it naturally.",
@@ -261,14 +355,14 @@ Return JSON with this structure (be detailed and specific):
   }}
 }}
 
-Be specific, practical, and ensure all recommendations align with the FINAL preferences (prioritizing conversation history over initial form data) and budget."""
+CRITICAL: Ensure the quotation_breakdown subtotals add up EXACTLY to the total_quotation amount. Be specific, practical, and ensure all recommendations align with Singapore 2026 market rates and the FINAL preferences (prioritizing conversation history over initial form data) and budget."""
 
         # Call Groq API
         chat_completion = groq_client.chat.completions.create(
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert interior designer with exceptional listening skills. Your specialty is understanding clients' true preferences through conversation.
+                    "content": """You are an expert interior designer with exceptional listening skills and deep knowledge of Singapore's renovation market in 2026. Your specialty is understanding clients' true preferences through conversation and providing accurate, realistic quotations.
 
 CRITICAL ABILITIES:
 1. You can detect when a client changes their mind during conversation
@@ -276,15 +370,17 @@ CRITICAL ABILITIES:
 3. You notice subtle hints about style preferences, budget concerns, and special needs
 4. You create personalized designs that reflect the client's refined preferences
 5. You provide detailed, professional recommendations in JSON format
+6. You calculate accurate quotations based on Singapore 2026 market rates
 
-IMPORTANT REQUIREMENT:
-- ALWAYS suggest specific colors and materials, even if the client didn't specify them
-- Base your color and material suggestions on the chosen design style
+IMPORTANT REQUIREMENTS:
+- ALWAYS suggest specific colors and materials based on the chosen design style
 - Provide professional, style-appropriate recommendations
+- ALWAYS provide realistic quotations based on Singapore 2026 renovation costs
+- ENSURE quotation breakdown subtotals add up EXACTLY to the total quotation
+- Account for scope level (Light, Moderate, or Extensive renovation)
 - Example: For "Modern" style → suggest colors like "Crisp White", "Charcoal Gray", "Warm Beige" and materials like "Glass", "Brushed Steel", "Polished Concrete"
-- Example: For "Boho" style → suggest colors like "Terracotta", "Sage Green", "Mustard Yellow" and materials like "Rattan", "Macrame", "Reclaimed Wood"
 
-Always be specific with measurements, costs, and actionable advice. Ensure the design reflects what the client TRULY wants based on their conversation."""
+Always be specific with measurements, costs, and actionable advice. Ensure the design reflects what the client TRULY wants based on their conversation and that all financial figures are realistic and transparent."""
                 },
                 {
                     "role": "user",
