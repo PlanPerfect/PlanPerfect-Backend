@@ -15,7 +15,7 @@ class ChatRequest(BaseModel):
 async def get_current_model():
     try:
         current_model = LLM.get_current_model()
-        return JSONResponse(content={ "model": current_model })
+        return JSONResponse(status_code=200, content={ "model": current_model })
     except Exception as e:
         return JSONResponse(status_code=500, content={ "error": str(e) })
 
@@ -32,7 +32,7 @@ async def chat_completion(request: ChatRequest):
 
         current_model = LLM.get_current_model()
 
-        return JSONResponse(content={
+        return JSONResponse(status_code=200, content={
             "response": response,
             "model": current_model
         })
@@ -44,6 +44,6 @@ async def chat_completion(request: ChatRequest):
 async def clear_history():
     try:
         RAG.clear_history()
-        return JSONResponse(status_code=200, content={ "response": "Conversation history cleared" })
+        return JSONResponse(status_code=200, content={ "response": "SUCCESS: Conversation history cleared" })
     except Exception as e:
         return JSONResponse(status_code=500, content={ "error": str(e) })

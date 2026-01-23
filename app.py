@@ -18,10 +18,12 @@ from routes.newHomeOwners.documentLlm import router as document_llm_router
 from routes.chatbot.chatCompletions import router as chatbot_router
 from routes.stylematch.detection import router as stylematch_detection_router
 from routes.stylematch.reccomendations import router as stylematch_reccomendations_router
+from routes.auth.authentication import router as auth_router
 
 from Services import DatabaseManager as DM
 from Services import RAGManager as RAG
 from Services import LLMManager as LLM
+from Services import FileManager as FM
 from Services import Bootcheck
 
 warnings.simplefilter("ignore", FutureWarning)
@@ -47,6 +49,7 @@ app.include_router(document_llm_router)
 app.include_router(chatbot_router)
 app.include_router(stylematch_detection_router)
 app.include_router(stylematch_reccomendations_router)
+app.include_router(auth_router)
 
 SERVER_START_TIME = datetime.now()
 
@@ -181,6 +184,9 @@ if __name__ == '__main__':
 
     if not LLM._initialized:
         LLM.initialize()
+
+    if not FM._initialized:
+        FM.initialize()
 
     def signal_handler(signum, frame):
         os._exit(0)
