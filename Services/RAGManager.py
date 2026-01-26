@@ -168,7 +168,6 @@ class _VectorManager:
 
         try:
             self.index = self.pc.Index(index_name)
-            print(f"SUCCESSFULLY CONNECTED TO PINECONE INDEX: \033[94m{index_name}\033[0m\n")
         except Exception as e:
             Logger.log(f"[RAG MANAGER] - ERROR: Failed to connect to Pinecone. Error: {str(e)}")
             raise
@@ -195,6 +194,34 @@ class _VectorManager:
         self.document_texts = [chunk['text'] for chunk in chunks]
         self.bm25_corpus = [text.lower().split() for text in self.document_texts]
         self.bm25_index = BM25Okapi(self.bm25_corpus)
+
+    def rebuild_pinecone(self):
+        try:
+            stats = self.index.describe_index_stats()
+            total_vectors = stats.total_vector_count if hasattr(stats, 'total_vector_count') else stats.get('total_vector_count', 0)
+
+            dummy_query = [0.0] * 1024
+            results = self.index.query(
+                vector=dummy_query,
+                top_k=min(10000, total_vectors),
+                include_metadata=True
+            )
+
+            sorted_matches = sorted(
+                results['matches'],
+                key=lambda x: x['metadata'].get('chunk_id', 0)
+            )
+
+            self.document_texts = [match['metadata']['text'] for match in sorted_matches]
+            self.bm25_corpus = [text.lower().split() for text in self.document_texts]
+            self.bm25_index = BM25Okapi(self.bm25_corpus)
+
+            print(f"USING EXISTING VECTORS IN PINECONE. HYBRID INDEX REBUILT WITH {len(self.document_texts)} DOCUMENTS.\n")
+            return True
+
+        except Exception as e:
+            Logger.log(f"[RAG MANAGER] - ERROR: Failed to rebuild BM25 index. Error: {e}")
+            return False
 
     def hybrid_search(self, query_embedding: Optional[List[float]], query_text: str, top_k: int = 3) -> Optional[Dict]:
         if query_embedding is None or self.bm25_index is None:
@@ -297,6 +324,8 @@ class RAGManagerClass:
                 self._ingest_document(document_path)
             else:
                 raise FileNotFoundError(f"Document not found: {document_path}")
+        elif vector_count > 0:
+            self._vector_store.rebuild_pinecone()
 
         self._initialized = True
         print("RAG MANAGER INTIALISED. DOCUMENTS READY.\n")
@@ -349,7 +378,7 @@ class RAGManagerClass:
                     role = "User" if msg["role"] == "user" else "Assistant"
                     history_str += f"{role}: {msg['content']}\n"
 
-        prompt = f"""I want you to act as a document that I am having a conversation with. If I tell you my name, I want you to greet me with my name in your reply. If i don't provide my name, just answer normally. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
+        prompt = f"""I want you to act as a document that I am having a conversation with. Your name is "Lumen AI". If I tell you my name, you must use it in your replies. If I don't provide my name, just answer normally. Using the provided context, answer the user's question to the best of your ability using the resources provided. Answer in 2-3 sentences, being concise and to the point.
 
     Your responses should be natural and conversational. IMPORTANT: You can use the conversation history to answer contextual questions. Do NOT say phrases like "according to the context" or "based on the provided information" and DO NOT reference any context such as "Context 1" or "Context 2". DO NOT answer in markdown, only answer in plain text. Simply answer the question directly as if the information is your own knowledge.
 
@@ -361,7 +390,7 @@ class RAGManagerClass:
     ------------
     REMEMBER:
     - Answer naturally and directly without meta-commentary about the context
-    - Greet the user by name together with the reply only if they provide their name in the question
+    - Your name is "Lumen AI"
     - Do NOT say "You didn't mention your name, so I'll just have to provide a general answer." or similar. You are only required to greet by name if they provide it.
     - Do NOT mention "Context 1", "Context 2", or similar references about the context
     - Do NOT say "according to the context", or "based on the provided information" or similar phrases

@@ -179,7 +179,7 @@ if __name__ == '__main__':
     if not RAG._initialized:
         RAG.initialize(
             document_path=os.getenv("RAG_DOCUMENT_PATH"),
-            force_reingest=True
+            force_reingest=False
         )
 
     if not LLM._initialized:
