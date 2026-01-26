@@ -116,6 +116,8 @@ async def detect_furniture(
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
 
+        DM.data["Users"][x_user_id]["Existing Homeowner"]["Detected Furniture"]["furniture"] = {}
+
         for item in detection_data.get("detected_items", []):
             class_name = item["class_name"]
             bbox = item["bbox"]
