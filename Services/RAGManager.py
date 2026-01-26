@@ -333,9 +333,7 @@ class RAGManagerClass:
 
     def add_to_history(self, uid: str, role: str, content: str):
         try:
-            path = ["Users", uid, "RAG Conversations", "history"]
-
-            existing_history = DM.peek(path) or []
+            existing_history = DM.peek(["Users", uid, "RAG Conversations", "history"]) or []
 
             new_message = {
                 "role": role,
@@ -345,7 +343,7 @@ class RAGManagerClass:
 
             existing_history.append(new_message)
 
-            DM.set_value(path, existing_history)
+            DM.data["Users"][uid]["RAG Conversations"]["history"] = existing_history
             DM.save()
 
         except Exception as e:
@@ -353,8 +351,7 @@ class RAGManagerClass:
 
     def clear_history(self, uid: str):
         try:
-            path = ["Users", uid, "RAG Conversations", "history"]
-            DM.set_value(path, [])
+            DM.data["Users"][uid]["RAG Conversations"]["history"] = []
             DM.save()
 
         except Exception as e:
@@ -362,8 +359,7 @@ class RAGManagerClass:
 
     def get_history(self, uid: str) -> List[Dict]:
         try:
-            path = ["Users", uid, "RAG Conversations", "history"]
-            history = DM.peek(path)
+            history = DM.peek(["Users", uid, "RAG Conversations", "history"])
             return history if history else []
 
         except Exception as e:

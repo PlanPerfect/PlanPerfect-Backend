@@ -1,4 +1,3 @@
-import os
 import copy
 import firebase_admin
 from firebase_admin import credentials, db
@@ -9,7 +8,6 @@ class AutoDict(dict):
     """
         DatabaseManager is a service which behaves as a DBMS for Firebase Realtime Database.
         It allows for modifying data in-memory with nested dictionary structures, and syncing changes after modifications.
-        To support real-time updates, in-memory data is automatically updated when changes are made in the Firebase RTDB console if CloudSync is enabled.
     """
     def __missing__(self, key):
         value = self[key] = type(self)()
@@ -36,9 +34,6 @@ class DatabaseManagerClass:
             cls._instance._db_ref = None
             cls._instance._app = None
             cls._instance.data = AutoDict()
-            cls._instance._listener = None
-            cls._instance._cloudsync_enabled = False # enable real-time sync with Firebase RTDB console
-            cls._instance._first_sync = True
         return cls._instance
 
     def initialize(
@@ -65,13 +60,9 @@ class DatabaseManagerClass:
 
             self._db_ref = db.reference()
             self._initialized = True
-            self._cloudsync_enabled = os.getenv('CLOUDSYNC_ENABLED').lower() == 'true'
             print(f"DATABASE MANAGER INITIALISED. CONNECTED TO \033[94m{database_url}\033[0m\n")
 
             self.load()
-
-            if self._cloudsync_enabled:
-                self._start_listener()
 
         except Exception as e:
             Logger.log(f"[DATABASE MANAGER] - ERROR: DatabaseManager could not be initialized. Error: {e}")
@@ -89,30 +80,10 @@ class DatabaseManagerClass:
             else:
                 self.data = AutoDict()
 
-            sync_status = "ENABLED" if self._cloudsync_enabled else "DISABLED"
-            print(f"CloudSync {sync_status}. SUCCESSFULLY LOADED CLOUD FIREBASE RTDB INTO LOCAL MEMORY.\n")
-
             return self.data
         except Exception as e:
             Logger.log(f"[DATABASE MANAGER] - ERROR: Failed to load Firebase RTDB. Error: {e}")
             raise
-
-    def _start_listener(self) -> None:
-        def listener(event):
-            if self._first_sync:
-                self._first_sync = False
-                return
-            try:
-                snapshot = self._db_ref.get()
-                if snapshot is not None:
-                    self.data = self._convert_to_autodict(snapshot)
-                else:
-                    self.data = AutoDict()
-                print("[DATABASE MANAGER] - LIVE TAIL: Changes detected in RTDB Console. In-memory copy synced.\n")
-            except Exception as e:
-                Logger.log(f"[DATABASE MANAGER] - ERROR: CloudSync listener failed. Error: {e}")
-
-        self._listener = self._db_ref.listen(listener)
 
     def _convert_to_autodict(self, data: Any) -> Any:
         if isinstance(data, dict):
@@ -224,11 +195,5 @@ class DatabaseManagerClass:
 
     def reload(self) -> dict:
         return self.load()
-
-    def stop_cloudsync(self) -> None:
-        if self._listener:
-            self._listener.close()
-            self._listener = None
-
 
 DatabaseManager = DatabaseManagerClass()
