@@ -6,6 +6,8 @@ from datetime import datetime
 import re
 import os
 import time
+from rank_bm25 import BM25Okapi
+import numpy as np
 from Services import Logger
 from Services import DatabaseManager as DM
 from dotenv import load_dotenv
@@ -160,6 +162,9 @@ class _VectorManager:
     def __init__(self, api_key: str, index_name: str):
         self.pc = Pinecone(api_key=api_key)
         self.index_name = index_name
+        self.bm25_corpus = []
+        self.bm25_index = None
+        self.document_texts = []
 
         try:
             self.index = self.pc.Index(index_name)
@@ -187,26 +192,67 @@ class _VectorManager:
             batch = vectors[i:i + batch_size]
             self.index.upsert(vectors=batch)
 
-    def search(self, query_embedding: Optional[List[float]], top_k: int = 3) -> Optional[Dict]:
-        if query_embedding is None:
+        self.document_texts = [chunk['text'] for chunk in chunks]
+        self.bm25_corpus = [text.lower().split() for text in self.document_texts]
+        self.bm25_index = BM25Okapi(self.bm25_corpus)
+
+    def hybrid_search(self, query_embedding: Optional[List[float]], query_text: str, top_k: int = 3) -> Optional[Dict]:
+        if query_embedding is None or self.bm25_index is None:
             return None
 
         try:
-            results = self.index.query(
+            vector_results = self.index.query(
                 vector=query_embedding,
-                top_k=top_k,
+                top_k=top_k * 2,
                 include_metadata=True
             )
+
+            tokenized_query = query_text.lower().split()
+            bm25_scores = self.bm25_index.get_scores(tokenized_query)
+
+            vector_scores = {}
+            for match in vector_results['matches']:
+                chunk_id = match['metadata']['chunk_id']
+                vector_scores[chunk_id] = match['score']
+
+            if vector_scores:
+                max_vec = max(vector_scores.values())
+                min_vec = min(vector_scores.values())
+                if max_vec > min_vec:
+                    vector_scores = {k: (v - min_vec) / (max_vec - min_vec)
+                                   for k, v in vector_scores.items()}
+
+            if len(bm25_scores) > 0:
+                max_bm25 = max(bm25_scores)
+                min_bm25 = min(bm25_scores)
+                if max_bm25 > min_bm25:
+                    bm25_scores = [(score - min_bm25) / (max_bm25 - min_bm25) for score in bm25_scores]
+
+            alpha = 0.5
+            hybrid_scores = {}
+            for match in vector_results['matches']:
+                chunk_id = match['metadata']['chunk_id']
+                vec_score = vector_scores.get(chunk_id, 0)
+                bm25_score = bm25_scores[chunk_id] if chunk_id < len(bm25_scores) else 0
+
+                hybrid_scores[chunk_id] = alpha * vec_score + (1 - alpha) * bm25_score
+
+            sorted_matches = sorted(
+                vector_results['matches'],
+                key=lambda x: hybrid_scores.get(x['metadata']['chunk_id'], 0),
+                reverse=True
+            )[:top_k]
 
             documents = []
             scores = []
             metadatas = []
 
-            for match in results['matches']:
+            for match in sorted_matches:
+                chunk_id = match['metadata']['chunk_id']
                 documents.append(match['metadata']['text'])
-                scores.append(match['score'])
+                scores.append(hybrid_scores.get(chunk_id, 0))
                 metadatas.append({
-                    'chunk_id': match['metadata']['chunk_id'],
+                    'chunk_id': chunk_id,
                     'start_word': match['metadata']['start_word'],
                     'end_word': match['metadata']['end_word']
                 })
@@ -218,6 +264,7 @@ class _VectorManager:
             }
 
         except Exception as e:
+            Logger.log(f"[RAG MANAGER] - Hybrid search error: {e}")
             return None
 
     def get_stats(self):
@@ -279,7 +326,7 @@ class RAGManagerClass:
         if query_embedding is None:
             return None
 
-        results = self._vector_store.search(query_embedding, top_k=top_k)
+        results = self._vector_store.hybrid_search(query_embedding, query)
 
         if results is None:
             return None
