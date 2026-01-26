@@ -118,7 +118,7 @@ async def save_recommendation(
 
         rec_id = request.image
 
-        existing = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Reccomendations", "reccomendations", rec_id])
+        existing = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations", rec_id])
         if existing:
             return JSONResponse(
                 status_code=409,
@@ -136,7 +136,7 @@ async def save_recommendation(
         }
 
         success = DM.set_value(
-            ["Users", x_user_id, "Existing Homeowner", "Saved Reccomendations", "reccomendations", rec_id],
+            ["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations", rec_id],
             recommendation_data
         )
 
@@ -188,7 +188,7 @@ async def delete_recommendation(
         decoded_rec_id = unquote(rec_id)
 
         success = DM.destroy(
-            ["Users", x_user_id, "Existing Homeowner", "Saved Reccomendations", "reccomendations", decoded_rec_id]
+            ["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations", decoded_rec_id]
         )
 
         if not success:
@@ -215,7 +215,7 @@ async def get_saved_recommendations(
     x_user_id: str = Header(..., alias="X-User-ID")
 ):
     try:
-        saved_recs = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Reccomendations", "reccomendations"])
+        saved_recs = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations"])
 
         if not saved_recs:
             return JSONResponse(

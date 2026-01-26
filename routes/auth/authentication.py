@@ -35,7 +35,7 @@ async def register_user(user_data: UserData):
                     "Detected Furniture": {
                         "furniture": []
                     },
-                    "Saved Reccomendations": {
+                    "Saved Recommendations": {
                         "recommendations": []
                     },
                     "Detected Style": {
