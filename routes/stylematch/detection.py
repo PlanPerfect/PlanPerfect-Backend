@@ -153,7 +153,7 @@ async def detect_furniture(
 
             detection_key = f"{timestamp}_{class_name}_{class_counts[class_name]}"
             DM.set_value(
-                path=["Images", x_user_id, detection_key],
+                path=["Users", x_user_id, "Existing Homeowner", "Detected Furniture", "furniture", detection_key],
                 value={
                     "file_id": upload_result["file_id"],
                     "url": upload_result["url"]

@@ -333,7 +333,7 @@ class RAGManagerClass:
 
     def add_to_history(self, uid: str, role: str, content: str):
         try:
-            path = ["RAG Conversations", uid, "History"]
+            path = ["Users", uid, "RAG Conversations", "history"]
 
             existing_history = DM.peek(path) or []
 
@@ -353,7 +353,7 @@ class RAGManagerClass:
 
     def clear_history(self, uid: str):
         try:
-            path = ["RAG Conversations", uid, "History"]
+            path = ["Users", uid, "RAG Conversations", "history"]
             DM.set_value(path, [])
             DM.save()
 
@@ -362,7 +362,7 @@ class RAGManagerClass:
 
     def get_history(self, uid: str) -> List[Dict]:
         try:
-            path = ["RAG Conversations", uid, "History"]
+            path = ["Users", uid, "RAG Conversations", "history"]
             history = DM.peek(path)
             return history if history else []
 

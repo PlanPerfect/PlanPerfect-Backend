@@ -24,7 +24,65 @@ async def register_user(user_data: UserData):
             user_info = {
                 "uid": user_data.uid,
                 "email": user_data.email,
-                "displayName": user_data.displayName
+                "displayName": user_data.displayName,
+                "RAG Conversations": {
+                    "history": []
+                },
+                "Generated Document": {
+                    "url": None
+                },
+                "Existing Homeowner": {
+                    "Detected Furniture": {
+                        "furniture": []
+                    },
+                    "Saved Reccomendations": {
+                        "recommendations": []
+                    },
+                    "Detected Style": {
+                        "style": None
+                    },
+                    "Generated Photo": {
+                        "url": None
+                    },
+                    "Preferences": {
+                        "budget": None,
+                        "propertyType": None,
+                        "unitType": None
+                    },
+                    "Preferred Style": {
+                        "style": None
+                    },
+                    "Uploaded Photo": {
+                        "url": None
+                    }
+                },
+                "New Homeowner": {
+                    "Preferences": {
+                        "budget": None,
+                        "Preferred Styles": {
+                            "styles": []
+                        }
+                    },
+                    "Segmented Floor Plan": {
+                        "url": None
+                    },
+                    "Unit Information": {
+                        "Number Of Rooms": {
+                            "balcony": None,
+                            "bathroom": None,
+                            "bedroom": None,
+                            "kitchen": None,
+                            "ledge": None,
+                            "livingRoom": None
+                        },
+                        "unit": None,
+                        "unitSize": None,
+                        "unitType": None
+                    },
+                    "Uploaded Floor Plan": {
+                        "url": None
+                    }
+                }
             }
 
             success = DM.set_value(["Users", user_data.uid], user_info)
