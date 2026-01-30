@@ -1,13 +1,15 @@
-from fastapi import APIRouter, File, UploadFile, Depends, Form
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi.responses import StreamingResponse, JSONResponse
 from middleware.auth import _verify_api_key
 from datetime import datetime
 from groq import Groq
 import json
 import tempfile
 import os
-import base64
+import requests
 
+from Services import DatabaseManager as DM
+from Services import FileManager as FM
 from Services import RAGManager as RAG
 from Services.DesignDocsPdf import generate_pdf
 
@@ -30,6 +32,55 @@ def _is_placeholder_value(value):
     }
     
     return str(value).lower().strip() in placeholder_phrases
+
+@router.post("/savePdf/{user_id}")
+async def save_generated_pdf(
+    user_id: str,
+    pdf_file: UploadFile = File(...)
+):
+    try:
+
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pdf_file.filename = f"design_document_{timestamp}.pdf"
+
+        # Upload PDF using FileManager
+        upload_result = FM.store_file(
+            file=pdf_file,
+            subfolder=f"newHomeOwners/{user_id}/documents"
+        )
+
+        pdf_url = upload_result["url"]
+
+        # Firebase path
+        generated_doc_path = ["Users", user_id, "Generated Document", "urls"]
+
+        # Append instead of overwrite
+        existing_urls = DM.peek(generated_doc_path) or []
+        existing_urls.append(pdf_url)
+
+        DM.set_value(generated_doc_path, existing_urls)
+
+        if not DM.save():
+            raise Exception("Failed to update Firebase")
+
+        return {
+            "success": True,
+            "result": {
+                "pdf_url": pdf_url,
+                "filename": pdf_file.filename
+            }
+        }
+
+    except Exception as e:
+        print(f"Error saving generated PDF: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Failed to save PDF: {str(e)}"
+            }
+        )
 
 def apply_conversation_overrides(design_data, base_preferences, base_budget):
     final_preferences = base_preferences.copy()
@@ -74,65 +125,89 @@ def apply_conversation_overrides(design_data, base_preferences, base_budget):
     return final_preferences, final_budget
 
 # Endpoint to generate interior design document
-@router.post("/generateDesignDocument")
-async def generate_design_document(
-    floor_plan: UploadFile = File(...),
-    preferences: str = Form(...),
-    budget: str = Form(...),
-    extraction_data: str = Form(None),
-):
+@router.post("/generateDesignDocument/{user_id}")
+async def generate_design_document(user_id: str):
     """
     Generates a complete interior design PDF document using LLM.
+    Retrieves all necessary data from Firebase RTDB using DatabaseManager.
     """
     tmp_floor_plan_path = None
     tmp_segmented_path = None
-    budget = budget or "Not specified"
     
     try:
-        # Save uploaded floor plan temporarily
-        if floor_plan:
-            suffix = os.path.splitext(floor_plan.filename)[1] if floor_plan.filename else '.png'
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                content = await floor_plan.read()
-                tmp_file.write(content)
-                tmp_floor_plan_path = tmp_file.name
+        # Retrieve user data from DatabaseManager
+        user_path = ["Users", user_id, "New Home Owner"]
+        user_data = DM.peek(user_path)
         
-        # Parse preferences and extraction data from input
-        preferences_data = json.loads(preferences) if preferences else {}
-        extraction_data_parsed = json.loads(extraction_data) if extraction_data else {}
+        if not user_data:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "result": "ERROR: User data not found in database"
+                }
+            )
         
-        # Extract segmented floor plan (base64 encoded image)
-        segmented_image_base64 = extraction_data_parsed.get('segmentedImage', None)
+        # Extract data from database
+        preferences_data = user_data.get("Preferences", {})
+        budget = preferences_data.get("budget", "Not specified")
+        styles = preferences_data.get("Preferred Styles", {}).get("styles", [])
         
-        # Process segmented image if it exists
-        if segmented_image_base64:
+        # Get floor plan URLs
+        floor_plan_url = user_data.get("Uploaded Floor Plan", {}).get("url")
+        segmented_floor_plan_url = user_data.get("Segmented Floor Plan", {}).get("url")
+        
+        # Get unit information
+        unit_info_data = user_data.get("Unit Information", {})
+        unit_rooms = unit_info_data.get("unit", "Residential Unit")
+        unit_type = unit_info_data.get("unitType", "Not specified")
+        unit_size = unit_info_data.get("unitSize", "Not specified")
+        
+        number_of_rooms = unit_info_data.get("Number Of Rooms", {})
+        
+        # Build room counts dictionary
+        room_counts = {
+            "LIVING": number_of_rooms.get("livingRoom", 0),
+            "KITCHEN": number_of_rooms.get("kitchen", 0),
+            "BATH": number_of_rooms.get("bathroom", 0),
+            "BEDROOM": number_of_rooms.get("bedroom", 0),
+            "LEDGE": number_of_rooms.get("ledge", 0),
+            "BALCONY": number_of_rooms.get("balcony", 0),
+        }
+        
+        # Download and save floor plan temporarily if URL exists
+        if floor_plan_url:
             try:
-                # Remove the data URI prefix if present (e.g., "data:image/png;base64,")
-                if ',' in segmented_image_base64:
-                    segmented_image_base64 = segmented_image_base64.split(',')[1]
+                response = requests.get(floor_plan_url)
+                response.raise_for_status()
                 
-                # Decode base64 and save to temporary file
-                segmented_image_data = base64.b64decode(segmented_image_base64)
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_seg_file:
-                    tmp_seg_file.write(segmented_image_data)
-                    tmp_segmented_path = tmp_seg_file.name
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
+                    tmp_file.write(response.content)
+                    tmp_floor_plan_path = tmp_file.name
             except Exception as e:
-                print(f"Error processing segmented image: {e}")
-                tmp_segmented_path = None
-
-        # Extract room information
-        unit_info = extraction_data_parsed.get('unitInfo', {})
+                print(f"Error downloading floor plan: {e}")
+                tmp_floor_plan_path = None
         
-        # Process room counts
-        room_counts = unit_info.get('room_counts', {})
+        # Download and save segmented floor plan temporarily if URL exists
+        if segmented_floor_plan_url:
+            try:
+                response = requests.get(segmented_floor_plan_url)
+                response.raise_for_status()
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
+                    tmp_file.write(response.content)
+                    tmp_segmented_path = tmp_file.name
+            except Exception as e:
+                print(f"Error downloading segmented floor plan: {e}")
+                tmp_segmented_path = None
+        
+        # Process room counts to create summary
         rooms_summary = []
         for room_type, count in room_counts.items():
-            if count > 0:
+            if count and count > 0:
                 rooms_summary.append(f"{count} {room_type.title()}")
         
-        property_type = unit_info.get('unit_rooms', 'Residential Unit')
-        unit_types = unit_info.get('unit_types', [])
-        unit_sizes = unit_info.get('unit_sizes', [])
+        property_type = unit_rooms or 'Residential Unit'
         
         # Retrieve RAG-LLM chatbot history
         rag_history = RAG.get_history()
@@ -153,17 +228,20 @@ async def generate_design_document(
             room_details = "Identified Rooms:\n"
             room_details += ", ".join(rooms_summary)
         
+        # Format styles as comma-separated string
+        styles_str = ", ".join(styles) if styles else "Not specified"
+        
         # Prompt to parse in LLM
         prompt = f"""Create a comprehensive interior design document in JSON format.
 
 PROPERTY DETAILS:
 - Unit: {property_type}
-- Unit Type: {', '.join(unit_types) if unit_types else 'Not specified'}
-- Unit Sizes: {', '.join(unit_sizes) if unit_sizes else 'Not specified'}
+- Unit Type: {unit_type}
+- Unit Size: {unit_size}
 - Room Layout: {room_details or 'Standard residential layout'}
 
 CLIENT PREFERENCES (Initial):
-- Style: {preferences_data.get('style', 'Not specified')}
+- Style: {styles_str}
 - Colors: 'Not specified'
 - Materials: 'Not specified'
 - Special Requirements: 'Not specified'
@@ -424,12 +502,26 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
         # Parse the fully cleaned JSON
         design_data = json.loads(json_str)
         
+        # Build preferences dict for PDF generation
+        final_preferences = {
+            "style": styles_str,
+            "styles": styles
+        }
+        
         # Apply conversation overrides 
         final_preferences, final_budget = apply_conversation_overrides(
             design_data=design_data,
-            base_preferences=preferences_data,
+            base_preferences=final_preferences,
             base_budget=budget
         )
+        
+        # Build unit_info dict for PDF generation
+        unit_info = {
+            "unit_rooms": unit_rooms,
+            "unit_types": [unit_type] if unit_type != "Not specified" else [],
+            "unit_sizes": [unit_size] if unit_size != "Not specified" else [],
+            "room_counts": room_counts
+        }
         
         # Generate PDF
         pdf_buffer = generate_pdf(
@@ -471,4 +563,11 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
                 pass
         
         print(f"Error generating design document: {str(e)}")
-        raise Exception(f"Failed to generate design document: {str(e)}")
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "result": f"ERROR: Failed to generate design document. Error: {str(e)}"
+            }
+        )

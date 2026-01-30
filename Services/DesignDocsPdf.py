@@ -48,7 +48,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         textColor=colors.HexColor('#D4AF37'),
         spaceAfter=20,
         alignment=TA_CENTER,
-        fontName='Times-Bold'
+        fontName='Helvetica-Bold'
     )
     
     heading_style = ParagraphStyle(
