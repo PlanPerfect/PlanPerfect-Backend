@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import APIRouter, File, UploadFile, Depends, Form
 from fastapi.responses import JSONResponse
 from gradio_client import Client, handle_file
@@ -41,6 +42,8 @@ async def save_user_input(
     Stores floor plan and segmented floor plan images, along with preferences, budget, and unit information.
     """
     try:
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Parse preferences JSON
         try:
             preferences_data = json.loads(preferences) if isinstance(preferences, str) else preferences
@@ -77,6 +80,10 @@ async def save_user_input(
                 )
         
         # Upload floor plan
+        original_floor_plan_name = floor_plan.filename
+        name, ext = os.path.splitext(original_floor_plan_name)
+        floor_plan.filename = f"{name}_{timestamp}{ext}"
+
         floor_plan_result = FM.store_file(
             file=floor_plan,
             subfolder=f"newHomeOwners/{user_id}"
@@ -87,103 +94,73 @@ async def save_user_input(
         # Upload segmented floor plan if provided
         segmented_floor_plan_url = None
         segmented_floor_plan_file_id = None
+
         if segmented_floor_plan:
+            original_segmented_name = segmented_floor_plan.filename
+            seg_name, seg_ext = os.path.splitext(original_segmented_name)
+            segmented_floor_plan.filename = f"{seg_name}_{timestamp}{seg_ext}"
+
             segmented_result = FM.store_file(
                 file=segmented_floor_plan,
-                subfolder=f"newHomeOwners/{user_id}"
+                subfolder=f"    newHomeOwners/{user_id}"
             )
             segmented_floor_plan_url = segmented_result["url"]
             segmented_floor_plan_file_id = segmented_result["file_id"]
         
-        # Prepare data structure according to schema
-        user_path = ["Users", user_id]
-        new_home_owner_path = user_path + ["New Home Owner"]
-        
-        # Check if user exists in database
-        existing_user_data = DM.peek(user_path)
-        
-        if existing_user_data is None:
-            # Create new user entry with flow field
-            DM.set_value(user_path + ["flow"], "newHomeOwner")
-        else:
-            # Update flow if user exists
-            current_flow = DM.peek(user_path + ["flow"])
-            if current_flow != "newHomeOwner":
-                DM.set_value(user_path + ["flow"], "newHomeOwner")
+        # Set flow to "newHomeOwner"
+        DM.data["Users"][user_id]["flow"] = "newHomeOwner"
         
         # Set Preferences
-        preferences_path = new_home_owner_path + ["Preferences"]
-        DM.set_value(preferences_path + ["Preferred Styles", "styles"], styles_list)
-        
-        if budget:
-            DM.set_value(preferences_path + ["budget"], budget)
-        else:
-            DM.set_value(preferences_path + ["budget"], None)
+        DM.data["Users"][user_id]["New Home Owner"]["Preferences"]["Preferred Styles"]["styles"] = styles_list
+        DM.data["Users"][user_id]["New Home Owner"]["Preferences"]["budget"] = budget if budget else None
         
         # Set Uploaded Floor Plan
-        uploaded_floor_plan_path = new_home_owner_path + ["Uploaded Floor Plan"]
-        DM.set_value(uploaded_floor_plan_path + ["url"], floor_plan_url)
+        DM.data["Users"][user_id]["New Home Owner"]["Uploaded Floor Plan"]["url"] = floor_plan_url
         
         # Set Segmented Floor Plan
-        segmented_floor_plan_path = new_home_owner_path + ["Segmented Floor Plan"]
-        if segmented_floor_plan_url:
-            DM.set_value(segmented_floor_plan_path + ["url"], segmented_floor_plan_url)
-        else:
-            DM.set_value(segmented_floor_plan_path + ["url"], None)
+        DM.data["Users"][user_id]["New Home Owner"]["Segmented Floor Plan"]["url"] = (
+            segmented_floor_plan_url if segmented_floor_plan_url else None
+        )
         
-        # Set Unit Information if available
-        unit_info_path = new_home_owner_path + ["Unit Information"]
-        
+        # Set Unit Information
         if unit_info_dict:
             # Set unit rooms (e.g., "2-BEDROOM")
             unit_value = unit_info_dict.get("unit_rooms") if unit_info_dict.get("unit_rooms") else None
-            DM.set_value(unit_info_path + ["unit"], unit_value)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = unit_value
             
             # Set unit types (take first one if multiple)
             unit_types = unit_info_dict.get("unit_types", [])
             unit_type_value = unit_types[0] if unit_types and len(unit_types) > 0 else None
-            DM.set_value(unit_info_path + ["unitType"], unit_type_value)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = unit_type_value
             
             # Set unit sizes (take first one if multiple)
             unit_sizes = unit_info_dict.get("unit_sizes", [])
             unit_size_value = unit_sizes[0] if unit_sizes and len(unit_sizes) > 0 else None
-            DM.set_value(unit_info_path + ["unitSize"], unit_size_value)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = unit_size_value
             
             # Set room counts
             room_counts = unit_info_dict.get("room_counts", {})
-            number_of_rooms_path = unit_info_path + ["Number Of Rooms"]
-            
-            DM.set_value(number_of_rooms_path + ["balcony"], room_counts.get("BALCONY", 0))
-            DM.set_value(number_of_rooms_path + ["bathroom"], room_counts.get("BATH", 0))
-            DM.set_value(number_of_rooms_path + ["bedroom"], room_counts.get("BEDROOM", 0))
-            DM.set_value(number_of_rooms_path + ["kitchen"], room_counts.get("KITCHEN", 0))
-            DM.set_value(number_of_rooms_path + ["ledge"], room_counts.get("LEDGE", 0))
-            DM.set_value(number_of_rooms_path + ["livingRoom"], room_counts.get("LIVING", 0))
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["balcony"] = room_counts.get("BALCONY", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bathroom"] = room_counts.get("BATH", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bedroom"] = room_counts.get("BEDROOM", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["kitchen"] = room_counts.get("KITCHEN", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["ledge"] = room_counts.get("LEDGE", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["livingRoom"] = room_counts.get("LIVING", 0)
         else:
             # Set default None values if no unit info
-            DM.set_value(unit_info_path + ["unit"], None)
-            DM.set_value(unit_info_path + ["unitType"], None)
-            DM.set_value(unit_info_path + ["unitSize"], None)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = None
             
-            number_of_rooms_path = unit_info_path + ["Number Of Rooms"]
-            DM.set_value(number_of_rooms_path + ["balcony"], None)
-            DM.set_value(number_of_rooms_path + ["bathroom"], None)
-            DM.set_value(number_of_rooms_path + ["bedroom"], None)
-            DM.set_value(number_of_rooms_path + ["kitchen"], None)
-            DM.set_value(number_of_rooms_path + ["ledge"], None)
-            DM.set_value(number_of_rooms_path + ["livingRoom"], None)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["balcony"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bathroom"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bedroom"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["kitchen"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["ledge"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["livingRoom"] = None
         
         # Save to Firebase RTDB
-        save_success = DM.save()
-        
-        if not save_success:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "result": "ERROR: Failed to save data to database"
-                }
-            )
+        DM.save()
         
         return JSONResponse(
             status_code=200,

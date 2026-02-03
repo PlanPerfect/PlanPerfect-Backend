@@ -52,17 +52,12 @@ async def save_generated_pdf(
 
         pdf_url = upload_result["url"]
 
-        # Firebase path
-        generated_doc_path = ["Users", user_id, "Generated Document", "urls"]
+        if "urls" not in DM.data["Users"][user_id]["Generated Document"] or not isinstance(DM.data["Users"][user_id]["Generated Document"]["urls"], list):
+            DM.data["Users"][user_id]["Generated Document"]["urls"] = []
+        
+        DM.data["Users"][user_id]["Generated Document"]["urls"].append(pdf_url)
 
-        # Append instead of overwrite
-        existing_urls = DM.peek(generated_doc_path) or []
-        existing_urls.append(pdf_url)
-
-        DM.set_value(generated_doc_path, existing_urls)
-
-        if not DM.save():
-            raise Exception("Failed to update Firebase")
+        DM.save()
 
         return {
             "success": True,
