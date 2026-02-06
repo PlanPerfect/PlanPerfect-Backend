@@ -6,6 +6,7 @@ import httpx
 import os
 from typing import Optional
 import random
+import hashlib
 from urllib.parse import unquote
 from Services import DatabaseManager as DM
 
@@ -116,9 +117,9 @@ async def save_recommendation(
                 }
             )
 
-        rec_id = request.image
+        rec_id = hashlib.md5(request.image.encode()).hexdigest()
 
-        existing = DM.peek(["Users", x_user_id, "Saved Reccomendations", rec_id])
+        existing = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations", rec_id])
         if existing:
             return JSONResponse(
                 status_code=409,
@@ -135,16 +136,7 @@ async def save_recommendation(
             "match": request.match,
         }
 
-        success = DM.set_value(
-            ["Users", x_user_id, "Saved Reccomendations", rec_id],
-            recommendation_data
-        )
-
-        if not success:
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Failed to save recommendation to database"}
-            )
+        DM.data["Users"][x_user_id]["Existing Homeowner"]["Saved Recommendations"]["recommendations"][rec_id] = recommendation_data
 
         DM.save()
 
@@ -185,10 +177,10 @@ async def delete_recommendation(
                 }
             )
 
-        decoded_rec_id = unquote(rec_id)
+        hashed_rec_id = hashlib.md5(rec_id.encode()).hexdigest()
 
         success = DM.destroy(
-            ["Users", x_user_id, "Saved Reccomendations", decoded_rec_id]
+            ["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations", hashed_rec_id]
         )
 
         if not success:
@@ -215,7 +207,7 @@ async def get_saved_recommendations(
     x_user_id: str = Header(..., alias="X-User-ID")
 ):
     try:
-        saved_recs = DM.peek(["Users", x_user_id, "Saved Reccomendations"])
+        saved_recs = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations"])
 
         if not saved_recs:
             return JSONResponse(

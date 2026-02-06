@@ -138,30 +138,22 @@ system_instruction=(
 def generate_sd_prompt(styles: str) -> dict:
     """
     Generate a Stable Diffusion prompt using Gemini.
-
-    Workflow:
-    1. Sends user-selected styles to the LLM
-    2. Enforces JSON-only output
-    3. Parses and validates the response
-    4. Returns a clean dictionary safe ready for use
-
-    Args:
-        styles: User selected style(s)
-        
-    Returns:
-        Dictionary containing:
-        - prompt
     """
     prompt = f"""
-        Styles: {styles}
+        Original Style: Scandinavian (light woods, whites, minimalist)
+        Target Styles: {styles}
 
-        Generate a Stable Diffusion prompt under 60 tokens.
+        Generate a Stable Diffusion prompt under 60 tokens that creates a DRAMATIC style transformation.
 
-        Requirements:
-        - Use comma-separated phrases only
-        - Explicitly assign colors to walls, floors, furniture, and rugs
-        - Color palette must clearly reflect the selected styles
-        - No negative prompt
+        CRITICAL REQUIREMENTS:
+        - Completely change the color palette from the original
+        - For Contemporary Luxury: deep jewel tones, rich materials, bold contrasts
+        - Specify EXACT colors: "charcoal walls" not "dark walls"
+        - Include material transformations: velvet, marble, brass, etc.
+        - List colors in order: walls → floor → sofa → accents
+
+        Example for Contemporary Luxury:
+        "deep charcoal walls with matte finish, polished marble flooring in black and white, navy velvet sofa, brass and glass coffee table, emerald green accent pillows, gold metal floor lamp, abstract art, contemporary luxury living room"
 
         Return ONLY valid JSON:
         {{ "prompt": "..." }}
