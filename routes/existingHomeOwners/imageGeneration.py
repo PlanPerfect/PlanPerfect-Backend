@@ -10,7 +10,8 @@ Workflow:
 1. Receives input image and style preferences from frontend
 2. Uses LLM to generate a prompt for Stable Diffusion based on the selected style(s)
 3. Runs Stable Diffusion img2img to generate a new image
-4. Returns the generated image file in the response
+4. Uploads generated image to Cloudinary
+5. Returns the Cloudinary URL in the response
 
 This API is used by the image generation feature in the frontend
 
@@ -19,16 +20,21 @@ Workflow Design Notes:
 - img2img is used to preserve room layout and structure, instead of text-to-image
 - Additional checks are added to ensure that LLM output is valid
 - Original aspect ratio is preserved throughout the generation process
+- Images are stored in Cloudinary for persistent cloud storage
 """
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Form, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from PIL import Image
 import uuid
 import torch
+import io
+import tempfile
+import os
+import requests
 from Services.StableDiffusion import pipe
 from Services.LLMGemini import generate_sd_prompt
+from Services.FileManager import FileManager
 
 def resize_to_target_with_aspect_ratio(image: Image.Image, target_size: int = 512):
     """
@@ -88,9 +94,7 @@ def choose_base_resolution(image: Image.Image):
         base = 448
     else:
         base = 384
-
     return base
-
 
 def run_stable_diffusion(init_image: Image.Image, prompt: str):
     """
@@ -122,27 +126,58 @@ def run_stable_diffusion(init_image: Image.Image, prompt: str):
         ),
         image=init_image,
         strength=0.45,
-        guidance_scale=7.5,
+        guidance_scale=8,
         num_inference_steps=25
     ).images[0]
+
+
+class UploadFileAdapter:
+    """Adapter to make image bytes compatible with FileManager's expected UploadFile interface"""
+    def __init__(self, file_content: bytes, filename: str):
+        self.file = io.BytesIO(file_content)
+        self.filename = filename
+
 
 router = APIRouter(prefix="/image", tags=["Image Generation"])
 
 @router.post("/generate")
 async def generate_image(
-    file: UploadFile = File(...),
+    file_id: str = Form(...),
     styles: str = Form(...),
 ):
+    """
+    Generate a new room design using Stable Diffusion.
+    
+    Args:
+        file_id: Cloudinary file_id from the classification step
+        styles: Comma-separated string of selected interior design styles
+    
+    Returns:
+        JSON with generated image URL, file_id, and filename
+    """
+    tmp_file_path = None
     try:
-        # Save input image
-        input_path = f"static/input_{uuid.uuid4()}.png"
-        with open(input_path, "wb") as f:
-            f.write(await file.read())
+        # ================================
+        # Download image from Cloudinary
+        # ================================
+        # Get the image URL from Cloudinary using the file_id
+        image_url = FileManager.get_optimized_url(file_id)
+        
+        # Download the image to a temporary file
+        import requests
+        response = requests.get(image_url)
+        response.raise_for_status()
+        
+        suffix = '.png'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            tmp_file.write(response.content)
+            tmp_file_path = tmp_file.name
 
-        init_image = Image.open(input_path).convert("RGB")
-        original_size = init_image.size  # Store original dimensions
+        init_image = Image.open(tmp_file_path).convert("RGB")
 
+        # ================================
         # Generate prompt using LLM with retry logic
+        # ================================
         max_retries = 3
         parsed = None
 
@@ -172,7 +207,10 @@ async def generate_image(
         if not prompt or prompt.strip() == "":
             prompt = "detailed, high quality, professional photograph"
         
-        # Clear GPU cache before generation, helps with faster genration of images
+        # ================================
+        # Run Stable Diffusion
+        # ================================
+        # Clear GPU cache before generation, helps with faster generation of images
         torch.cuda.empty_cache()
 
         base_size = choose_base_resolution(init_image)
@@ -197,17 +235,56 @@ async def generate_image(
                     "duplicated furniture, bad perspective"
                 ),
                 image=hires_image,
-                strength=0.20,         
-                guidance_scale=7.0,
+                strength=0.30,
+                guidance_scale=7.5,
                 num_inference_steps=30
             ).images[0]
         )
         
-        output_path = f"static/output_{uuid.uuid4()}.png"
-        hires_result.save(output_path, quality=95)  # Higher quality PNG
+        # ================================
+        # Upload to Cloudinary
+        # ================================
+        # Convert PIL Image to bytes for Cloudinary upload
+        img_byte_arr = io.BytesIO()
+        hires_result.save(img_byte_arr, format='PNG', quality=95)
+        img_byte_arr.seek(0)
 
-        return FileResponse(output_path)
+        # Create adapter for FileManager
+        file_adapter = UploadFileAdapter(
+            img_byte_arr.getvalue(), 
+            f"generated_design_{uuid.uuid4()}.png"
+        )
+
+        # Upload to Cloudinary
+        cloudinary_result = FileManager.store_file(
+            file=file_adapter,
+            subfolder="Generated Designs"
+        )
+
+        # ================================
+        # Clean up temporary file
+        # ================================
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            os.unlink(tmp_file_path)
+
+        # ================================
+        # Return Cloudinary URL and file_id
+        # ================================
+        return {
+            "url": cloudinary_result["url"],
+            "file_id": cloudinary_result["file_id"],
+            "filename": cloudinary_result["filename"]
+        }
 
     except Exception as e:
+        # ================================
+        # Error handling and cleanup
+        # ================================
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
+                os.unlink(tmp_file_path)
+            except:
+                pass
+                
         print(f"Error in generate_image: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
