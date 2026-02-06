@@ -1,4 +1,5 @@
-from fastapi import APIRouter, File, UploadFile, Depends
+from datetime import datetime
+from fastapi import APIRouter, File, UploadFile, Depends, Form
 from fastapi.responses import JSONResponse
 from gradio_client import Client, handle_file
 from middleware.auth import _verify_api_key
@@ -7,7 +8,11 @@ import re
 import tempfile
 import os
 import base64
+import json
 from collections import Counter
+
+from Services import DatabaseManager as DM
+from Services import FileManager as FM
 
 router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"], dependencies=[Depends(_verify_api_key)])
 
@@ -21,6 +26,169 @@ def get_ocr_model():
         from doctr.models import ocr_predictor
         _ocr_model = ocr_predictor(pretrained=True)
     return _ocr_model
+
+# New endpoint for saving user input
+@router.post("/saveUserInput")
+async def save_user_input(
+    floor_plan: UploadFile = File(...),
+    segmented_floor_plan: UploadFile = File(None),
+    preferences: str = Form(...),
+    budget: str = Form(None),
+    unit_info: str = Form(None),
+    user_id: str = Form(...),
+):
+    """
+    Saves new home owner user inputs to Firebase RTDB and Cloud Storage.
+    Stores floor plan and segmented floor plan images, along with preferences, budget, and unit information.
+    """
+    try:
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Parse preferences JSON
+        try:
+            preferences_data = json.loads(preferences) if isinstance(preferences, str) else preferences
+            
+            # Handle if preferences is a list or dict
+            if isinstance(preferences_data, list):
+                styles_list = preferences_data
+            elif isinstance(preferences_data, dict):
+                styles_list = preferences_data.get("styles", [])
+            else:
+                styles_list = []
+                
+        except json.JSONDecodeError:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "result": "ERROR: Invalid preferences JSON format"
+                }
+            )
+        
+        # Parse unit info JSON if provided
+        unit_info_dict = None
+        if unit_info:
+            try:
+                unit_info_dict = json.loads(unit_info) if isinstance(unit_info, str) else unit_info
+            except json.JSONDecodeError:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "result": "ERROR: Invalid unit_info JSON format"
+                    }
+                )
+        
+        # Upload floor plan
+        original_floor_plan_name = floor_plan.filename
+        name, ext = os.path.splitext(original_floor_plan_name)
+        floor_plan.filename = f"{name}_{timestamp}{ext}"
+
+        floor_plan_result = FM.store_file(
+            file=floor_plan,
+            subfolder=f"newHomeOwners/{user_id}"
+        )
+        floor_plan_url = floor_plan_result["url"]
+        floor_plan_file_id = floor_plan_result["file_id"]
+        
+        # Upload segmented floor plan if provided
+        segmented_floor_plan_url = None
+        segmented_floor_plan_file_id = None
+
+        if segmented_floor_plan:
+            original_segmented_name = segmented_floor_plan.filename
+            seg_name, seg_ext = os.path.splitext(original_segmented_name)
+            segmented_floor_plan.filename = f"{seg_name}_{timestamp}{seg_ext}"
+
+            segmented_result = FM.store_file(
+                file=segmented_floor_plan,
+                subfolder=f"    newHomeOwners/{user_id}"
+            )
+            segmented_floor_plan_url = segmented_result["url"]
+            segmented_floor_plan_file_id = segmented_result["file_id"]
+        
+        # Set flow to "newHomeOwner"
+        DM.data["Users"][user_id]["flow"] = "newHomeOwner"
+        
+        # Set Preferences
+        DM.data["Users"][user_id]["New Home Owner"]["Preferences"]["Preferred Styles"]["styles"] = styles_list
+        DM.data["Users"][user_id]["New Home Owner"]["Preferences"]["budget"] = budget if budget else None
+        
+        # Set Uploaded Floor Plan
+        DM.data["Users"][user_id]["New Home Owner"]["Uploaded Floor Plan"]["url"] = floor_plan_url
+        
+        # Set Segmented Floor Plan
+        DM.data["Users"][user_id]["New Home Owner"]["Segmented Floor Plan"]["url"] = (
+            segmented_floor_plan_url if segmented_floor_plan_url else None
+        )
+        
+        # Set Unit Information
+        if unit_info_dict:
+            # Set unit rooms (e.g., "2-BEDROOM")
+            unit_value = unit_info_dict.get("unit_rooms") if unit_info_dict.get("unit_rooms") else None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = unit_value
+            
+            # Set unit types (take first one if multiple)
+            unit_types = unit_info_dict.get("unit_types", [])
+            unit_type_value = unit_types[0] if unit_types and len(unit_types) > 0 else None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = unit_type_value
+            
+            # Set unit sizes (take first one if multiple)
+            unit_sizes = unit_info_dict.get("unit_sizes", [])
+            unit_size_value = unit_sizes[0] if unit_sizes and len(unit_sizes) > 0 else None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = unit_size_value
+            
+            # Set room counts
+            room_counts = unit_info_dict.get("room_counts", {})
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["balcony"] = room_counts.get("BALCONY", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bathroom"] = room_counts.get("BATH", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bedroom"] = room_counts.get("BEDROOM", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["kitchen"] = room_counts.get("KITCHEN", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["ledge"] = room_counts.get("LEDGE", 0)
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["livingRoom"] = room_counts.get("LIVING", 0)
+        else:
+            # Set default None values if no unit info
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = None
+            
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["balcony"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bathroom"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bedroom"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["kitchen"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["ledge"] = None
+            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["livingRoom"] = None
+        
+        # Save to Firebase RTDB
+        DM.save()
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "result": {
+                    "message": "User input saved successfully",
+                    "floor_plan_url": floor_plan_url,
+                    "floor_plan_file_id": floor_plan_file_id,
+                    "segmented_floor_plan_url": segmented_floor_plan_url,
+                    "segmented_floor_plan_file_id": segmented_floor_plan_file_id,
+                    "user_id": user_id
+                }
+            }
+        )
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error saving user input: {error_details}")
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "result": f"ERROR: Failed to save user input. Error: {str(e)}"
+            }
+        )
 
 # Endpoint for room segmentation
 @router.post("/roomSegmentation")

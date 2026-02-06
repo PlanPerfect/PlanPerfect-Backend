@@ -27,16 +27,15 @@ async def register_user(user_data: UserData):
                 "displayName": user_data.displayName
             }
 
-            success = DM.set_value(["Users", user_data.uid], user_info)
+            DM.data["Users"][user_data.uid] = user_info
 
-            if success:
-                DM.save()
-                return JSONResponse(
-                    status_code=200,
-                    content={ "response": "SUCCESS: User registered successfully" }
-                )
-            else:
-                return JSONResponse(status_code=500, content={ "ERROR: Failed to register user" })
+            DM.save()
+
+            return JSONResponse(
+                status_code=200,
+                content={ "response": "SUCCESS: User registered successfully" }
+            )
+
         else:
             return JSONResponse(
                 status_code=200,
