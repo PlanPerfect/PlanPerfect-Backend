@@ -19,11 +19,11 @@ from routes.chatbot.chatCompletions import router as chatbot_router
 from routes.stylematch.detection import router as stylematch_detection_router
 from routes.stylematch.recommendations import router as stylematch_recommendations_router
 from routes.auth.authentication import router as auth_router
-
 from Services import DatabaseManager as DM
 from Services import RAGManager as RAG
 from Services import LLMManager as LLM
 from Services import FileManager as FM
+from Services import ServiceOrchestra as SO
 from Services import Bootcheck
 
 warnings.simplefilter("ignore", FutureWarning)
@@ -187,6 +187,9 @@ if __name__ == '__main__':
 
     if not FM._initialized:
         FM.initialize()
+
+    if not SO._initialized:
+        SO.initialize()
 
     def signal_handler(signum, frame):
         os._exit(0)

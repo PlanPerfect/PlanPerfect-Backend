@@ -244,8 +244,6 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         self._model_manager = _ModelManager()
         self._initialized = True
 
-        print(f"LLM MANAGER INITIALIZED.\n")
-
     def chat(self, prompt: str) -> str: # main chat method with smart model switching and rate-limit handling
         if not self._initialized:
             raise RuntimeError("LLMManager not initialized. Call initialize() first.")
