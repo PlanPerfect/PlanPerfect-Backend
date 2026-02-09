@@ -5,6 +5,13 @@ import os
 import base64
 import tempfile
 from io import BytesIO
+from PIL import Image
+import pillow_avif  # Required for AVIF support
+import asyncio
+import httpx
+from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
+from io import BytesIO
 from dotenv import load_dotenv
 from datetime import datetime
 from Services import Logger
@@ -156,6 +163,189 @@ class ServiceOrchestraClass:
             if tmp_file_path and os.path.exists(tmp_file_path):
                 try:
                     os.unlink(tmp_file_path)
+                except:
+                    pass
+
+            return None
+
+    async def detect_furniture(
+        self,
+        file
+    ) -> Optional[Dict[str, any]]:
+        if not self._initialized:
+            raise RuntimeError("ServiceOrchestra not initialized. Call initialize() first.")
+
+        tmp_file_path = None
+        png_file_path = None
+
+        try:
+            # ================================
+            # Save uploaded file temporarily
+            # ================================
+            suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                content = await file.read()
+                tmp_file.write(content)
+                tmp_file_path = tmp_file.name
+
+            # ================================
+            # Convert image to RGB PNG format
+            # ================================
+
+            image = Image.open(tmp_file_path)
+
+            if image.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                if image.mode == 'P':
+                    image = image.convert('RGBA')
+                if 'A' in image.mode:
+                    background.paste(image, mask=image.split()[-1])
+                else:
+                    background.paste(image)
+                image = background
+            elif image.mode != 'RGB':
+                image = image.convert('RGB')
+
+            png_fd, png_file_path = tempfile.mkstemp(suffix=".png")
+            os.close(png_fd)
+
+            image.save(png_file_path, format="PNG", optimize=False)
+            image.close()
+
+            # Clean up original temp file
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                os.unlink(tmp_file_path)
+                tmp_file_path = None
+
+            # ================================
+            # Run furniture detection using ThreadPoolExecutor
+            # ================================
+
+            executor = ThreadPoolExecutor(max_workers=8)
+
+            def run_furniture_detection(file_path: str):
+                client = Client(
+                    "Joshua-is-tired/PlanPerfect-Furniture-Detection",
+                    httpx_kwargs={
+                        "timeout": httpx.Timeout(
+                            timeout=300.0,
+                            connect=60.0,
+                            read=240.0,
+                            write=60.0
+                        )
+                    }
+                )
+                return client.predict(
+                    pilimg=handle_file(file_path),
+                    api_name="/predict"
+                )
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                executor,
+                run_furniture_detection,
+                png_file_path
+            )
+
+            annotated_image_path, detection_data = result
+
+            # ================================
+            # Process detections and crop furniture items
+            # ================================
+            original_image = Image.open(png_file_path)
+            img_width, img_height = original_image.size
+            padding_percent = 0.3
+
+            class_counts = defaultdict(int)
+            detected_items = []
+
+            now = datetime.now()
+            timestamp = now.strftime("%Y%m%d_%H%M%S")
+
+            for item in detection_data.get("detected_items", []):
+                class_name = item["class_name"]
+                bbox = item["bbox"]
+                class_counts[class_name] += 1
+
+                # Calculate padded bounding box
+                bbox_width = bbox["x2"] - bbox["x1"]
+                bbox_height = bbox["y2"] - bbox["y1"]
+                padding_x = bbox_width * padding_percent
+                padding_y = bbox_height * padding_percent
+
+                x1 = max(0, bbox["x1"] - padding_x)
+                y1 = max(0, bbox["y1"] - padding_y)
+                x2 = min(img_width, bbox["x2"] + padding_x)
+                y2 = min(img_height, bbox["y2"] + padding_y)
+
+                # Crop furniture item
+                cropped = original_image.crop((x1, y1, x2, y2))
+
+                img_byte_arr = BytesIO()
+                cropped.save(img_byte_arr, format='PNG')
+                img_byte_arr.seek(0)
+
+                filename = f"{class_name}_{class_counts[class_name]}_{timestamp}.png"
+
+                # Create mock upload file for FileManager
+                class MockUploadFile:
+                    def __init__(self, file_bytes, filename):
+                        self.file = BytesIO(file_bytes)
+                        self.filename = filename
+
+                mock_file = MockUploadFile(img_byte_arr.getvalue(), filename)
+
+                # Upload cropped furniture image
+                upload_result = FM.store_file(
+                    file=mock_file,
+                    subfolder="Detected Furniture"
+                )
+
+                detected_items.append({
+                    "class": class_name,
+                    "url": upload_result["url"],
+                    "file_id": upload_result["file_id"],
+                    "confidence": round(item['confidence'] * 100)
+                })
+
+                cropped.close()
+
+            original_image.close()
+
+            # ================================
+            # Clean up temporary PNG file
+            # ================================
+            if png_file_path and os.path.exists(png_file_path):
+                os.unlink(png_file_path)
+
+            return {
+                "detections": detected_items,
+                "total_items": len(detected_items)
+            }
+
+        except asyncio.TimeoutError:
+            Logger.log("[SERVICE ORCHESTRA] - ERROR: Furniture detection timeout.")
+
+            if png_file_path and os.path.exists(png_file_path):
+                try:
+                    os.unlink(png_file_path)
+                except:
+                    pass
+
+            return None
+
+        except Exception as e:
+            Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Furniture detection failed. {str(e)}")
+
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                try:
+                    os.unlink(tmp_file_path)
+                except:
+                    pass
+
+            if png_file_path and os.path.exists(png_file_path):
+                try:
+                    os.unlink(png_file_path)
                 except:
                     pass
 
