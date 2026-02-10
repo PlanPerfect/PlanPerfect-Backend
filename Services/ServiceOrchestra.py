@@ -179,18 +179,11 @@ class ServiceOrchestraClass:
         png_file_path = None
 
         try:
-            # ================================
-            # Save uploaded file temporarily
-            # ================================
             suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
                 content = await file.read()
                 tmp_file.write(content)
                 tmp_file_path = tmp_file.name
-
-            # ================================
-            # Convert image to RGB PNG format
-            # ================================
 
             image = Image.open(tmp_file_path)
 
@@ -212,14 +205,9 @@ class ServiceOrchestraClass:
             image.save(png_file_path, format="PNG", optimize=False)
             image.close()
 
-            # Clean up original temp file
             if tmp_file_path and os.path.exists(tmp_file_path):
                 os.unlink(tmp_file_path)
                 tmp_file_path = None
-
-            # ================================
-            # Run furniture detection using ThreadPoolExecutor
-            # ================================
 
             executor = ThreadPoolExecutor(max_workers=8)
 
@@ -249,9 +237,6 @@ class ServiceOrchestraClass:
 
             annotated_image_path, detection_data = result
 
-            # ================================
-            # Process detections and crop furniture items
-            # ================================
             original_image = Image.open(png_file_path)
             img_width, img_height = original_image.size
             padding_percent = 0.3
@@ -267,7 +252,6 @@ class ServiceOrchestraClass:
                 bbox = item["bbox"]
                 class_counts[class_name] += 1
 
-                # Calculate padded bounding box
                 bbox_width = bbox["x2"] - bbox["x1"]
                 bbox_height = bbox["y2"] - bbox["y1"]
                 padding_x = bbox_width * padding_percent
@@ -278,7 +262,6 @@ class ServiceOrchestraClass:
                 x2 = min(img_width, bbox["x2"] + padding_x)
                 y2 = min(img_height, bbox["y2"] + padding_y)
 
-                # Crop furniture item
                 cropped = original_image.crop((x1, y1, x2, y2))
 
                 img_byte_arr = BytesIO()
@@ -287,7 +270,6 @@ class ServiceOrchestraClass:
 
                 filename = f"{class_name}_{class_counts[class_name]}_{timestamp}.png"
 
-                # Create mock upload file for FileManager
                 class MockUploadFile:
                     def __init__(self, file_bytes, filename):
                         self.file = BytesIO(file_bytes)
@@ -295,7 +277,6 @@ class ServiceOrchestraClass:
 
                 mock_file = MockUploadFile(img_byte_arr.getvalue(), filename)
 
-                # Upload cropped furniture image
                 upload_result = FM.store_file(
                     file=mock_file,
                     subfolder="Detected Furniture"
@@ -312,9 +293,6 @@ class ServiceOrchestraClass:
 
             original_image.close()
 
-            # ================================
-            # Clean up temporary PNG file
-            # ================================
             if png_file_path and os.path.exists(png_file_path):
                 os.unlink(png_file_path)
 
@@ -349,6 +327,85 @@ class ServiceOrchestraClass:
                 except:
                     pass
 
+            return None
+
+    async def get_recommendations(
+        self,
+        style: str,
+        furniture_name: str
+    ) -> Optional[Dict[str, any]]:
+        if not self._initialized:
+            raise RuntimeError("ServiceOrchestra not initialized. Call initialize() first.")
+
+        try:
+            import httpx
+            import random
+
+            search_query = f"{style} styled {furniture_name}"
+
+            params = {
+                "query": search_query,
+                "per_page": 5,
+                "orientation": "landscape"
+            }
+
+            PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+
+            if not PEXELS_API_KEY:
+                Logger.log("[SERVICE ORCHESTRA] - ERROR: PEXELS_API_KEY not found in environment.")
+                return None
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    "https://api.pexels.com/v1/search",
+                    params=params,
+                    headers={"Authorization": PEXELS_API_KEY},
+                    timeout=10.0
+                )
+
+                if response.status_code == 429:
+                    Logger.log("[SERVICE ORCHESTRA] - WARNING: Pexels API rate limit reached.")
+                    return {"error": "rate_limit", "message": "Too many requests. Please try again later."}
+
+                if response.status_code == 403:
+                    Logger.log("[SERVICE ORCHESTRA] - WARNING: Pexels API access forbidden.")
+                    return {"error": "forbidden", "message": "Too many requests. Please try again later."}
+
+                if response.status_code != 200:
+                    Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Pexels API returned status {response.status_code}")
+                    return None
+
+                data = response.json()
+
+                recommendations = []
+                for photo in data.get("photos", []):
+                    description = (
+                        photo.get("alt") or
+                        f"A beautiful {style} styled {furniture_name}"
+                    )
+
+                    def truncate_description(desc: str, max_length: int = 100) -> str:
+                        if len(desc) <= max_length:
+                            return desc
+                        return desc[:max_length].rsplit(' ', 1)[0] + "..."
+
+                    recommendations.append({
+                        "name": f"{style}-themed {furniture_name}",
+                        "image": photo["src"]["large"],
+                        "description": truncate_description(description),
+                        "match": random.randint(85, 99),
+                    })
+
+                return {
+                    "recommendations": recommendations
+                }
+
+        except httpx.TimeoutException:
+            Logger.log("[SERVICE ORCHESTRA] - ERROR: Pexels API timeout.")
+            return {"error": "timeout", "message": "Service timeout. Please try again."}
+
+        except Exception as e:
+            Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Failed to get recommendations. {str(e)}")
             return None
 
 

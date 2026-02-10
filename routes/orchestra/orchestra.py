@@ -10,7 +10,6 @@ router = APIRouter(prefix="/services", tags=["AI Services"])
 @router.post("/generateImage")
 async def generate_image(prompt: str = Form(...)):
     try:
-        # Call ServiceOrchestra to generate and upload image
         result = ServiceOrchestra.generate_image(prompt=prompt)
 
         if not result:
@@ -51,7 +50,6 @@ async def generate_image(prompt: str = Form(...)):
 @router.post("/classifyStyle")
 async def classify_style(file: UploadFile = File(...)):
     try:
-        # Call ServiceOrchestra to classify style
         result = await ServiceOrchestra.classify_style(file=file)
 
         if not result:
@@ -90,7 +88,6 @@ async def classify_style(file: UploadFile = File(...)):
 @router.post("/detectFurniture")
 async def detect_furniture(file: UploadFile = File(...)):
     try:
-        # Call ServiceOrchestra to detect furniture
         result = await ServiceOrchestra.detect_furniture(file=file)
 
         if not result:
@@ -120,5 +117,74 @@ async def detect_furniture(file: UploadFile = File(...)):
             content={
                 "success": False,
                 "message": f"ERROR: Failed to detect furniture. Error: {str(e)}"
+            }
+        )
+
+# ================================
+# Furniture Recommendations Endpoint
+# ================================
+@router.post("/getRecommendations")
+async def get_recommendations(
+    style: str = Form(...),
+    furniture_name: str = Form(...)
+):
+    try:
+        result = await ServiceOrchestra.get_recommendations(
+            style=style,
+            furniture_name=furniture_name
+        )
+
+        if not result:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": "Failed to get recommendations. Please check logs for details."
+                }
+            )
+
+        if "error" in result:
+            if result["error"] == "rate_limit":
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "success": False,
+                        "message": result["message"]
+                    }
+                )
+            elif result["error"] == "forbidden":
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "success": False,
+                        "message": result["message"]
+                    }
+                )
+            elif result["error"] == "timeout":
+                return JSONResponse(
+                    status_code=504,
+                    content={
+                        "success": False,
+                        "message": result["message"]
+                    }
+                )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "result": {
+                    "recommendations": result["recommendations"],
+                    "message": "Recommendations retrieved successfully"
+                }
+            }
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"ERROR: Failed to get recommendations. Error: {str(e)}"
             }
         )
