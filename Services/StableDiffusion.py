@@ -11,12 +11,10 @@ can run on low-VRAM environments such as Colab.
 import torch
 from diffusers import StableDiffusionImg2ImgPipeline
 
-
 # ================================
 # Device detection
 # ================================
 use_cuda = torch.cuda.is_available()
-
 
 # ================================
 # Load Stable Diffusion pipeline
@@ -28,7 +26,6 @@ pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
     # Disable safety checker for faster inference
     safety_checker=None,
 )
-
 
 # ================================
 # Hardware-specific optimisations
@@ -42,6 +39,5 @@ if use_cuda:
 else:
     # Fallback to CPU if CUDA GPU is not available
     pipe = pipe.to("cpu")
-
 
 print("SD device:", "CUDA" if use_cuda else "CPU")
