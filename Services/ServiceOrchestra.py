@@ -9,14 +9,18 @@ from PIL import Image
 import pillow_avif  # Required for AVIF support
 import asyncio
 import httpx
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from io import BytesIO
-from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+from sklearn.cluster import KMeans
 from datetime import datetime
 from Services import Logger
 from Services import FileManager as FM
+from dotenv import load_dotenv
 from gradio_client import Client, handle_file
+from sklearn.cluster import KMeans
 
 load_dotenv()
 
@@ -408,5 +412,243 @@ class ServiceOrchestraClass:
             Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Failed to get recommendations. {str(e)}")
             return None
 
+    # async def web_search()
+
+    async def extract_colors(
+        self,
+        file
+    ) -> Optional[Dict[str, any]]:
+        if not self._initialized:
+            raise RuntimeError("ServiceOrchestra not initialized. Call initialize() first.")
+
+        tmp_file_path = None
+
+        try:
+            suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                content = await file.read()
+                tmp_file.write(content)
+                tmp_file_path = tmp_file.name
+
+            image = Image.open(tmp_file_path)
+
+            if image.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                if image.mode == 'P':
+                    image = image.convert('RGBA')
+                if 'A' in image.mode:
+                    background.paste(image, mask=image.split()[-1])
+                else:
+                    background.paste(image)
+                image = background
+            elif image.mode != 'RGB':
+                image = image.convert('RGB')
+
+            img_array = np.array(image)
+
+            pixels = img_array[::4, ::4].reshape(-1, 3)
+
+            if len(pixels) == 0:
+                Logger.log("[SERVICE ORCHESTRA] - WARNING: No pixels found in image.")
+                return None
+
+            kmeans = KMeans(n_clusters=5, random_state=42, n_init=10, max_iter=15)
+            kmeans.fit(pixels)
+
+            colors = []
+            for center in kmeans.cluster_centers_:
+                r, g, b = int(center[0]), int(center[1]), int(center[2])
+                hex_color = f"#{r:02x}{g:02x}{b:02x}"
+
+                colors.append({
+                    "r": r,
+                    "g": g,
+                    "b": b,
+                    "hex": hex_color.upper()
+                })
+
+            image.close()
+
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                os.unlink(tmp_file_path)
+
+            return {
+                "colors": colors,
+                "total_colors": len(colors)
+            }
+
+        except Exception as e:
+            Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Color extraction failed. {str(e)}")
+
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                try:
+                    os.unlink(tmp_file_path)
+                except:
+                    pass
+
+            return None
+
+
+    async def generate_floor_plan(
+        self,
+        file,
+        furniture_list: list
+    ) -> Optional[Dict[str, any]]:
+        if not self._initialized:
+            raise RuntimeError("ServiceOrchestra not initialized. Call initialize() first.")
+
+        if not self._client:
+            Logger.log("[SERVICE ORCHESTRA] - ERROR: Client not available.")
+            return None
+
+        tmp_file_path = None
+
+        try:
+            suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                content = await file.read()
+                tmp_file.write(content)
+                tmp_file_path = tmp_file.name
+
+            with open(tmp_file_path, 'rb') as img_file:
+                image_bytes = img_file.read()
+
+            mime_type = "image/png"
+            if suffix.lower() in ['.jpg', '.jpeg']:
+                mime_type = "image/jpeg"
+            elif suffix.lower() == '.webp':
+                mime_type = "image/webp"
+
+            furniture_str = ", ".join(furniture_list)
+
+            prompt = f"""CRITICAL INSTRUCTIONS - READ CAREFULLY:
+
+    1. FIRST, analyze if the uploaded image is a valid floor plan or architectural drawing.
+    - Valid floor plan indicators: walls, rooms, architectural symbols, top-down view, measurements
+    - If NOT a valid floor plan, respond ONLY with the text: "Sorry, but no valid floor plan was detected"
+
+    2. IF it IS a valid floor plan, generate a new image that:
+    - Is an exact copy of the original floor plan
+    - Has black rectangular boxes drawn on it to represent furniture placement
+    - Each box MUST have the furniture name labeled clearly inside it in white text
+    - Boxes should be appropriately sized and positioned in logical locations on the floor plan
+
+    3. Furniture to place on the floor plan:
+    {furniture_str}
+
+    4. Layout guidelines:
+    - Place sofas along walls in living areas
+    - Place dining tables in dining areas with chairs around them
+    - Place beds in bedrooms
+    - Place desks in study/office areas
+    - Ensure furniture placement makes logical sense for room flow and usage
+    - Do NOT overlap furniture boxes
+    - Leave adequate walking space between furniture
+
+    5. Visual requirements for the boxes:
+    - Draw solid black rectangles (RGB: 0, 0, 0) with 2-3 pixel borders
+    - Add furniture names in white text (RGB: 255, 255, 255) inside each box
+    - Use clear, legible font
+    - Ensure boxes are proportional to the floor plan scale
+
+    6. IMPORTANT:
+    - Maintain the exact same floor plan layout and dimensions
+    - Keep all architectural details visible
+    - Only ADD the furniture boxes, do not modify the floor plan itself
+    - Generate a high-quality image output
+
+    Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid floor plan was detected" and nothing else."""
+
+            response = self._client.models.generate_content(
+                model=IMAGE_MODEL,
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type=mime_type
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    response_modalities=['TEXT', 'IMAGE'],
+                    image_config=types.ImageConfig(
+                        aspect_ratio="1:1",
+                        image_size="4K"
+                    ),
+                )
+            )
+
+            response_text = None
+            image_bytes_result = None
+
+            for part in response.parts:
+                if hasattr(part, 'text') and part.text:
+                    response_text = part.text.strip()
+
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    image_data = part.inline_data.data
+                    if image_data:
+                        has_image = True
+                        if isinstance(image_data, bytes):
+                            image_bytes_result = image_data
+                        else:
+                            image_bytes_result = base64.b64decode(image_data)
+
+            if response_text and "no valid floor plan was detected" in response_text.lower():
+                if tmp_file_path and os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+
+                return {
+                    "error": "invalid_floor_plan",
+                    "message": "Sorry, but no valid floor plan was detected"
+                }
+
+            if not image_bytes_result:
+                Logger.log("[SERVICE ORCHESTRA] - WARNING: No floor plan image generated.")
+
+                if tmp_file_path and os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+
+                return {
+                    "error": "no_image",
+                    "message": "Failed to generate floor plan with furniture"
+                }
+
+            filename = f"floor_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            file_obj = BytesIO(image_bytes_result)
+            file_obj.seek(0)
+
+            class MockUploadFile:
+                def __init__(self, filename: str, file_obj: BytesIO):
+                    self.filename = filename
+                    self.file = file_obj
+                    self.content_type = "image/png"
+
+            mock_file = MockUploadFile(filename, file_obj)
+
+            upload_result = FM.store_file(
+                file=mock_file,
+                subfolder="Generated Floor Plans"
+            )
+
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                os.unlink(tmp_file_path)
+
+            return {
+                "floor_plan_url": upload_result["url"],
+                "file_id": upload_result["file_id"],
+                "filename": upload_result["filename"],
+                "furniture_placed": furniture_list
+            }
+
+        except Exception as e:
+            Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Floor plan generation failed. {str(e)}")
+
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                try:
+                    os.unlink(tmp_file_path)
+                except:
+                    pass
+
+            return None
 
 ServiceOrchestra = ServiceOrchestraClass()

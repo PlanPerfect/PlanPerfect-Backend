@@ -188,3 +188,155 @@ async def get_recommendations(
                 "message": f"ERROR: Failed to get recommendations. Error: {str(e)}"
             }
         )
+
+@router.post("/webSearch")
+async def web_search(
+    query: str = Form(...),
+    num_results: int = Form(5)
+):
+    try:
+        result = await ServiceOrchestra.web_search(
+            query=query,
+            num_results=num_results
+        )
+
+        if not result:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": "Failed to perform web search. Please check logs for details."
+                }
+            )
+
+        if "error" in result:
+            if result["error"] == "timeout":
+                return JSONResponse(
+                    status_code=504,
+                    content={
+                        "success": False,
+                        "message": result["message"]
+                    }
+                )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "result": {
+                    "query": result["query"],
+                    "results": result["results"],
+                    "total_results": result["total_results"],
+                    "message": "Web search completed successfully"
+                }
+            }
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"ERROR: Failed to perform web search. Error: {str(e)}"
+            }
+        )
+
+
+@router.post("/extractColors")
+async def extract_colors(file: UploadFile = File(...)):
+    try:
+        result = await ServiceOrchestra.extract_colors(file=file)
+
+        if not result:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": "Failed to extract colors. Please check logs for details."
+                }
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "result": {
+                    "colors": result["colors"],
+                    "total_colors": result["total_colors"],
+                    "message": "Color extraction completed successfully"
+                }
+            }
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"ERROR: Failed to extract colors. Error: {str(e)}"
+            }
+        )
+
+
+@router.post("/generateFloorPlan")
+async def generate_floor_plan(
+    file: UploadFile = File(...),
+    furniture_list: str = Form(...)
+):
+    try:
+        furniture_items = [item.strip() for item in furniture_list.split(",")]
+
+        result = await ServiceOrchestra.generate_floor_plan(
+            file=file,
+            furniture_list=furniture_items
+        )
+
+        if not result:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": "Failed to generate floor plan. Please check logs for details."
+                }
+            )
+
+        if "error" in result:
+            if result["error"] == "invalid_floor_plan":
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "message": result["message"]
+                    }
+                )
+            elif result["error"] == "no_image":
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "success": False,
+                        "message": result["message"]
+                    }
+                )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "result": {
+                    "floor_plan_url": result["floor_plan_url"],
+                    "file_id": result["file_id"],
+                    "filename": result["filename"],
+                    "furniture_placed": result["furniture_placed"],
+                    "message": "Floor plan generated successfully"
+                }
+            }
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"ERROR: Failed to generate floor plan. Error: {str(e)}"
+            }
+        )
