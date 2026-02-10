@@ -37,6 +37,54 @@ def truncate_description(text: str, max_length: int = 135) -> str:
         return text
     return text[:max_length] + "..."
 
+@router.get("/fetch-preferences")
+async def fetch_preferences(
+    x_user_id: str = Header(..., alias="X-User-ID")
+):
+    try:
+        if not x_user_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", x_user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        image_url = DM.peek(["Users", x_user_id, "Existing Homeowner", "Preferences", "original_image_url"])
+
+        style = DM.peek(["Users", x_user_id, "Existing Homeowner", "Preferences", "selected_styles"])
+
+        if not image_url or not style:
+            return JSONResponse(
+                status_code=404,
+                content={"preferences": {}}
+            )
+
+        preferences = {
+            "image_url": image_url,
+            "style": style
+        }
+
+        return JSONResponse(
+            status_code=200,
+            content={ "preferences": preferences }
+        )
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={ "error": f"Error fetching preferences: {str(e)}" }
+        )
+
 @router.post("/get-recommendations")
 async def get_recommendations(request: RecommendationRequest):
     try:
