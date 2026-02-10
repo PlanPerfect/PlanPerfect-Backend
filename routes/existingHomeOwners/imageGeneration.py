@@ -2,7 +2,7 @@
 Image Generation API
 
 This file handles image generation using img2img Stable Diffusion
-It takes a input image and selected styles by the user, 
+It takes a input image and selected styles by the user,
 generates a text prompt using a LLM and then runs Stable Diffusion to generate
 a new image
 
@@ -36,23 +36,25 @@ from Services.StableDiffusion import pipe
 from Services.LLMGemini import generate_sd_prompt
 from Services.FileManager import FileManager
 
+use_cuda = torch.cuda.is_available()
+
 def resize_to_target_with_aspect_ratio(image: Image.Image, target_size: int = 512):
     """
     Resize image to target size while maintaining aspect ratio.
     The longest side will be resized to target_size, and the shorter side
     will be scaled proportionally. Both dimensions will be multiples of 8
     (required by Stable Diffusion).
-    
+
     Args:
         image: PIL Image to resize
         target_size: target size for the longest dimension
-        
+
     Returns:
         Resized PIL Image with preserved aspect ratio
     """
     w, h = image.size
     aspect_ratio = w / h
-    
+
     if w >= h:
         # Landscape or square
         new_w = target_size
@@ -61,11 +63,11 @@ def resize_to_target_with_aspect_ratio(image: Image.Image, target_size: int = 51
         # Portrait
         new_h = target_size
         new_w = int(target_size * aspect_ratio)
-    
+
     # Round to nearest multiple of 8 (SD requirement)
     new_w = max(8, (new_w // 8) * 8)
     new_h = max(8, (new_h // 8) * 8)
-    
+
     # Ensure both dimensions are at least 384 but maintain aspect ratio
     if new_w < 384 or new_h < 384:
         scale = max(384 / new_w, 384 / new_h)
@@ -106,13 +108,13 @@ def run_stable_diffusion(init_image: Image.Image, prompt: str):
         Generated image based on the input image and prompt
 
     Generation Parameters (strength, guidance_scale) Explanation:
-    These parameter values were chosen through experimentation to balance 
+    These parameter values were chosen through experimentation to balance
     generation time, image quality, realism for interior design and level of style influence.
-    
+
     strength is set to 0.45 to allow significant style changes while preserving room layout.
     guidance_scale of 7.5 increases adherence to the prompt.
-    Negative prompt is fixed, as LLM's negative prompts are often low quality, describing 
-    generic bad image features. Hence, using a higher quality fixed negative prompt 
+    Negative prompt is fixed, as LLM's negative prompts are often low quality, describing
+    generic bad image features. Hence, using a higher quality fixed negative prompt
     would yield higher image quality.
     """
     return pipe(
@@ -145,11 +147,11 @@ async def generate_image(
 ):
     """
     Generate a new room design using Stable Diffusion.
-    
+
     Args:
         file_id: Cloudinary file_id from the classification step
         styles: Comma-separated string of selected interior design styles
-    
+
     Returns:
         JSON with generated image URL, file_id, and filename
     """
@@ -160,12 +162,12 @@ async def generate_image(
         # ================================
         # Get the image URL from Cloudinary using the file_id
         image_url = FileManager.get_optimized_url(file_id)
-        
+
         # Download the image to a temporary file
         import requests
         response = requests.get(image_url)
         response.raise_for_status()
-        
+
         suffix = '.png'
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_file.write(response.content)
@@ -204,12 +206,13 @@ async def generate_image(
         # Ensure prompts aren't empty
         if not prompt or prompt.strip() == "":
             prompt = "detailed, high quality, professional photograph"
-        
+
         # ================================
         # Run Stable Diffusion
         # ================================
         # Clear GPU cache before generation, helps with faster generation of images
-        torch.cuda.empty_cache()
+        if use_cuda:
+            torch.cuda.empty_cache()
 
         base_size = choose_base_resolution(init_image)
 
@@ -238,7 +241,7 @@ async def generate_image(
                 num_inference_steps=30
             ).images[0]
         )
-        
+
         # ================================
         # Upload to Cloudinary
         # ================================
@@ -249,7 +252,7 @@ async def generate_image(
 
         # Create adapter for FileManager
         file_adapter = UploadFileAdapter(
-            img_byte_arr.getvalue(), 
+            img_byte_arr.getvalue(),
             f"generated_design_{uuid.uuid4()}.png"
         )
 
@@ -283,6 +286,6 @@ async def generate_image(
                 os.unlink(tmp_file_path)
             except:
                 pass
-                
+
         print(f"Error in generate_image: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

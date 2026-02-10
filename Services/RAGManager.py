@@ -216,7 +216,6 @@ class _VectorManager:
             self.bm25_corpus = [text.lower().split() for text in self.document_texts]
             self.bm25_index = BM25Okapi(self.bm25_corpus)
 
-            print(f"USING EXISTING VECTORS IN PINECONE. HYBRID INDEX REBUILT WITH {len(self.document_texts)} DOCUMENTS.\n")
             return True
 
         except Exception as e:
@@ -328,7 +327,6 @@ class RAGManagerClass:
             self._vector_store.rebuild_pinecone()
 
         self._initialized = True
-        print("RAG MANAGER INTIALISED. DOCUMENTS READY.\n")
 
     def _ingest_document(self, file_path: str):
         if not self._embeddings or not self._vector_store:
