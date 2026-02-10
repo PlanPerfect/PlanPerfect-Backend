@@ -4,6 +4,7 @@ from .DatabaseManager import DatabaseManager
 from .RAGManager import RAGManager
 from .LLMManager import LLMManager
 from .FileManager import FileManager
+from .ServiceOrchestra import ServiceOrchestra
 
 __all__ = [
     "Emailer",
@@ -11,5 +12,6 @@ __all__ = [
     "DatabaseManager",
     "RAGManager",
     "LLMManager",
-    "FileManager"
+    "FileManager",
+    "ServiceOrchestra"
 ]
