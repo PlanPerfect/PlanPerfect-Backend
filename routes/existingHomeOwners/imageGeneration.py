@@ -76,9 +76,7 @@ def resize_to_target_with_aspect_ratio(image: Image.Image, target_size: int = 51
         # Round again to multiple of 8
         new_w = (new_w // 8) * 8
         new_h = (new_h // 8) * 8
-
-    print(f"Resizing from {w}x{h} to {new_w}x{new_h} (aspect ratio: {new_w/new_h:.2f})")
-
+    
     return image.resize((new_w, new_h), Image.LANCZOS)
 
 

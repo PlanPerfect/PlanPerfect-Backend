@@ -40,7 +40,6 @@ use_cuda = torch.cuda.is_available()
 
 use_mps = torch.backends.mps.is_available() if hasattr(torch.backends, 'mps') else False
 
-
 # ================================
 # Load Stable Diffusion pipeline
 # ================================
@@ -51,7 +50,6 @@ pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
     # Disable safety checker for faster inference
     safety_checker=None,
 )
-
 
 # ================================
 # Hardware-specific optimisations
