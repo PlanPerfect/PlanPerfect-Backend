@@ -523,41 +523,48 @@ class ServiceOrchestraClass:
 
             prompt = f"""CRITICAL INSTRUCTIONS - READ CAREFULLY:
 
-    1. FIRST, analyze if the uploaded image is a valid floor plan or architectural drawing.
-    - Valid floor plan indicators: walls, rooms, architectural symbols, top-down view, measurements
-    - If NOT a valid floor plan, respond ONLY with the text: "Sorry, but no valid floor plan was detected"
+1. FIRST, analyze if the uploaded image is a valid floor plan or architectural drawing.
+   - Valid floor plan indicators: walls, rooms, architectural symbols, top-down view, measurements
+   - If NOT a valid floor plan, respond ONLY with the text: "Sorry, but no valid floor plan was detected"
 
-    2. IF it IS a valid floor plan, generate a new image that:
-    - Is an exact copy of the original floor plan
-    - Has black rectangular boxes drawn on it to represent furniture placement
-    - Each box MUST have the furniture name labeled clearly inside it in white text
-    - Boxes should be appropriately sized and positioned in logical locations on the floor plan
+2. IF it IS a valid floor plan, generate a new image that:
+   - Is an exact copy of the original floor plan
+   - Has simple furniture drawings placed on it to represent furniture placement
+   - Each furniture item should be drawn as a recognizable symbol/icon in top-down view
+   - Drawings should be appropriately sized and positioned in logical locations on the floor plan
 
-    3. Furniture to place on the floor plan:
-    {furniture_str}
+3. Furniture to place on the floor plan:
+   {furniture_str}
 
-    4. Layout guidelines:
-    - Place sofas along walls in living areas
-    - Place dining tables in dining areas with chairs around them
-    - Place beds in bedrooms
-    - Place desks in study/office areas
-    - Ensure furniture placement makes logical sense for room flow and usage
-    - Do NOT overlap furniture boxes
-    - Leave adequate walking space between furniture
+4. Layout guidelines:
+   - Place sofas along walls in living areas
+   - Place dining tables in dining areas with chairs around them
+   - Place beds in bedrooms
+   - Place desks in study/office areas
+   - Ensure furniture placement makes logical sense for room flow and usage
+   - Do NOT overlap furniture items
+   - Leave adequate walking space between furniture
 
-    5. Visual requirements for the boxes:
-    - Draw solid black rectangles (RGB: 0, 0, 0) with 2-3 pixel borders
-    - Add furniture names in white text (RGB: 255, 255, 255) inside each box
-    - Use clear, legible font
-    - Ensure boxes are proportional to the floor plan scale
+5. Visual requirements for the furniture drawings:
+   - Draw simple, recognizable top-down furniture symbols
+   - Use black outlines with minimal detail
+   - Examples:
+     * Sofa: L-shaped or rectangular shape with cushion segments indicated
+     * Chair: Simple seat with backrest indicated
+     * Table: Rectangular or circular outline
+     * Bed: Rectangle with pillow area indicated at one end
+     * Desk: Rectangle with drawer indicators on one side
+   - Scale furniture appropriately to the floor plan
+   - Use standard architectural furniture symbols
 
-    6. IMPORTANT:
-    - Maintain the exact same floor plan layout and dimensions
-    - Keep all architectural details visible
-    - Only ADD the furniture boxes, do not modify the floor plan itself
-    - Generate a high-quality image output
+6. IMPORTANT:
+   - Maintain the exact same floor plan layout and dimensions
+   - Keep all architectural details visible
+   - Only ADD the furniture drawings, do not modify the floor plan itself
+   - Generate a high-quality image output
+   - Furniture should look like professional architectural floor plan symbols
 
-    Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid floor plan was detected" and nothing else."""
+Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid floor plan was detected" and nothing else."""
 
             response = self._client.models.generate_content(
                 model=IMAGE_MODEL,
