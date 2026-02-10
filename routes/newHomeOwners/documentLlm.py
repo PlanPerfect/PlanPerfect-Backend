@@ -22,7 +22,7 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 def _is_placeholder_value(value):
     if not value:
         return True
-    
+
     placeholder_phrases = {
         'not specified',
         'none',
@@ -30,7 +30,7 @@ def _is_placeholder_value(value):
         'open to recommendations',
         ''
     }
-    
+
     return str(value).lower().strip() in placeholder_phrases
 
 @router.post("/savePdf/{user_id}")
@@ -54,7 +54,7 @@ async def save_generated_pdf(
 
         if "urls" not in DM.data["Users"][user_id]["Generated Document"] or not isinstance(DM.data["Users"][user_id]["Generated Document"]["urls"], list):
             DM.data["Users"][user_id]["Generated Document"]["urls"] = []
-        
+
         DM.data["Users"][user_id]["Generated Document"]["urls"].append(pdf_url)
 
         DM.save()
@@ -80,43 +80,43 @@ async def save_generated_pdf(
 def apply_conversation_overrides(design_data, base_preferences, base_budget):
     final_preferences = base_preferences.copy()
     final_budget = base_budget
-    
+
     if 'detected_preferences_override' not in design_data:
         return final_preferences, final_budget
-    
+
     conversation_prefs = design_data['detected_preferences_override']
-    
+
     # Override style if user changed their mind in conversation
     detected_style = conversation_prefs.get('style', '').strip()
     if detected_style and not _is_placeholder_value(detected_style):
         final_preferences['style'] = detected_style
-    
+
     # Always replace LLM suggested colors
     detected_colors = conversation_prefs.get('colors', [])
     if isinstance(detected_colors, list):
         valid_colors = [c for c in detected_colors if not _is_placeholder_value(c)]
         if valid_colors:
             final_preferences['colors'] = valid_colors
-    
+
     # Always replace LLM suggested materials
     detected_materials = conversation_prefs.get('materials', [])
     if isinstance(detected_materials, list):
         valid_materials = [m for m in detected_materials if not _is_placeholder_value(m)]
         if valid_materials:
             final_preferences['materials'] = valid_materials
-    
+
     # Merge special requirements/notes if any
     detected_notes = conversation_prefs.get('special_notes', '').strip()
     if detected_notes and not _is_placeholder_value(detected_notes):
         valid_notes = [n.strip() for n in detected_notes.split(',') if not _is_placeholder_value(n)]
         if valid_notes:
             final_preferences['special_requirements'] = ". ".join(valid_notes)
-    
+
     # Override budget if user mentioned a different budget in conversation
     detected_budget = conversation_prefs.get('budget', '').strip()
     if detected_budget and not _is_placeholder_value(detected_budget):
         final_budget = detected_budget
-    
+
     return final_preferences, final_budget
 
 # Endpoint to generate interior design document
@@ -128,12 +128,19 @@ async def generate_design_document(user_id: str):
     """
     tmp_floor_plan_path = None
     tmp_segmented_path = None
-    
+
     try:
+        if not user_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
         # Retrieve user data from DatabaseManager
         user_path = ["Users", user_id, "New Home Owner"]
         user_data = DM.peek(user_path)
-        
+
         if not user_data:
             return JSONResponse(
                 status_code=404,
@@ -142,24 +149,24 @@ async def generate_design_document(user_id: str):
                     "result": "ERROR: User data not found in database"
                 }
             )
-        
+
         # Extract data from database
         preferences_data = user_data.get("Preferences", {})
         budget = preferences_data.get("budget", "Not specified")
         styles = preferences_data.get("Preferred Styles", {}).get("styles", [])
-        
+
         # Get floor plan URLs
         floor_plan_url = user_data.get("Uploaded Floor Plan", {}).get("url")
         segmented_floor_plan_url = user_data.get("Segmented Floor Plan", {}).get("url")
-        
+
         # Get unit information
         unit_info_data = user_data.get("Unit Information", {})
         unit_rooms = unit_info_data.get("unit", "Residential Unit")
         unit_type = unit_info_data.get("unitType", "Not specified")
         unit_size = unit_info_data.get("unitSize", "Not specified")
-        
+
         number_of_rooms = unit_info_data.get("Number Of Rooms", {})
-        
+
         # Build room counts dictionary
         room_counts = {
             "LIVING": number_of_rooms.get("livingRoom", 0),
@@ -169,44 +176,44 @@ async def generate_design_document(user_id: str):
             "LEDGE": number_of_rooms.get("ledge", 0),
             "BALCONY": number_of_rooms.get("balcony", 0),
         }
-        
+
         # Download and save floor plan temporarily if URL exists
         if floor_plan_url:
             try:
                 response = requests.get(floor_plan_url)
                 response.raise_for_status()
-                
+
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
                     tmp_file.write(response.content)
                     tmp_floor_plan_path = tmp_file.name
             except Exception as e:
                 print(f"Error downloading floor plan: {e}")
                 tmp_floor_plan_path = None
-        
+
         # Download and save segmented floor plan temporarily if URL exists
         if segmented_floor_plan_url:
             try:
                 response = requests.get(segmented_floor_plan_url)
                 response.raise_for_status()
-                
+
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
                     tmp_file.write(response.content)
                     tmp_segmented_path = tmp_file.name
             except Exception as e:
                 print(f"Error downloading segmented floor plan: {e}")
                 tmp_segmented_path = None
-        
+
         # Process room counts to create summary
         rooms_summary = []
         for room_type, count in room_counts.items():
             if count and count > 0:
                 rooms_summary.append(f"{count} {room_type.title()}")
-        
+
         property_type = unit_rooms or 'Residential Unit'
-        
+
         # Retrieve RAG-LLM chatbot history
-        rag_history = RAG.get_history()
-        
+        rag_history = RAG.get_history(user_id)
+
         # Format chat history for LLM if history exists
         formatted_chat_history = ""
         if rag_history and len(rag_history) > 0:
@@ -216,16 +223,16 @@ async def generate_design_document(user_id: str):
                 content = msg.get('content', '')
                 formatted_chat_history += f"{role}: {content}\n"
             formatted_chat_history += "\n"
-        
+
         # Build detailed room information for prompt
         room_details = ""
         if rooms_summary:
             room_details = "Identified Rooms:\n"
             room_details += ", ".join(rooms_summary)
-        
+
         # Format styles as comma-separated string
         styles_str = ", ".join(styles) if styles else "Not specified"
-        
+
         # Prompt to parse in LLM
         prompt = f"""Create a comprehensive interior design document in JSON format.
 
@@ -274,7 +281,7 @@ Component Costs (2026):
 
 CRITICAL INSTRUCTIONS FOR HANDLING CONVERSATION HISTORY:
 1. **PREFERENCE OVERRIDE**: Carefully analyze the conversation history above. If the user expressed different preferences, styles, or requirements during the conversation that CONTRADICT the initial client preferences, YOU MUST USE THE PREFERENCES FROM THE CONVERSATION instead.
-   
+
 2. **STYLE CHANGES**: If the user mentioned they prefer a different design style in the conversation (e.g., "I think boho style suits me better" or "I prefer minimalist" or "I'd like industrial style"), use that style instead of the initial preference.
 
 3. **COLOR PREFERENCES**: If the user discussed specific colors they like or dislike in the conversation, incorporate those preferences and override the initial color preferences if contradictory. If NO colors were specified, YOU MUST suggest appropriate colors based on the chosen design style.
@@ -465,7 +472,7 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
             max_tokens=5120,
             response_format={"type": "json_object"}
         )
-        
+
         # Extract response content
         response_text = chat_completion.choices[0].message.content
 
@@ -496,20 +503,20 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
 
         # Parse the fully cleaned JSON
         design_data = json.loads(json_str)
-        
+
         # Build preferences dict for PDF generation
         final_preferences = {
             "style": styles_str,
             "styles": styles
         }
-        
-        # Apply conversation overrides 
+
+        # Apply conversation overrides
         final_preferences, final_budget = apply_conversation_overrides(
             design_data=design_data,
             base_preferences=final_preferences,
             base_budget=budget
         )
-        
+
         # Build unit_info dict for PDF generation
         unit_info = {
             "unit_rooms": unit_rooms,
@@ -517,7 +524,7 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
             "unit_sizes": [unit_size] if unit_size != "Not specified" else [],
             "room_counts": room_counts
         }
-        
+
         # Generate PDF
         pdf_buffer = generate_pdf(
             design_data=design_data,
@@ -527,13 +534,13 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
             budget=final_budget,
             unit_info=unit_info
         )
-        
+
         # Clean up temporary files
         if tmp_floor_plan_path and os.path.exists(tmp_floor_plan_path):
             os.unlink(tmp_floor_plan_path)
         if tmp_segmented_path and os.path.exists(tmp_segmented_path):
             os.unlink(tmp_segmented_path)
-        
+
         # Return PDF as streaming response
         pdf_buffer.seek(0)
         return StreamingResponse(
@@ -543,7 +550,7 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
                 "Content-Disposition": f"attachment; filename=interior_design_documentation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             }
         )
-        
+
     except Exception as e:
         # Clean up temporary files if they exist
         if tmp_floor_plan_path and os.path.exists(tmp_floor_plan_path):
@@ -556,9 +563,9 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
                 os.unlink(tmp_segmented_path)
             except:
                 pass
-        
+
         print(f"Error generating design document: {str(e)}")
-        
+
         return JSONResponse(
             status_code=500,
             content={
