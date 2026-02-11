@@ -9,216 +9,112 @@ import io
 # ================================
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Vision model for analysis
-vision_model_name = "gemini-2.5-pro"
-
+# Image generation model
 # - "gemini-2.5-flash-image" (faster, cheaper)
 # - "gemini-3-pro-image-preview" (better quality, advanced reasoning, text rendering)
 image_gen_model = "gemini-3-pro-image-preview"
 
-# Image generation using Nano Banana (Gemini native)
-def generate_interior_design(init_image: Image.Image, styles: str) -> Image.Image:
-    # Calculate aspect ratio from input image - use original dimensions
-    width, height = init_image.size
-    aspect_ratio = width / height
-    
-    # Use the original image aspect ratio by selecting closest match
-    # But prefer to keep it as close to original as possible
-    if aspect_ratio >= 1.6:
-        aspect_ratio_str = "16:9"
-    elif aspect_ratio >= 1.25:
-        aspect_ratio_str = "4:3"
-    elif aspect_ratio >= 0.8:
-        aspect_ratio_str = "1:1"
-    elif aspect_ratio >= 0.65:
-        aspect_ratio_str = "3:4"
-    else:
-        aspect_ratio_str = "9:16"
-    
-    print(f"Original image size: {init_image.size}, Aspect ratio: {aspect_ratio:.2f}, Using: {aspect_ratio_str}")
-    
-    # Step 1: Analyze the room with Gemini Vision
-    analysis_prompt = f"""
-    Analyze this room image and describe:
-    1. Current style and color scheme
-    2. EXACT furniture pieces and their positions (left/right/center, specific placement)
-    3. Flooring type and walls
-    4. Room dimensions and architectural features (windows, doors, ceiling)
-    
-    Keep it concise but SPECIFIC about furniture placement, 3-4 sentences maximum.
+
+def generate_interior_design(init_image: Image.Image, styles: str, user_modifications: str = None) -> Image.Image:
     """
+    Generate interior design transformation using Gemini Imagen 3.
     
-    analysis_response = client.models.generate_content(
-        model=vision_model_name,
-        contents=[analysis_prompt, init_image],
-        config=types.GenerateContentConfig(
-            temperature=0.3
-        )
-    )
+    Imagen 3 is powerful enough to handle both initial generation and regeneration
+    directly without needing any vision model analysis.
     
-    room_analysis = analysis_response.text
-    print(f"Room Analysis: {room_analysis}")
+    Args:
+        init_image: Original room image
+        styles: Base style string (e.g., "Modern, Minimalist")
+        user_modifications: Optional user-specific changes (e.g., "Make walls darker, add plants")
     
-    # Step 2: Create transformation prompt for Nano Banana
-    transformation_prompt = f"""
-    Transform this interior room to {styles} style.
-    
-    Current room: {room_analysis}
-    
-    CRITICAL REQUIREMENTS - DO NOT DEVIATE:
-    1. PRESERVE THE EXACT LAYOUT: Keep all furniture in their current positions
-    2. MAINTAIN ROOM STRUCTURE: Same room dimensions, window placement, door locations
-    3. KEEP FURNITURE COUNT: Same number of furniture pieces in same locations
-    4. PRESERVE SPATIAL RELATIONSHIPS: If sofa is facing coffee table, keep that relationship
-    
-    WHAT YOU CAN CHANGE:
-    - Wall colors and textures (paint, wallpaper) to match {styles}
-    - Flooring materials and colors to suit {styles} aesthetic
-    - Furniture upholstery, cushions, and fabric colors
-    - Decorative elements: artwork, plants, accessories
-    - Lighting fixtures style (but keep positions)
-    - Window treatments (curtains, blinds) in {styles} style
-    
-    WHAT YOU MUST NOT CHANGE:
-    - Room layout and dimensions
-    - Furniture positions and placement
-    - Number of furniture pieces
-    - Basic furniture shapes (a sofa stays a sofa, table stays a table)
-    - Architectural features (windows, doors, built-ins)
-    
-    Create a photorealistic interior design transformation that looks like the SAME ROOM but redesigned in {styles} style.
-    Think: "before and after renovation of the same space" not "completely different room".
+    Returns:
+        PIL Image object of the generated design
     """
-    
-    print(f"Transformation Prompt: {transformation_prompt}")
-    
-    # Step 3: Generate image with Nano Banana
-    response = client.models.generate_content(
-        model=image_gen_model,
-        contents=[transformation_prompt, init_image],
-        config=types.GenerateContentConfig(
-            response_modalities=['IMAGE'],
-            image_config=types.ImageConfig(
-                aspect_ratio=aspect_ratio_str,
-                image_size="2K"
+    try:
+        # Calculate aspect ratio from input image - use original dimensions
+        width, height = init_image.size
+        aspect_ratio = width / height
+        
+        # Use the original image aspect ratio by selecting closest match
+        if aspect_ratio >= 1.6:
+            aspect_ratio_str = "16:9"
+        elif aspect_ratio >= 1.25:
+            aspect_ratio_str = "4:3"
+        elif aspect_ratio >= 0.8:
+            aspect_ratio_str = "1:1"
+        elif aspect_ratio >= 0.65:
+            aspect_ratio_str = "3:4"
+        else:
+            aspect_ratio_str = "9:16"
+        
+        print(f"Original image size: {init_image.size}, Aspect ratio: {aspect_ratio:.2f}, Using: {aspect_ratio_str}")
+        
+        # Validate and truncate user modifications if too long
+        if user_modifications and len(user_modifications) > 200:
+            print(f"WARNING: User modifications too long ({len(user_modifications)} chars), truncating to 200 chars")
+            user_modifications = user_modifications[:200]
+        
+        # Create transformation prompt
+        if user_modifications and user_modifications.strip():
+            # Simplified prompt for regeneration with user modifications
+            transformation_prompt = f"""
+Redesign this room in {styles} style. {user_modifications.strip()}
+
+Keep the same room layout and furniture positions. Create a photorealistic interior design.
+"""
+            print("Using regeneration prompt with user modifications")
+        else:
+            # Direct prompt for initial generation - let Imagen 3 handle everything
+            transformation_prompt = f"""
+Transform this interior room to {styles} style.
+
+REQUIREMENTS:
+1. Preserve the exact room layout and furniture positions
+2. Maintain the same room structure (dimensions, windows, doors)
+3. Keep the same number of furniture pieces in their current locations
+4. Update only the styling elements:
+   - Wall colors and textures for {styles} aesthetic
+   - Flooring materials and colors
+   - Furniture upholstery and finishes
+   - Decorative elements (artwork, plants, accessories)
+   - Lighting fixture styles (keep positions)
+   - Window treatments in {styles} style
+
+Generate a photorealistic transformation that looks like the SAME ROOM professionally redesigned in {styles} style.
+"""
+            print("Using direct generation prompt")
+        
+        print(f"Transformation Prompt: {transformation_prompt}")
+        print("Calling Gemini Imagen 3 for image generation...")
+        
+        # Generate image with Imagen 3
+        response = client.models.generate_content(
+            model=image_gen_model,
+            contents=[transformation_prompt, init_image],
+            config=types.GenerateContentConfig(
+                response_modalities=['IMAGE'],
+                image_config=types.ImageConfig(
+                    aspect_ratio=aspect_ratio_str,
+                    image_size="2K"
+                )
             )
         )
-    )
-    
-    # Extract the generated image
-    for part in response.parts:
-        if part.inline_data is not None:
-            image_data = part.inline_data.data
-            generated_image = Image.open(io.BytesIO(image_data))
-            print(f"Generated image size: {generated_image.size}")
-            return generated_image
-    
-    raise Exception("No image generated in response")
-
-
-# ================================
-# Alternative: Using chat mode for iterative editing
-# ================================
-def generate_interior_design_with_mask(
-    init_image: Image.Image, 
-    styles: str,
-    preserve_layout: bool = True
-) -> Image.Image:
-    # Calculate aspect ratio from input image
-    width, height = init_image.size
-    aspect_ratio = width / height
-    
-    # Use the original image aspect ratio by selecting closest match
-    if aspect_ratio >= 1.6:
-        aspect_ratio_str = "16:9"
-    elif aspect_ratio >= 1.25:
-        aspect_ratio_str = "4:3"
-    elif aspect_ratio >= 0.8:
-        aspect_ratio_str = "1:1"
-    elif aspect_ratio >= 0.65:
-        aspect_ratio_str = "3:4"
-    else:
-        aspect_ratio_str = "9:16"
-    
-    print(f"Original image size: {init_image.size}, Aspect ratio: {aspect_ratio:.2f}, Using: {aspect_ratio_str}")
-    
-    # Analyze the room first
-    analysis_prompt = """
-    Briefly describe this room's current style, layout, and key furniture with their exact positions.
-    Be specific about where each piece of furniture is located.
-    Keep it to 3 sentences.
-    """
-    
-    analysis_response = client.models.generate_content(
-        model=vision_model_name,
-        contents=[analysis_prompt, init_image],
-        config=types.GenerateContentConfig(temperature=0.3)
-    )
-    
-    room_analysis = analysis_response.text
-    print(f"Room Analysis: {room_analysis}")
-    
-    # Create appropriate prompt based on preserve_layout flag
-    if preserve_layout:
-        edit_prompt = f"""
-        Transform this room to {styles} interior design style.
         
-        Current room: {room_analysis}
+        print("Received response from Gemini, extracting image...")
         
-        STRICT REQUIREMENTS - ABSOLUTELY PRESERVE:
-        1. EXACT same room layout and furniture placement
-        2. Same number of furniture pieces in same positions
-        3. Same architectural features (windows, doors, ceiling height)
-        4. Same spatial relationships between furniture
+        # Extract the generated image
+        for part in response.parts:
+            if part.inline_data is not None:
+                image_data = part.inline_data.data
+                generated_image = Image.open(io.BytesIO(image_data))
+                print(f"Generated image size: {generated_image.size}")
+                return generated_image
         
-        ONLY CHANGE THESE ELEMENTS:
-        - Wall colors and textures (to match {styles})
-        - Flooring materials and colors (to match {styles})
-        - Furniture upholstery, fabrics, and finishes (to match {styles})
-        - Decorative elements: artwork, plants, accessories (to match {styles})
-        - Lighting fixture styles (keep same positions)
-        - Window treatments (curtains, blinds in {styles} style)
+        raise Exception("No image generated in response")
         
-        The transformation should look like a professional interior designer redecorated
-        the SAME EXACT ROOM in {styles} style. Same layout, different styling.
-        """
-    else:
-        edit_prompt = f"""
-        Transform this room to {styles} interior design style.
-        
-        Current room: {room_analysis}
-        
-        Maintain the general room dimensions and layout concept.
-        Apply {styles} aesthetic comprehensively:
-        - Update furniture to match the style
-        - Change colors, materials, and finishes
-        - Add appropriate decor and accessories
-        - Adjust lighting to suit the aesthetic
-        
-        Create a cohesive, professional {styles} interior design.
-        """
-    
-    print(f"Edit Prompt: {edit_prompt}")
-    
-    # Generate the transformed image
-    response = client.models.generate_content(
-        model=image_gen_model,
-        contents=[edit_prompt, init_image],
-        config=types.GenerateContentConfig(
-            response_modalities=['IMAGE'],
-            image_config=types.ImageConfig(
-                aspect_ratio=aspect_ratio_str,
-                image_size="2K"
-            )
-        )
-    )
-    
-    # Extract generated image
-    for part in response.parts:
-        if part.inline_data is not None:
-            image_data = part.inline_data.data
-            generated_image = Image.open(io.BytesIO(image_data))
-            print(f"Generated image size: {generated_image.size}")
-            return generated_image
-    
-    raise Exception("No image generated in response")
+    except Exception as e:
+        print(f"ERROR in generate_interior_design: {str(e)}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        print(f"Full traceback:\n{traceback.format_exc()}")
+        raise
