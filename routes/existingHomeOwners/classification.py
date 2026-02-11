@@ -1,6 +1,6 @@
 """
 Style Classification API for Existing Home Owners
-This file handles the style classification of room images using a pre-trained model 
+This file handles the style classification of room images using a pre-trained model
 that is deployed on Hugging Face.
 Workflow:
 1. It accepts an image file upload via a POST request.
@@ -10,7 +10,7 @@ Workflow:
 5. Returns the detected style, confidence score, and Cloudinary image URL in the response.
 6. Saves the analysis results to Firebase database.
 
-This file is part of the backend of the application and is used 
+This file is part of the backend of the application and is used
 by styleAnalysis component in the existingHomeOwners frontend page
 """
 
@@ -33,11 +33,11 @@ router = APIRouter(prefix="/existingHomeOwners/styleClassification", tags=["Exis
 async def analyze_room_style(file: UploadFile = File(...), request: Request = None):
     """
     Analyze the style of a room from an uploaded image file.
-    Args: 
+    Args:
         file (UploadFile): The uploaded image file of the room from frontend via post request.
         request (Request): FastAPI request object to extract user information.
     Returns:
-        JSONResponse: A JSON response containing detected style, confidence score, 
+        JSONResponse: A JSON response containing detected style, confidence score,
                       Cloudinary image URL, file_id, and success status.
 
     """
@@ -52,7 +52,15 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             user_id = getattr(request.state, 'user_id', None)
             if not user_id:
                 user_id = request.headers.get('X-User-ID')
-        
+
+                if not user_id:
+                    return JSONResponse(
+                        status_code=400,
+                        content={
+                            "error": "UERROR: One or more required fields are invalid / missing."
+                        }
+                    )
+
         # ================================
         # Upload to Cloudinary first
         # ================================
@@ -61,7 +69,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             file=file,
             subfolder="Uploaded Room Images"
         )
-        
+
         # Reset file pointer after FileManager reads it
         await file.seek(0)
 
@@ -116,14 +124,14 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
                     "filename": cloudinary_result["filename"],
                     "analyzed_at": datetime.utcnow().isoformat()
                 }
-                
+
                 # Path: Users/{userId}/Existing Homeowner/Style Analysis
                 path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
-                
+
                 # Save to database
                 DM.set_value(path, analysis_data)
                 DM.save()
-                
+
             except Exception as db_error:
                 # Log error but don't fail the request
                 print(f"Warning: Failed to save to database: {str(db_error)}")
@@ -145,7 +153,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
                 }
             }
         )
-        
+
 
     except Exception as e:
         # ================================
@@ -178,17 +186,17 @@ async def save_preferences(
 ):
     """
     Save user preferences from the preview page to the database.
-    
+
     This endpoint is called when the user completes the preview page
     and clicks "Get Started". It stores all their selections including
     property preferences, detected style, and selected design themes.
-    
+
     Args:
         preferences (str): JSON string of preferences data
         analysis (str): JSON string of analysis data
         selected_styles (str): JSON string of selected styles array
         user_id (str): User's unique identifier
-        
+
     Returns:
         JSONResponse: Success confirmation with timestamp
     """
@@ -197,7 +205,7 @@ async def save_preferences(
         # Parse JSON strings from form data
         # ================================
         import json
-        
+
         try:
             preferences_dict = json.loads(preferences) if isinstance(preferences, str) else preferences
             analysis_dict = json.loads(analysis) if isinstance(analysis, str) else analysis
@@ -210,12 +218,12 @@ async def save_preferences(
                     "result": f"ERROR: Invalid JSON format - {str(e)}"
                 }
             )
-        
+
         # ================================
         # Prepare data for database
         # ================================
         timestamp = datetime.utcnow().isoformat()
-        
+
         preferences_data = {
             "property_type": preferences_dict.get('propertyType', 'Not specified'),
             "unit_type": preferences_dict.get('unitType', 'Not specified'),
@@ -228,16 +236,16 @@ async def save_preferences(
             "selected_styles": selected_styles_list,
             "saved_at": timestamp
         }
-        
+
         # ================================
         # Save to Firebase Database
         # ================================
         # Path: Users/{userId}/Existing Homeowner/Preferences
         path = ["Users", user_id, "Existing Homeowner", "Preferences"]
-        
+
         DM.set_value(path, preferences_data)
         DM.save()
-        
+
         # ================================
         # Return success response
         # ================================
@@ -252,12 +260,12 @@ async def save_preferences(
                 }
             }
         )
-        
+
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
         print(f"Error saving preferences: {error_details}")
-        
+
         return JSONResponse(
             status_code=500,
             content={
@@ -274,13 +282,13 @@ async def save_preferences(
 async def get_preferences(user_id: str):
     """
     Retrieve user preferences from the database.
-    
+
     This endpoint is called by the imageGeneration page to fetch
     the user's saved preferences, analysis results, and selected styles.
-    
+
     Args:
         user_id (str): User's unique identifier
-        
+
     Returns:
         JSONResponse: User's preferences data or error message
     """
@@ -290,9 +298,9 @@ async def get_preferences(user_id: str):
         # ================================
         # Path: Users/{userId}/Existing Homeowner/Preferences
         path = ["Users", user_id, "Existing Homeowner", "Preferences"]
-        
+
         preferences_data = DM.peek(path)
-        
+
         if not preferences_data:
             return JSONResponse(
                 status_code=404,
@@ -301,7 +309,7 @@ async def get_preferences(user_id: str):
                     "result": "No preferences found for this user"
                 }
             )
-        
+
         # ================================
         # Return preferences data
         # ================================
@@ -312,12 +320,12 @@ async def get_preferences(user_id: str):
                 "result": preferences_data
             }
         )
-        
+
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
         print(f"Error retrieving preferences: {error_details}")
-        
+
         return JSONResponse(
             status_code=500,
             content={
