@@ -26,9 +26,7 @@ import os
 
 router = APIRouter(prefix="/existingHomeOwners/styleClassification", tags=["Existing Home Owners Style Classification"], dependencies=[Depends(_verify_api_key)])
 
-# ================================
 # Style classification endpoint
-# ================================
 @router.post("/styleAnalysis")
 async def analyze_room_style(file: UploadFile = File(...), request: Request = None):
     """
@@ -44,9 +42,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
 
     tmp_file_path = None
     try:
-        # ================================
         # Extract user ID from request
-        # ================================
         user_id = None
         if request:
             user_id = getattr(request.state, 'user_id', None)
@@ -61,9 +57,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
                         }
                     )
 
-        # ================================
         # Upload to Cloudinary first
-        # ================================
         # Store the uploaded image in Cloudinary for permanent access
         cloudinary_result = FileManager.store_file(
             file=file,
@@ -73,9 +67,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
         # Reset file pointer after FileManager reads it
         await file.seek(0)
 
-        # ================================
         # Save uploaded image temporarily for HuggingFace
-        # ================================
         # HuggingFace needs a local file path, so we create a temp file
         suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
@@ -83,9 +75,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
 
-        # ================================
         # Calls Hugging Face model for inference
-        # ================================
         client = Client("jiaxinnnnn/Interior-Style-Classification-Deployment")
 
         result = client.predict(
@@ -93,9 +83,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             api_name="/predict"
         )
 
-        # ================================
         # Parse model output
-        # ================================
         # The model output is expected to be a dict
 
         if isinstance(result, dict):
@@ -104,25 +92,19 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
         else:
             raise ValueError(f"Unexpected model output: {result}")
 
-        # ================================
         # Clean up temporary file
-        # ================================
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
 
-        # ================================
         # Save to Firebase Database
-        # ================================
         if user_id:
             try:
-                # Prepare analysis data
+                # Prepare analysis data - save image info and detected style
                 analysis_data = {
-                    "detected_style": detected_style,
-                    "confidence": float(confidence) if confidence else 0.0,
                     "image_url": cloudinary_result["url"],
                     "file_id": cloudinary_result["file_id"],
                     "filename": cloudinary_result["filename"],
-                    "analyzed_at": datetime.utcnow().isoformat()
+                    "detected_style": detected_style
                 }
 
                 # Path: Users/{userId}/Existing Homeowner/Style Analysis
@@ -156,9 +138,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
 
 
     except Exception as e:
-        # ================================
         # Error handling and cleanup
-        # ================================
         if tmp_file_path and os.path.exists(tmp_file_path):
             try:
                 os.unlink(tmp_file_path)
@@ -174,13 +154,10 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
         )
 
 
-# ================================
 # Save Preferences endpoint
-# ================================
 @router.post("/savePreferences")
 async def save_preferences(
     preferences: str = Form(...),
-    analysis: str = Form(...),
     selected_styles: str = Form(...),
     user_id: str = Form(...)
 ):
@@ -189,11 +166,10 @@ async def save_preferences(
 
     This endpoint is called when the user completes the preview page
     and clicks "Get Started". It stores all their selections including
-    property preferences, detected style, and selected design themes.
+    property preferences, detected style (from Style Analysis), and selected design themes.
 
     Args:
         preferences (str): JSON string of preferences data
-        analysis (str): JSON string of analysis data
         selected_styles (str): JSON string of selected styles array
         user_id (str): User's unique identifier
 
@@ -201,14 +177,11 @@ async def save_preferences(
         JSONResponse: Success confirmation with timestamp
     """
     try:
-        # ================================
         # Parse JSON strings from form data
-        # ================================
         import json
 
         try:
             preferences_dict = json.loads(preferences) if isinstance(preferences, str) else preferences
-            analysis_dict = json.loads(analysis) if isinstance(analysis, str) else analysis
             selected_styles_list = json.loads(selected_styles) if isinstance(selected_styles, str) else selected_styles
         except json.JSONDecodeError as e:
             return JSONResponse(
@@ -219,36 +192,45 @@ async def save_preferences(
                 }
             )
 
-        # ================================
+        # Fetch detected_style from Style Analysis node
+        analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
+        analysis_data = DM.peek(analysis_path)
+        
+        if not analysis_data:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "result": "ERROR: No style analysis found. Please complete style analysis first."
+                }
+            )
+
         # Prepare data for database
-        # ================================
         timestamp = datetime.utcnow().isoformat()
 
         preferences_data = {
             "property_type": preferences_dict.get('propertyType', 'Not specified'),
             "unit_type": preferences_dict.get('unitType', 'Not specified'),
-            "budget": preferences_dict.get('budget', 'Not specified'),
-            "detected_style": analysis_dict.get('detected_style', 'Unknown'),
-            "confidence": analysis_dict.get('confidence', 0.0),
-            "original_image_url": analysis_dict.get('original_image_url', ''),
-            "file_id": analysis_dict.get('file_id', ''),
-            "filename": analysis_dict.get('filename', ''),
+            "budget_min": preferences_dict.get('budgetMin', 0),
+            "budget_max": preferences_dict.get('budgetMax', 0),
+            "detected_style": analysis_data.get('detected_style', 'Unknown'),
             "selected_styles": selected_styles_list,
-            "saved_at": timestamp
         }
 
-        # ================================
-        # Save to Firebase Database
-        # ================================
+        # Save preferences to Firebase Database
         # Path: Users/{userId}/Existing Homeowner/Preferences
-        path = ["Users", user_id, "Existing Homeowner", "Preferences"]
+        preferences_path = ["Users", user_id, "Existing Homeowner", "Preferences"]
+        DM.set_value(preferences_path, preferences_data)
 
-        DM.set_value(path, preferences_data)
+        # Save flow at user level
+        # Path: Users/{userId}/flow
+        flow_path = ["Users", user_id, "flow"]
+        DM.set_value(flow_path, "existingHomeOwner")
+
+        # Save all changes to database
         DM.save()
 
-        # ================================
         # Return success response
-        # ================================
         return JSONResponse(
             status_code=200,
             content={
@@ -275,9 +257,7 @@ async def save_preferences(
         )
 
 
-# ================================
 # Get Preferences endpoint
-# ================================
 @router.get("/getPreferences/{user_id}")
 async def get_preferences(user_id: str):
     """
@@ -285,17 +265,15 @@ async def get_preferences(user_id: str):
 
     This endpoint is called by the imageGeneration page to fetch
     the user's saved preferences, analysis results, and selected styles.
+    It also fetches the original image URL from the Style Analysis node.
 
     Args:
         user_id (str): User's unique identifier
 
     Returns:
-        JSONResponse: User's preferences data or error message
+        JSONResponse: User's preferences data including original image URL
     """
     try:
-        # ================================
-        # Fetch from Firebase Database
-        # ================================
         # Path: Users/{userId}/Existing Homeowner/Preferences
         path = ["Users", user_id, "Existing Homeowner", "Preferences"]
 
@@ -310,9 +288,14 @@ async def get_preferences(user_id: str):
                 }
             )
 
-        # ================================
-        # Return preferences data
-        # ================================
+        # Also fetch the original image URL from Style Analysis
+        analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
+        analysis_data = DM.peek(analysis_path)
+        
+        # Add original image URL to the response if available
+        if analysis_data and analysis_data.get('image_url'):
+            preferences_data['original_image_url'] = analysis_data.get('image_url')
+
         return JSONResponse(
             status_code=200,
             content={

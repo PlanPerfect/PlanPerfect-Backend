@@ -1,179 +1,224 @@
-"""
-LLM Gemini Service
-
-This file handles all interactions with Gemini LLM.
-Its responsibility is to generate Stable Diffusion prompts and ensure 
-the output is a valid, structured JSON, ready for use by image generation.
-
-Any cleaning, validation, or error handling related to LLM responses is done 
-here to ensure that image generation receives clean prompts.
-"""
-
 import os
-import json
-import google.generativeai as genai
-# ================================
-# JSON extraction and validation
-# ================================
-def extract_json(text: str) -> dict:
-    """
-    Extract and validate a JSON object from LLM output.
-
-    LLM responses may contain extra text, markdown formatting, or partially 
-    malformed JSON. This function aims to extract the JSON block and validate
-    fields.
-
-    Args:
-        text: Raw text output from the LLM
-
-    Returns:
-        Parsed JSON dictionary containing:
-        - prompt
-        - negative
-
-    Raises:
-        ValueError if a valid JSON object cannot be extracted.
-    """
-    try:
-        text = text.strip()
-
-        # Remove markdown code fences if present (```json ... ```)
-        if text.startswith("```"):
-            parts = text.split("```")
-            if len(parts) >= 2:
-                text = parts[1]
-                if text.lower().startswith("json"):
-                    text = text[4:]
-
-        text = text.strip()
-
-        # Extract JSON substring
-        start = text.find("{")
-        end = text.rfind("}") + 1
-
-        if start == -1 or end == 0:
-            raise ValueError("No JSON object found in response")
-
-        parsed = json.loads(text[start:end])
-
-        # Validate required fields
-        if "prompt" not in parsed:
-            raise ValueError("Missing required field: prompt")
-
-
-        return parsed
-
-    except json.JSONDecodeError as e:
-        # Attempt to recover partially valid JSON
-        try:
-            if not text.endswith("}"):
-                last_quote = text.rfind('"')
-                if last_quote > 0:
-                    text = text[:last_quote + 1] + "}"
-
-            parsed = json.loads(text[text.find("{"): text.rfind("}") + 1])
-
-            if "prompt" in parsed and "negative" in parsed:
-                return parsed
-        except:
-            pass
-
-        raise ValueError(f"Failed to parse LLM JSON. Raw output: {text[:200]}...") from e
-
-    except Exception as e:
-        raise ValueError(f"Unexpected error parsing LLM response: {str(e)}") from e
+from google import genai
+from google.genai import types
+from PIL import Image
+import io
 
 # ================================
 # Gemini model setup
 # ================================
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-"""
-System instruction for Gemini to generate Stable Diffusion prompts is created
-in a way that focuses on realistic interior design, avoiding common issues such as
-overly cinematic descriptions or camera terminology.
+# Vision model for analysis
+vision_model_name = "gemini-2.5-pro"
 
-This ensures that the generated prompts are better suited for Stable Diffusion
-to create realistic and livable interior design images.
+# - "gemini-2.5-flash-image" (faster, cheaper)
+# - "gemini-3-pro-image-preview" (better quality, advanced reasoning, text rendering)
+image_gen_model = "gemini-3-pro-image-preview"
 
-"""
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash-lite",
-system_instruction=(
-    "You are an interior design assistant."
-
-    "Your task is to generate Stable Diffusion prompts for "
-    "REALISTIC, LIVABLE INTERIOR DESIGN."
-
-    "RULES:"
-    "- Use short, comma-separated phrases (no full sentences)\n"
-    "- Keep prompt under 70 tokens\n"
-    "- Avoid camera, cinematic, mood, or artistic language\n"
-    "- Describe real homes that look professionally designed\n"
-
-    "COLOR & MATERIAL RULES (MANDATORY):"
-    "- Always specify wall color and finish\n"
-    "- Always specify floor material and tone\n"
-    "- Always specify main furniture upholstery color\n"
-    "- Always specify rug or textile accent colors\n"
-    "- Color palette MUST change according to selected styles\n"
-
-    "PROMPT ORDER (IMPORTANT):"
-    "- Walls and finishes first\n"
-    "- Flooring second\n"
-    "- Furniture colors and materials\n"
-    "- Rugs and accent textiles\n"
-    "- Room type and style last\n"
-
-    "Return ONLY valid JSON:\n"
-    "{ \"prompt\": \"...\" }\n"
-
-    "Do not include markdown, explanations, or extra text."
+# Image generation using Nano Banana (Gemini native)
+def generate_interior_design(init_image: Image.Image, styles: str) -> Image.Image:
+    # Calculate aspect ratio from input image - use original dimensions
+    width, height = init_image.size
+    aspect_ratio = width / height
+    
+    # Use the original image aspect ratio by selecting closest match
+    # But prefer to keep it as close to original as possible
+    if aspect_ratio >= 1.6:
+        aspect_ratio_str = "16:9"
+    elif aspect_ratio >= 1.25:
+        aspect_ratio_str = "4:3"
+    elif aspect_ratio >= 0.8:
+        aspect_ratio_str = "1:1"
+    elif aspect_ratio >= 0.65:
+        aspect_ratio_str = "3:4"
+    else:
+        aspect_ratio_str = "9:16"
+    
+    print(f"Original image size: {init_image.size}, Aspect ratio: {aspect_ratio:.2f}, Using: {aspect_ratio_str}")
+    
+    # Step 1: Analyze the room with Gemini Vision
+    analysis_prompt = f"""
+    Analyze this room image and describe:
+    1. Current style and color scheme
+    2. EXACT furniture pieces and their positions (left/right/center, specific placement)
+    3. Flooring type and walls
+    4. Room dimensions and architectural features (windows, doors, ceiling)
+    
+    Keep it concise but SPECIFIC about furniture placement, 3-4 sentences maximum.
+    """
+    
+    analysis_response = client.models.generate_content(
+        model=vision_model_name,
+        contents=[analysis_prompt, init_image],
+        config=types.GenerateContentConfig(
+            temperature=0.3
+        )
     )
-)
+    
+    room_analysis = analysis_response.text
+    print(f"Room Analysis: {room_analysis}")
+    
+    # Step 2: Create transformation prompt for Nano Banana
+    transformation_prompt = f"""
+    Transform this interior room to {styles} style.
+    
+    Current room: {room_analysis}
+    
+    CRITICAL REQUIREMENTS - DO NOT DEVIATE:
+    1. PRESERVE THE EXACT LAYOUT: Keep all furniture in their current positions
+    2. MAINTAIN ROOM STRUCTURE: Same room dimensions, window placement, door locations
+    3. KEEP FURNITURE COUNT: Same number of furniture pieces in same locations
+    4. PRESERVE SPATIAL RELATIONSHIPS: If sofa is facing coffee table, keep that relationship
+    
+    WHAT YOU CAN CHANGE:
+    - Wall colors and textures (paint, wallpaper) to match {styles}
+    - Flooring materials and colors to suit {styles} aesthetic
+    - Furniture upholstery, cushions, and fabric colors
+    - Decorative elements: artwork, plants, accessories
+    - Lighting fixtures style (but keep positions)
+    - Window treatments (curtains, blinds) in {styles} style
+    
+    WHAT YOU MUST NOT CHANGE:
+    - Room layout and dimensions
+    - Furniture positions and placement
+    - Number of furniture pieces
+    - Basic furniture shapes (a sofa stays a sofa, table stays a table)
+    - Architectural features (windows, doors, built-ins)
+    
+    Create a photorealistic interior design transformation that looks like the SAME ROOM but redesigned in {styles} style.
+    Think: "before and after renovation of the same space" not "completely different room".
+    """
+    
+    print(f"Transformation Prompt: {transformation_prompt}")
+    
+    # Step 3: Generate image with Nano Banana
+    response = client.models.generate_content(
+        model=image_gen_model,
+        contents=[transformation_prompt, init_image],
+        config=types.GenerateContentConfig(
+            response_modalities=['IMAGE'],
+            image_config=types.ImageConfig(
+                aspect_ratio=aspect_ratio_str,
+                image_size="2K"
+            )
+        )
+    )
+    
+    # Extract the generated image
+    for part in response.parts:
+        if part.inline_data is not None:
+            image_data = part.inline_data.data
+            generated_image = Image.open(io.BytesIO(image_data))
+            print(f"Generated image size: {generated_image.size}")
+            return generated_image
+    
+    raise Exception("No image generated in response")
+
 
 # ================================
-# Prompt generation
+# Alternative: Using chat mode for iterative editing
 # ================================
-def generate_sd_prompt(styles: str) -> dict:
+def generate_interior_design_with_mask(
+    init_image: Image.Image, 
+    styles: str,
+    preserve_layout: bool = True
+) -> Image.Image:
+    # Calculate aspect ratio from input image
+    width, height = init_image.size
+    aspect_ratio = width / height
+    
+    # Use the original image aspect ratio by selecting closest match
+    if aspect_ratio >= 1.6:
+        aspect_ratio_str = "16:9"
+    elif aspect_ratio >= 1.25:
+        aspect_ratio_str = "4:3"
+    elif aspect_ratio >= 0.8:
+        aspect_ratio_str = "1:1"
+    elif aspect_ratio >= 0.65:
+        aspect_ratio_str = "3:4"
+    else:
+        aspect_ratio_str = "9:16"
+    
+    print(f"Original image size: {init_image.size}, Aspect ratio: {aspect_ratio:.2f}, Using: {aspect_ratio_str}")
+    
+    # Analyze the room first
+    analysis_prompt = """
+    Briefly describe this room's current style, layout, and key furniture with their exact positions.
+    Be specific about where each piece of furniture is located.
+    Keep it to 3 sentences.
     """
-    Generate a Stable Diffusion prompt using Gemini.
-    """
-    prompt = f"""
-        Original Style: Scandinavian (light woods, whites, minimalist)
-        Target Styles: {styles}
-
-        Generate a Stable Diffusion prompt under 60 tokens that creates a DRAMATIC style transformation.
-
-        CRITICAL REQUIREMENTS:
-        - Completely change the color palette from the original
-        - For Contemporary Luxury: deep jewel tones, rich materials, bold contrasts
-        - Specify EXACT colors: "charcoal walls" not "dark walls"
-        - Include material transformations: velvet, marble, brass, etc.
-        - List colors in order: walls → floor → sofa → accents
-
-        Example for Contemporary Luxury:
-        "deep charcoal walls with matte finish, polished marble flooring in black and white, navy velvet sofa, brass and glass coffee table, emerald green accent pillows, gold metal floor lamp, abstract art, contemporary luxury living room"
-
-        Return ONLY valid JSON:
-        {{ "prompt": "..." }}
-    """
-
-
-    response = model.generate_content(
-        prompt,
-        generation_config={
-            # temperature is set low to reduce randomness and ensure
-            # that the LLM sticks to the system prompt of generating 
-            # realistic interior design prompts
-            "temperature": 0.3,
-            "max_output_tokens": 1024, # fixed token size to prevent overly long outputs
-            "response_mime_type": "application/json"
-        }
+    
+    analysis_response = client.models.generate_content(
+        model=vision_model_name,
+        contents=[analysis_prompt, init_image],
+        config=types.GenerateContentConfig(temperature=0.3)
     )
-
-    raw = response.text
-    print("GEMINI RAW RESPONSE:\n", raw)
-
-    # Ensure image generation always receives valid JSON
-    return extract_json(raw)
+    
+    room_analysis = analysis_response.text
+    print(f"Room Analysis: {room_analysis}")
+    
+    # Create appropriate prompt based on preserve_layout flag
+    if preserve_layout:
+        edit_prompt = f"""
+        Transform this room to {styles} interior design style.
+        
+        Current room: {room_analysis}
+        
+        STRICT REQUIREMENTS - ABSOLUTELY PRESERVE:
+        1. EXACT same room layout and furniture placement
+        2. Same number of furniture pieces in same positions
+        3. Same architectural features (windows, doors, ceiling height)
+        4. Same spatial relationships between furniture
+        
+        ONLY CHANGE THESE ELEMENTS:
+        - Wall colors and textures (to match {styles})
+        - Flooring materials and colors (to match {styles})
+        - Furniture upholstery, fabrics, and finishes (to match {styles})
+        - Decorative elements: artwork, plants, accessories (to match {styles})
+        - Lighting fixture styles (keep same positions)
+        - Window treatments (curtains, blinds in {styles} style)
+        
+        The transformation should look like a professional interior designer redecorated
+        the SAME EXACT ROOM in {styles} style. Same layout, different styling.
+        """
+    else:
+        edit_prompt = f"""
+        Transform this room to {styles} interior design style.
+        
+        Current room: {room_analysis}
+        
+        Maintain the general room dimensions and layout concept.
+        Apply {styles} aesthetic comprehensively:
+        - Update furniture to match the style
+        - Change colors, materials, and finishes
+        - Add appropriate decor and accessories
+        - Adjust lighting to suit the aesthetic
+        
+        Create a cohesive, professional {styles} interior design.
+        """
+    
+    print(f"Edit Prompt: {edit_prompt}")
+    
+    # Generate the transformed image
+    response = client.models.generate_content(
+        model=image_gen_model,
+        contents=[edit_prompt, init_image],
+        config=types.GenerateContentConfig(
+            response_modalities=['IMAGE'],
+            image_config=types.ImageConfig(
+                aspect_ratio=aspect_ratio_str,
+                image_size="2K"
+            )
+        )
+    )
+    
+    # Extract generated image
+    for part in response.parts:
+        if part.inline_data is not None:
+            image_data = part.inline_data.data
+            generated_image = Image.open(io.BytesIO(image_data))
+            print(f"Generated image size: {generated_image.size}")
+            return generated_image
+    
+    raise Exception("No image generated in response")
