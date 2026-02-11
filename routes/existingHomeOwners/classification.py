@@ -57,8 +57,18 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
                         }
                     )
 
+        # Generate unique filename to avoid duplicates
+        # Use timestamp + user_id to ensure uniqueness
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        original_filename = file.filename
+        file_extension = os.path.splitext(original_filename)[1] if original_filename else '.png'
+        unique_filename = f"room_style_{user_id}_{timestamp}{file_extension}"
+        
+        # Temporarily modify the file's filename attribute
+        file.filename = unique_filename
+        
         # Upload to Cloudinary first
-        # Store the uploaded image in Cloudinary for permanent access
+        # Store the uploaded image in Cloudinary for permanent storage
         cloudinary_result = FileManager.store_file(
             file=file,
             subfolder="Uploaded Room Images"
@@ -96,30 +106,10 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
 
-        # Save to Firebase Database
-        if user_id:
-            try:
-                # Prepare analysis data - save image info and detected style
-                analysis_data = {
-                    "image_url": cloudinary_result["url"],
-                    "file_id": cloudinary_result["file_id"],
-                    "filename": cloudinary_result["filename"],
-                    "detected_style": detected_style
-                }
-
-                # Path: Users/{userId}/Existing Homeowner/Style Analysis
-                path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
-
-                # Save to database
-                DM.set_value(path, analysis_data)
-                DM.save()
-
-            except Exception as db_error:
-                # Log error but don't fail the request
-                print(f"Warning: Failed to save to database: {str(db_error)}")
-
         # ================================
         # Return successful response with Cloudinary info
+        # NOTE: We do NOT save to database here - that only happens
+        # in the savePreferences endpoint when the user completes the preview page
         # ================================
         return JSONResponse(
             status_code=200,
@@ -159,6 +149,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
 async def save_preferences(
     preferences: str = Form(...),
     selected_styles: str = Form(...),
+    analysis_results: str = Form(...),
     user_id: str = Form(...)
 ):
     """
@@ -171,6 +162,7 @@ async def save_preferences(
     Args:
         preferences (str): JSON string of preferences data
         selected_styles (str): JSON string of selected styles array
+        analysis_results (str): JSON string of style analysis results (detected_style, image_url, file_id, filename)
         user_id (str): User's unique identifier
 
     Returns:
@@ -183,6 +175,7 @@ async def save_preferences(
         try:
             preferences_dict = json.loads(preferences) if isinstance(preferences, str) else preferences
             selected_styles_list = json.loads(selected_styles) if isinstance(selected_styles, str) else selected_styles
+            analysis_dict = json.loads(analysis_results) if isinstance(analysis_results, str) else analysis_results
         except json.JSONDecodeError as e:
             return JSONResponse(
                 status_code=400,
@@ -192,28 +185,26 @@ async def save_preferences(
                 }
             )
 
-        # Fetch detected_style from Style Analysis node
-        analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
-        analysis_data = DM.peek(analysis_path)
-        
-        if not analysis_data:
-            return JSONResponse(
-                status_code=404,
-                content={
-                    "success": False,
-                    "result": "ERROR: No style analysis found. Please complete style analysis first."
-                }
-            )
-
         # Prepare data for database
         timestamp = datetime.utcnow().isoformat()
 
+        # Save Style Analysis data
+        analysis_data = {
+            "image_url": analysis_dict.get('image_url'),
+            "file_id": analysis_dict.get('file_id'),
+            "filename": analysis_dict.get('filename'),
+            "detected_style": analysis_dict.get('detected_style')
+        }
+        analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
+        DM.set_value(analysis_path, analysis_data)
+
+        # Save Preferences data
         preferences_data = {
             "property_type": preferences_dict.get('propertyType', 'Not specified'),
             "unit_type": preferences_dict.get('unitType', 'Not specified'),
             "budget_min": preferences_dict.get('budgetMin', 0),
             "budget_max": preferences_dict.get('budgetMax', 0),
-            "detected_style": analysis_data.get('detected_style', 'Unknown'),
+            "detected_style": analysis_dict.get('detected_style', 'Unknown'),
             "selected_styles": selected_styles_list,
         }
 
