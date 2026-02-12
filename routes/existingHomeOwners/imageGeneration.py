@@ -267,6 +267,11 @@ async def generate_image(
         # Path: Users/{userId}/Existing Homeowner/Image Generation
         generation_path = ["Users", user_id, "Existing Homeowner", "Image Generation"]
         DM.set_value(generation_path, generation_data)
+
+        # Keep Preferences/selected_styles in sync with the styles used for this generation
+        preferences_styles_path = ["Users", user_id, "Existing Homeowner", "Preferences", "selected_styles"]
+        DM.set_value(preferences_styles_path, styles.split(", "))
+
         DM.save()
 
         # Return Cloudinary URL and file_id
