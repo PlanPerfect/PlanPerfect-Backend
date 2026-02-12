@@ -1,0 +1,492 @@
+import argparse
+import asyncio
+import json
+import mimetypes
+import os
+import shlex
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from dotenv import load_dotenv
+
+from Services import DatabaseManager as DM
+from Services import FileManager as FM
+from Services import LLMManager as LLM
+from Services import ServiceOrchestra as SO
+from Services.AgentSynthesizer import AgentSynthesizer
+
+
+HELP_TEXT = """
+Commands:
+  /help
+    Show this help.
+
+  /files add <file_id> <path>
+    Register a local file for agent tool calls (quote path if needed).
+
+  /files list
+    List registered file IDs.
+
+  /files remove <file_id>
+    Remove one registered file.
+
+  /files clear
+    Remove all registered files.
+
+  /max <iterations>
+    Set max think/act iterations per query.
+
+  /model
+    Show current agent model.
+
+  /sessions
+    List session IDs for this user.
+
+  /session show [session_id]
+    Print saved session JSON (defaults to last session).
+
+  /session use <session_id>
+    Reuse one fixed session_id for all future queries.
+
+  /session clear
+    Stop reusing a fixed session_id.
+
+  /quit
+    Exit.
+
+Any non-command text is sent to AgentSynthesizer.execute().
+Tip: mention a registered file_id in your prompt for file-based tools.
+"""
+
+
+class LocalUploadFile:
+    """Lightweight async file wrapper compatible with ServiceOrchestra methods."""
+
+    def __init__(self, path: str):
+        resolved_path = Path(path).expanduser().resolve()
+
+        if not resolved_path.exists():
+            raise FileNotFoundError(f"File not found: {resolved_path}")
+        if not resolved_path.is_file():
+            raise ValueError(f"Not a file: {resolved_path}")
+
+        self.path = resolved_path
+        self.filename = resolved_path.name
+        self.content_type = (
+            mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream"
+        )
+        self._content = resolved_path.read_bytes()
+
+    async def read(self) -> bytes:
+        return self._content
+
+
+@dataclass
+class PlaygroundState:
+    user_id: str
+    max_iterations: int
+    fixed_session_id: Optional[str] = None
+    last_session_id: Optional[str] = None
+    files: Dict[str, LocalUploadFile] = field(default_factory=dict)
+
+
+def _compact(value: Any, max_len: int = 200) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len].rstrip()}..."
+
+
+def _print_session_trace(user_id: str, session_id: str) -> None:
+    session = AgentSynthesizer.get_session(user_id=user_id, session_id=session_id)
+    if not session:
+        return
+
+    steps = session.get("steps", [])
+    if not steps:
+        return
+
+    print("\nTrace:")
+    for step in steps:
+        step_type = step.get("type", "unknown")
+        content = step.get("content")
+
+        if step_type == "tool_call":
+            tool = content.get("tool", "unknown") if isinstance(content, dict) else "unknown"
+            args = content.get("args", {}) if isinstance(content, dict) else {}
+            args_text = json.dumps(args, ensure_ascii=False) if isinstance(args, (dict, list)) else str(args)
+            print(f"  tool_call  {tool}")
+            print(f"    args: {args_text}")
+        elif step_type == "tool_result":
+            tool = content.get("tool", "unknown") if isinstance(content, dict) else "unknown"
+            result = content.get("result", {}) if isinstance(content, dict) else {}
+            result_text = (
+                json.dumps(result, ensure_ascii=False)
+                if isinstance(result, (dict, list))
+                else str(result)
+            )
+            print(f"  tool_result {tool}")
+            print(f"    result: {result_text}")
+        elif step_type == "error":
+            error_text = (
+                json.dumps(content, ensure_ascii=False)
+                if isinstance(content, (dict, list))
+                else str(content)
+            )
+            print(f"  error      {error_text}")
+
+
+def _initialize_services() -> None:
+    required_env = [
+        "FIREBASE_DATABASE_URL",
+        "FIREBASE_CREDENTIALS_PATH",
+        "GROQ_API_KEY",
+        "GEMINI_API_KEY",
+        "CLOUDINARY_URL",
+    ]
+
+    missing = [name for name in required_env if not os.getenv(name)]
+    if missing:
+        missing_text = ", ".join(missing)
+        raise RuntimeError(f"Missing required environment variables: {missing_text}")
+
+    if not DM._initialized:
+        DM.initialize(
+            database_url=os.getenv("FIREBASE_DATABASE_URL"),
+            credentials_path=os.getenv("FIREBASE_CREDENTIALS_PATH"),
+        )
+
+    if not LLM._initialized:
+        LLM.initialize()
+
+    if not FM._initialized:
+        FM.initialize()
+
+    if not SO._initialized:
+        SO.initialize()
+
+    if not AgentSynthesizer._initialized:
+        AgentSynthesizer.initialize()
+
+
+def _register_file(state: PlaygroundState, file_id: str, file_path: str) -> None:
+    upload_file = LocalUploadFile(file_path)
+    state.files[file_id] = upload_file
+    AgentSynthesizer.register_file(file_id=file_id, file_obj=upload_file)
+
+    print(f"Registered file_id='{file_id}' -> {upload_file.path}")
+
+
+def _list_files(state: PlaygroundState) -> None:
+    if not state.files:
+        print("No files registered.")
+        return
+
+    print("Registered files:")
+    for file_id, upload_file in state.files.items():
+        print(f"  {file_id}: {upload_file.path}")
+
+
+def _remove_file(state: PlaygroundState, file_id: str) -> None:
+    if file_id not in state.files:
+        print(f"File ID not found: {file_id}")
+        return
+
+    del state.files[file_id]
+    AgentSynthesizer.clear_file_registry()
+    for existing_file_id, upload_file in state.files.items():
+        AgentSynthesizer.register_file(existing_file_id, upload_file)
+
+    print(f"Removed file_id='{file_id}'.")
+
+
+def _clear_files(state: PlaygroundState) -> None:
+    state.files.clear()
+    AgentSynthesizer.clear_file_registry()
+    print("Cleared all registered files.")
+
+
+def _list_sessions(state: PlaygroundState) -> None:
+    sessions = AgentSynthesizer.list_sessions(user_id=state.user_id) or {}
+    if not isinstance(sessions, dict) or not sessions:
+        print("No sessions found.")
+        return
+
+    sorted_items = sorted(
+        sessions.items(),
+        key=lambda item: str(item[1].get("updated_at", "")),
+        reverse=True,
+    )
+
+    print("Sessions:")
+    for session_id, data in sorted_items:
+        status = data.get("status", "unknown")
+        query = _compact(data.get("query", ""), 70)
+        updated_at = data.get("updated_at", "unknown")
+        print(f"  {session_id} | {status} | {updated_at} | {query}")
+
+
+def _show_session(state: PlaygroundState, session_id: Optional[str]) -> None:
+    target_session_id = session_id or state.last_session_id
+    if not target_session_id:
+        print("No session ID provided and no last session available.")
+        return
+
+    session = AgentSynthesizer.get_session(
+        user_id=state.user_id,
+        session_id=target_session_id,
+    )
+    if not session:
+        print(f"Session not found: {target_session_id}")
+        return
+
+    print(json.dumps(session, indent=2, ensure_ascii=False))
+
+
+async def _execute_query(state: PlaygroundState, query: str) -> None:
+    print("\nRunning agent...")
+    result = await AgentSynthesizer.execute(
+        user_id=state.user_id,
+        query=query,
+        session_id=state.fixed_session_id,
+        max_iterations=state.max_iterations,
+    )
+
+    state.last_session_id = result.get("session_id")
+
+    print("\nAssistant:")
+    print(result.get("response", ""))
+    print(
+        f"\nStatus: {result.get('status')} | "
+        f"Session: {result.get('session_id')} | "
+        f"Iterations: {result.get('iterations', 'n/a')}"
+    )
+
+    if result.get("status") == "error":
+        print(f"Error: {result.get('error', 'Unknown error')}")
+
+    if state.last_session_id:
+        _print_session_trace(user_id=state.user_id, session_id=state.last_session_id)
+
+
+async def _handle_command(state: PlaygroundState, raw: str) -> bool:
+    try:
+        parts = shlex.split(raw)
+    except ValueError as exc:
+        print(f"Invalid command syntax: {exc}")
+        return True
+
+    if not parts:
+        return True
+
+    cmd = parts[0].lower()
+
+    if cmd in {"/quit", "/exit"}:
+        return False
+
+    if cmd == "/help":
+        print(HELP_TEXT.strip())
+        return True
+
+    if cmd == "/model":
+        print(f"Current agent model: {LLM.get_current_agent_model()}")
+        return True
+
+    if cmd == "/max":
+        if len(parts) != 2:
+            print("Usage: /max <iterations>")
+            return True
+
+        try:
+            value = int(parts[1])
+        except ValueError:
+            print("Iterations must be an integer.")
+            return True
+
+        if value < 1:
+            print("Iterations must be at least 1.")
+            return True
+
+        state.max_iterations = value
+        print(f"max_iterations set to {state.max_iterations}")
+        return True
+
+    if cmd == "/files":
+        if len(parts) < 2:
+            print("Usage: /files <add|list|remove|clear> ...")
+            return True
+
+        sub = parts[1].lower()
+        if sub == "add":
+            if len(parts) != 4:
+                print("Usage: /files add <file_id> <path>")
+                return True
+            _register_file(state, parts[2], parts[3])
+            return True
+
+        if sub == "list":
+            _list_files(state)
+            return True
+
+        if sub == "remove":
+            if len(parts) != 3:
+                print("Usage: /files remove <file_id>")
+                return True
+            _remove_file(state, parts[2])
+            return True
+
+        if sub == "clear":
+            _clear_files(state)
+            return True
+
+        print("Unknown /files command. Use add, list, remove, or clear.")
+        return True
+
+    if cmd == "/sessions":
+        _list_sessions(state)
+        return True
+
+    if cmd == "/session":
+        if len(parts) < 2:
+            print("Usage: /session <show|use|clear> ...")
+            return True
+
+        sub = parts[1].lower()
+        if sub == "show":
+            target = parts[2] if len(parts) >= 3 else None
+            _show_session(state, target)
+            return True
+
+        if sub == "use":
+            if len(parts) != 3:
+                print("Usage: /session use <session_id>")
+                return True
+            state.fixed_session_id = parts[2]
+            print(f"Fixed session_id set to: {state.fixed_session_id}")
+            return True
+
+        if sub == "clear":
+            state.fixed_session_id = None
+            print("Fixed session_id cleared. Future queries will generate new IDs.")
+            return True
+
+        print("Unknown /session command. Use show, use, or clear.")
+        return True
+
+    print("Unknown command. Use /help.")
+    return True
+
+
+def _parse_file_registration(raw_value: str) -> tuple[str, str]:
+    if "=" not in raw_value:
+        raise ValueError("File registration must be formatted as <file_id>=<path>")
+
+    file_id, file_path = raw_value.split("=", 1)
+    file_id = file_id.strip()
+    file_path = file_path.strip()
+
+    if not file_id or not file_path:
+        raise ValueError("File registration must be formatted as <file_id>=<path>")
+
+    return file_id, file_path
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Console playground for testing AgentSynthesizer + ServiceOrchestra."
+    )
+    parser.add_argument(
+        "--user-id",
+        default=os.getenv("PLAYGROUND_USER_ID", "playground-user"),
+        help="User ID used for session tracking in Firebase.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=10,
+        help="Maximum agent think/act cycles per query.",
+    )
+    parser.add_argument(
+        "--query",
+        help="Run one query and exit (non-interactive mode).",
+    )
+    parser.add_argument(
+        "--session-id",
+        help="Force a fixed session ID for queries.",
+    )
+    parser.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        help="Register file on startup using <file_id>=<path>. Can be used multiple times.",
+    )
+    return parser
+
+
+async def _run(args: argparse.Namespace) -> int:
+    _initialize_services()
+
+    state = PlaygroundState(
+        user_id=args.user_id,
+        max_iterations=args.max_iterations,
+        fixed_session_id=args.session_id,
+    )
+
+    for file_spec in args.file:
+        file_id, file_path = _parse_file_registration(file_spec)
+        _register_file(state, file_id, file_path)
+
+    if args.query:
+        await _execute_query(state, args.query)
+        return 0
+
+    print("Agent Playground Ready.")
+    print(f"User ID: {state.user_id}")
+    if state.fixed_session_id:
+        print(f"Fixed session_id: {state.fixed_session_id}")
+    print("Type /help for commands.\n")
+
+    while True:
+        try:
+            raw = input("agent> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting.")
+            return 0
+
+        if not raw:
+            continue
+
+        if raw.startswith("/"):
+            try:
+                should_continue = await _handle_command(state, raw)
+            except Exception as exc:
+                print(f"Command failed: {exc}")
+                continue
+
+            if not should_continue:
+                print("Exiting.")
+                return 0
+            continue
+
+        try:
+            await _execute_query(state, raw)
+        except Exception as exc:
+            print(f"Query failed: {exc}")
+
+
+def main() -> int:
+    load_dotenv()
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    try:
+        return asyncio.run(_run(args))
+    except Exception as exc:
+        print(f"Playground failed: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
