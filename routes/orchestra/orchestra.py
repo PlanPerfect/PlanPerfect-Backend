@@ -1,3 +1,5 @@
+# this router should only be used as reference / demo on HOW to use ServiceOrchestra. DO NOT use this router in production. minimal MVP only.
+
 from fastapi import APIRouter, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from Services import ServiceOrchestra
@@ -191,13 +193,11 @@ async def get_recommendations(
 
 @router.post("/webSearch")
 async def web_search(
-    query: str = Form(...),
-    num_results: int = Form(5)
+    query: str = Form(...)
 ):
     try:
         result = await ServiceOrchestra.web_search(
-            query=query,
-            num_results=num_results
+            query=query
         )
 
         if not result:
@@ -209,25 +209,12 @@ async def web_search(
                 }
             )
 
-        if "error" in result:
-            if result["error"] == "timeout":
-                return JSONResponse(
-                    status_code=504,
-                    content={
-                        "success": False,
-                        "message": result["message"]
-                    }
-                )
-
         return JSONResponse(
             status_code=200,
             content={
                 "success": True,
                 "result": {
-                    "query": result["query"],
-                    "results": result["results"],
-                    "total_results": result["total_results"],
-                    "message": "Web search completed successfully"
+                    "response": result
                 }
             }
         )
