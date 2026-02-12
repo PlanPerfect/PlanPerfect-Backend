@@ -136,27 +136,31 @@ class _RateLimitManager: # manages rate limit info for a single model
         return 60.0
 
 class _ModelManager: # manages available models and their rate-limit status. Backbone of the smart model-switching mechanism.
-    # Standard chat models (no tool calling)
-    MODELS = [
+    CHAT_MODELS = [
         {"name": "llama-3.3-70b-versatile", "provider": "groq"},      # 30 RPM, 1K RPD, 12K TPM, 100K TPD
         {"name": "llama-3.1-8b-instant", "provider": "groq"},         # 30 RPM, 14.4K RPD, 6K TPM, 500K TPD
-        {"name": "gemini-3-flash", "provider": "gemini"},             # 5 RPM, 250K TPM
-        {"name": "gemini-2.5-flash", "provider": "gemini"},           # 5 RPM, 250K TPM
-        {"name": "gemini-2.5-flash-lite", "provider": "gemini"}       # 10 RPM, 250K TPM
+        {"name": "gemini-3-flash", "provider": "gemini"},             # 1K RPM, 1M TPM, 10K RPD
+        {"name": "gemini-2.5-flash", "provider": "gemini"},           # 1K RPM, 1M TPM, 10K RPD
+        {"name": "gemini-2.5-flash-lite", "provider": "gemini"}       # 4K RPM, 4M TPM, UNLIMITED RPD
     ]
 
-    # Agent-specific models (with tool calling support)
     AGENT_MODELS = [
-        {"name": "llama-3.3-70b-versatile", "provider": "groq"},      # Primary stable tool model
-        {"name": "meta-llama/llama-4-scout-17b-16e-instruct", "provider": "groq"},
-        {"name": "meta-llama/llama-4-maverick-17b-128e-instruct", "provider": "groq"},
-        {"name": "llama-3.1-8b-instant", "provider": "groq"},         # Fast fallback
-        {"name": "gemini-2.0-flash-exp", "provider": "gemini"},       # Gemini fallback
+        {"name": "moonshotai/kimi-k2-instruct-0905", "provider": "groq"},                       # 60 RPM, 1K RPD, 10K TPM, 300K TPD
+        {"name": "llama-3.3-70b-versatile", "provider": "groq"},                                # 30 RPM, 1K RPD, 12K TPM, 100K TPD
+        {"name": "meta-llama/llama-4-scout-17b-16e-instruct", "provider": "groq"},              # 30 RPM, 1K RPD, 30K TPM, 500K TPD
+        {"name": "meta-llama/llama-4-maverick-17b-128e-instruct", "provider": "groq"},          # 30 RPM, 1K RPD, 6K TPM, 500K TPD
+        {"name": "llama-3.1-8b-instant", "provider": "groq"},                                   # 30 RPM, 14.4K RPD, 6K TPM, 500K TPD
+        {"name": "qwen/qwen3-32b", "provider": "groq"},                                         # 60 RPM, 1K RPD, 6K TPM, 500K TPD
+        {"name": "gemini-3-pro", "provider": "gemini"},                                         # 25 RPM, 1M TPM, 250 RPD
+        {"name": "gemini-3-flash", "provider": "gemini"},                                       # 1K RPM, 1M TPM, 10K RPD
+        {"name": "gemini-2.5-pro", "provider": "gemini"},                                       # 150 RPM, 2M TPM, 1K RPD
+        {"name": "gemini-2.5-flash", "provider": "gemini"},                                     # 1K RPM, 1M TPM, 10K RPD
+        {"name": "gemini-2.5-flash-lite", "provider": "gemini"}                                 # 4K RPM, 4M TPM, UNLIMITED RPD
     ]
 
     def __init__(self, use_agent_models: bool = False):
         self.use_agent_models = use_agent_models
-        self.models = self.AGENT_MODELS if use_agent_models else self.MODELS
+        self.models = self.AGENT_MODELS if use_agent_models else self.CHAT_MODELS
         self.current_model_index = 0
         self.model_rate_limits: Dict[str, _RateLimitManager] = {
             model["name"]: _RateLimitManager() for model in self.models
@@ -711,7 +715,7 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             best_model = min_model
             best_wait = (min_time - now).total_seconds()
 
-        model_type = "AGENT MODELS" if is_agent else "MODELS"
+        model_type = "AGENT MODELS" if is_agent else "CHAT MODELS"
 
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             if best_model and best_wait is not None:
@@ -744,7 +748,6 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         return f"{model['provider']}/{model['name']}"
 
     def get_current_agent_model(self) -> str:
-        """Get the current agent model being used"""
         if not self._initialized:
             raise RuntimeError("LLMManager not initialized. Call initialize() first.")
 
