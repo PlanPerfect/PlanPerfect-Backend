@@ -95,6 +95,57 @@ def _compact(value: Any, max_len: int = 200) -> str:
     return f"{text[:max_len].rstrip()}..."
 
 
+def _tool_step_label(tool_name: Optional[str]) -> Optional[str]:
+    mapping = {
+        "generate_image": "Generating Image...",
+        "classify_style": "Classifying Style...",
+        "detect_furniture": "Detecting Furniture...",
+        "get_recommendations": "Getting Reccomendations...",
+        "web_search": "Searching the web...",
+        "extract_colors": "Extracting Colors...",
+        "generate_floor_plan": "Generating Floor Plan...",
+    }
+    if not isinstance(tool_name, str):
+        return None
+    return mapping.get(tool_name)
+
+
+def _steps_for_latest_query(session: Dict[str, Any], status: str) -> list[str]:
+    steps = session.get("steps", [])
+    if not isinstance(steps, list) or not steps:
+        return []
+
+    last_user_query_index = 0
+    for idx, step in enumerate(steps):
+        if isinstance(step, dict) and step.get("type") == "user_query":
+            last_user_query_index = idx
+
+    query_steps = steps[last_user_query_index:]
+    labels: list[str] = []
+
+    def append_unique(label: Optional[str]) -> None:
+        if not label:
+            return
+        if labels and labels[-1] == label:
+            return
+        labels.append(label)
+
+    for step in query_steps:
+        if not isinstance(step, dict):
+            continue
+
+        step_type = step.get("type")
+        if step_type == "thought":
+            append_unique("Thinking...")
+        elif step_type == "tool_call":
+            append_unique(_tool_step_label(step.get("tool")))
+
+    if status == "completed":
+        append_unique("Done!")
+
+    return labels
+
+
 def _print_session_trace(user_id: str, session_id: str) -> None:
     session = AgentSynthesizer.get_session(user_id=user_id, session_id=session_id)
     if not session:
@@ -240,20 +291,23 @@ async def _execute_query(state: PlaygroundState, query: str) -> None:
     )
 
     state.last_session_id = result.get("session_id")
+    session = AgentSynthesizer.get_session(
+        user_id=state.user_id,
+        session_id=state.last_session_id,
+    ) if state.last_session_id else None
 
     print("\nAssistant:")
     print(result.get("response", ""))
-    print(
-        f"\nStatus: {result.get('status')} | "
-        f"Session: {result.get('session_id')} | "
-        f"Iterations: {result.get('iterations', 'n/a')}"
-    )
+
+    if session:
+        step_labels = _steps_for_latest_query(session, result.get("status", ""))
+        if step_labels:
+            print("\nSteps Taken:")
+            for step in step_labels:
+                print(f"  - {step}")
 
     if result.get("status") == "error":
         print(f"Error: {result.get('error', 'Unknown error')}")
-
-    if state.last_session_id:
-        _print_session_trace(user_id=state.user_id, session_id=state.last_session_id)
 
 
 async def _handle_command(state: PlaygroundState, raw: str) -> bool:
