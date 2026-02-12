@@ -46,13 +46,13 @@ class UploadFileAdapter:
 
 def extract_keywords(user_prompt: str) -> list:
     """
-    Extract meaningful keywords from user prompt using Gemini LLM.
+    Convert user prompt into structured designer notes using Gemini LLM.
     
     Args:
-        user_prompt: Raw user input (e.g., "Make the walls darker blue, add more plants")
+        user_prompt: Raw user input (e.g., "Make the walls brighter, add more lights and decorations")
     
     Returns:
-        List of extracted keywords (e.g., ["darker", "blue", "walls", "plants"])
+        List of actionable designer notes (e.g., ["Lighten wall colour to a warm off-white", "Add ambient lighting fixtures"])
     """
     if not user_prompt or not user_prompt.strip():
         return []
@@ -64,15 +64,20 @@ def extract_keywords(user_prompt: str) -> list:
         
         client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         
-        # Use Gemini 2.5 Flash Lite for fast, unlimited keyword extraction
-        extraction_prompt = f"""Extract 3-7 meaningful keywords from this interior design modification request.
-        Focus on: colors, furniture, materials, style elements, room features, actions.
-        Ignore: filler words, pronouns, conjunctions.
+        # Use Gemini 2.5 Flash Lite for fast, designer note generation
+        extraction_prompt = f"""You are a professional interior design consultant summarizing a client's request into concise notes for the design team.
 
-        User request: "{user_prompt}"
+        Convert the client's raw input into clear, actionable designer notes.
+        Focus on: specific changes requested, colors, materials, furniture, lighting, mood, and spatial preferences.
+        Write in a professional but brief tone, as if handing off notes to the designer.
 
-        Return ONLY a comma-separated list of keywords, nothing else.
-        Example output: darker, blue, walls, plants, modern
+        Client request: "{user_prompt}"
+
+        Return ONLY 2-4 short bullet points (using "-" as bullet), nothing else.
+        Example output:
+        - Lighten wall colour to a warm off-white or pale beige
+        - Replace overhead lighting with warmer, ambient light fixtures
+        - Introduce natural wood accents and indoor greenery
         """
 
         response = client.models.generate_content(
@@ -84,20 +89,20 @@ def extract_keywords(user_prompt: str) -> list:
             )
         )
         
-        # Parse the response
-        keywords_text = response.text.strip()
+        # Parse the response - split bullet points into a list
+        notes_text = response.text.strip()
         
-        # Split by comma and clean up
-        keywords = [k.strip().lower() for k in keywords_text.split(',')]
+        # Split by newline and clean up bullet formatting
+        notes = [line.strip().lstrip('-').strip() for line in notes_text.splitlines()]
         
-        # Filter out any empty strings and limit to 10
-        keywords = [k for k in keywords if k and len(k) > 1][:10]
+        # Filter out empty lines
+        notes = [n for n in notes if n and len(n) > 3][:6]
         
-        print(f"LLM extracted keywords from '{user_prompt}': {keywords}")
-        return keywords
+        print(f"LLM designer notes from '{user_prompt}': {notes}")
+        return notes
         
     except Exception as e:
-        print(f"Error extracting keywords with LLM: {str(e)}")
+        print(f"Error generating designer notes with LLM: {str(e)}")
         # Fallback to simple extraction if LLM fails
         return _simple_keyword_extraction(user_prompt)
 
@@ -198,11 +203,6 @@ async def generate_image(
                 detail="Image URL not found in style analysis data."
             )
         
-        print(f"=== FETCHING IMAGE FROM STYLE ANALYSIS ===")
-        print(f"User ID: {user_id}")
-        print(f"Image URL: {image_url}")
-        
-        
         # Download image from Cloudinary
         response = requests.get(image_url)
         response.raise_for_status()
@@ -213,11 +213,6 @@ async def generate_image(
             tmp_file_path = tmp_file.name
 
         init_image = Image.open(tmp_file_path).convert("RGB")
-
-        print(f"Input image size: {init_image.size}")
-        print(f"Target styles: {styles}")
-        if user_prompt:
-            print(f"User customization: {user_prompt}")
 
         # Generate new design with Imagen 3
         try:
@@ -258,25 +253,21 @@ async def generate_image(
         print(" GENERATION COMPLETE ")
 
         # Save generated image to database
-        # Extract keywords from user prompt for better storage
-        modification_keywords = extract_keywords(user_prompt) if user_prompt else []
+        # Extract designer notes from user prompt for better storage
+        designer_notes = extract_keywords(user_prompt) if user_prompt else []
         
         generation_data = {
             "image_url": cloudinary_result["url"],
             "file_id": cloudinary_result["file_id"],
             "filename": cloudinary_result["filename"],
             "styles": styles,
-            "modification_keywords": modification_keywords,  # Keywords extracted from user prompt
+            "designer_notes": designer_notes, 
         }
         
         # Path: Users/{userId}/Existing Homeowner/Image Generation
         generation_path = ["Users", user_id, "Existing Homeowner", "Image Generation"]
         DM.set_value(generation_path, generation_data)
         DM.save()
-        
-        print(f"Saved generated image to database at path: {generation_path}")
-        if modification_keywords:
-            print(f"Extracted keywords: {modification_keywords}")
 
         # Return Cloudinary URL and file_id
         return {
