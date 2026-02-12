@@ -42,16 +42,13 @@ Commands:
     Show current agent model.
 
   /sessions
-    List session IDs for this user.
+    Show the single active session for this user.
 
-  /session show [session_id]
-    Print saved session JSON (defaults to last session).
-
-  /session use <session_id>
-    Reuse one fixed session_id for all future queries.
+  /session show
+    Print the current saved session JSON.
 
   /session clear
-    Stop reusing a fixed session_id.
+    Clear the current session (history + steps).
 
   /quit
     Exit.
@@ -87,7 +84,6 @@ class LocalUploadFile:
 class PlaygroundState:
     user_id: str
     max_iterations: int
-    fixed_session_id: Optional[str] = None
     last_session_id: Optional[str] = None
     files: Dict[str, LocalUploadFile] = field(default_factory=dict)
 
@@ -112,23 +108,26 @@ def _print_session_trace(user_id: str, session_id: str) -> None:
     for step in steps:
         step_type = step.get("type", "unknown")
         content = step.get("content")
+        tool = step.get("tool", "unknown")
 
         if step_type == "tool_call":
-            tool = content.get("tool", "unknown") if isinstance(content, dict) else "unknown"
-            args = content.get("args", {}) if isinstance(content, dict) else {}
-            args_text = json.dumps(args, ensure_ascii=False) if isinstance(args, (dict, list)) else str(args)
+            args_text = (
+                json.dumps(content, ensure_ascii=False)
+                if isinstance(content, (dict, list))
+                else str(content)
+            )
             print(f"  tool_call  {tool}")
             print(f"    args: {args_text}")
         elif step_type == "tool_result":
-            tool = content.get("tool", "unknown") if isinstance(content, dict) else "unknown"
-            result = content.get("result", {}) if isinstance(content, dict) else {}
-            result_text = (
-                json.dumps(result, ensure_ascii=False)
-                if isinstance(result, (dict, list))
-                else str(result)
+            output_text = (
+                json.dumps(content, ensure_ascii=False)
+                if isinstance(content, (dict, list))
+                else str(content)
             )
             print(f"  tool_result {tool}")
-            print(f"    result: {result_text}")
+            print(f"    output: {output_text}")
+        elif step_type in {"user_query", "response", "thought"}:
+            print(f"  {step_type}  {_compact(content)}")
         elif step_type == "error":
             error_text = (
                 json.dumps(content, ensure_ascii=False)
@@ -214,34 +213,21 @@ def _list_sessions(state: PlaygroundState) -> None:
         print("No sessions found.")
         return
 
-    sorted_items = sorted(
-        sessions.items(),
-        key=lambda item: str(item[1].get("updated_at", "")),
-        reverse=True,
-    )
-
-    print("Sessions:")
-    for session_id, data in sorted_items:
-        status = data.get("status", "unknown")
-        query = _compact(data.get("query", ""), 70)
-        updated_at = data.get("updated_at", "unknown")
-        print(f"  {session_id} | {status} | {updated_at} | {query}")
+    session_id, data = next(iter(sessions.items()))
+    status = data.get("status", "unknown")
+    current_step = _compact(data.get("current_step", ""), 100)
+    print("Session:")
+    print(f"  {session_id} | {status} | {current_step}")
 
 
 def _show_session(state: PlaygroundState, session_id: Optional[str]) -> None:
     target_session_id = session_id or state.last_session_id
-    if not target_session_id:
-        print("No session ID provided and no last session available.")
-        return
-
-    session = AgentSynthesizer.get_session(
-        user_id=state.user_id,
-        session_id=target_session_id,
-    )
+    session = AgentSynthesizer.get_session(user_id=state.user_id, session_id=target_session_id)
     if not session:
-        print(f"Session not found: {target_session_id}")
+        print("Session not found.")
         return
 
+    state.last_session_id = session.get("session_id")
     print(json.dumps(session, indent=2, ensure_ascii=False))
 
 
@@ -250,7 +236,6 @@ async def _execute_query(state: PlaygroundState, query: str) -> None:
     result = await AgentSynthesizer.execute(
         user_id=state.user_id,
         query=query,
-        session_id=state.fixed_session_id,
         max_iterations=state.max_iterations,
     )
 
@@ -350,29 +335,25 @@ async def _handle_command(state: PlaygroundState, raw: str) -> bool:
 
     if cmd == "/session":
         if len(parts) < 2:
-            print("Usage: /session <show|use|clear> ...")
+            print("Usage: /session <show|clear>")
             return True
 
         sub = parts[1].lower()
         if sub == "show":
-            target = parts[2] if len(parts) >= 3 else None
+            target = parts[2] if len(parts) == 3 else None
             _show_session(state, target)
             return True
 
-        if sub == "use":
-            if len(parts) != 3:
-                print("Usage: /session use <session_id>")
-                return True
-            state.fixed_session_id = parts[2]
-            print(f"Fixed session_id set to: {state.fixed_session_id}")
-            return True
-
         if sub == "clear":
-            state.fixed_session_id = None
-            print("Fixed session_id cleared. Future queries will generate new IDs.")
+            deleted = AgentSynthesizer.clear_session(user_id=state.user_id)
+            state.last_session_id = None
+            if deleted:
+                print("Session cleared.")
+            else:
+                print("Failed to clear session.")
             return True
 
-        print("Unknown /session command. Use show, use, or clear.")
+        print("Unknown /session command. Use show or clear.")
         return True
 
     print("Unknown command. Use /help.")
@@ -413,10 +394,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run one query and exit (non-interactive mode).",
     )
     parser.add_argument(
-        "--session-id",
-        help="Force a fixed session ID for queries.",
-    )
-    parser.add_argument(
         "--file",
         action="append",
         default=[],
@@ -431,7 +408,6 @@ async def _run(args: argparse.Namespace) -> int:
     state = PlaygroundState(
         user_id=args.user_id,
         max_iterations=args.max_iterations,
-        fixed_session_id=args.session_id,
     )
 
     for file_spec in args.file:
@@ -444,8 +420,6 @@ async def _run(args: argparse.Namespace) -> int:
 
     print("Agent Playground Ready.")
     print(f"User ID: {state.user_id}")
-    if state.fixed_session_id:
-        print(f"Fixed session_id: {state.fixed_session_id}")
     print("Type /help for commands.\n")
 
     while True:

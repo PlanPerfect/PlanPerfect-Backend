@@ -419,7 +419,7 @@ class ServiceOrchestraClass:
 
             response = client.search(
                 query=query,
-                depth="standard",
+                depth="deep",
                 output_type="sourcedAnswer",
                 include_images=False,
             )

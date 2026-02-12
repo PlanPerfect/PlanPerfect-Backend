@@ -6,17 +6,54 @@ from Services import Logger
 from Services import DatabaseManager as DM
 from Services import ServiceOrchestra as SO
 from Services import LLMManager
+from Services import FileManager as FM
 
 """
 AgentSynthesizer is an autonomous agentic AI system that:
 1. Takes user queries and decides whether to use tools or just chat
-2. Implements a ReAct-inspired loop (Think → Act → Observe)
+2. Implements a ReAct-inspired loop (Think -> Act -> Observe)
 3. Tracks all steps in the database for observability
-4. Uses Groq (Llama 3.3 70B) with native function calling via LLMManager
+4. Uses Groq/Gemini agent models with native function calling via LLMManager
 """
+
 
 class AgentSynthesizerClass:
     _instance = None
+    HISTORY_LIMIT = 20
+    THINKING_STEP = "Thinking..."
+    DONE_STEP = "Done!"
+    USER_ERROR_MESSAGE = "I'm sorry, but i'm having trouble completing your request right now. Please try again later."
+    TOOL_CURRENT_STEPS = {
+        "generate_image": "Generating Image...",
+        "classify_style": "Classifying Style...",
+        "detect_furniture": "Detecting Furniture...",
+        "get_recommendations": "Getting Reccomendations...",
+        "web_search": "Searching the web...",
+        "extract_colors": "Extracting Colors...",
+        "generate_floor_plan": "Generating Floor Plan...",
+    }
+    SYSTEM_PROMPT = (
+        "You are an AI design assistant with access to tools for image generation, "
+        "style analysis, furniture detection, recommendations, and more. Use tools "
+        "when appropriate to help users with their interior design needs. Be "
+        "helpful, creative, and detailed in your responses."
+    )
+
+    OUTPUT_BRANCHES = {
+        "generate_image": "Generated Images",
+        "classify_style": "Classified Style",
+        "detect_furniture": "Detected Furniture",
+        "get_recommendations": "Reccomendations",
+        "web_search": "Web Searches",
+        "extract_colors": "Extracted Colors",
+        "generate_floor_plan": "Generated Floor Plans",
+    }
+
+    URL_OUTPUT_TOOLS = {
+        "generate_image",
+        "get_recommendations",
+        "generate_floor_plan",
+    }
 
     # Tool definitions in OpenAI/Groq format
     TOOLS = [
@@ -30,12 +67,12 @@ class AgentSynthesizerClass:
                     "properties": {
                         "prompt": {
                             "type": "string",
-                            "description": "The detailed image generation prompt describing what to create"
+                            "description": "The detailed image generation prompt describing what to create",
                         }
                     },
-                    "required": ["prompt"]
-                }
-            }
+                    "required": ["prompt"],
+                },
+            },
         },
         {
             "type": "function",
@@ -47,12 +84,12 @@ class AgentSynthesizerClass:
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "The file ID of the uploaded image to classify"
+                            "description": "The file ID of the uploaded image to classify",
                         }
                     },
-                    "required": ["file_id"]
-                }
-            }
+                    "required": ["file_id"],
+                },
+            },
         },
         {
             "type": "function",
@@ -64,12 +101,12 @@ class AgentSynthesizerClass:
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "The file ID of the image to analyze for furniture"
+                            "description": "The file ID of the image to analyze for furniture",
                         }
                     },
-                    "required": ["file_id"]
-                }
-            }
+                    "required": ["file_id"],
+                },
+            },
         },
         {
             "type": "function",
@@ -81,16 +118,16 @@ class AgentSynthesizerClass:
                     "properties": {
                         "style": {
                             "type": "string",
-                            "description": "The interior design style (e.g., 'modern', 'traditional', 'minimalist')"
+                            "description": "The interior design style (e.g., 'modern', 'traditional', 'minimalist')",
                         },
                         "furniture_name": {
                             "type": "string",
-                            "description": "The type of furniture (e.g., 'sofa', 'chair', 'table')"
-                        }
+                            "description": "The type of furniture (e.g., 'sofa', 'chair', 'table')",
+                        },
                     },
-                    "required": ["style", "furniture_name"]
-                }
-            }
+                    "required": ["style", "furniture_name"],
+                },
+            },
         },
         {
             "type": "function",
@@ -102,12 +139,12 @@ class AgentSynthesizerClass:
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "The search query"
+                            "description": "The search query",
                         }
                     },
-                    "required": ["query"]
-                }
-            }
+                    "required": ["query"],
+                },
+            },
         },
         {
             "type": "function",
@@ -119,12 +156,12 @@ class AgentSynthesizerClass:
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "The file ID of the image to extract colors from"
+                            "description": "The file ID of the image to extract colors from",
                         }
                     },
-                    "required": ["file_id"]
-                }
-            }
+                    "required": ["file_id"],
+                },
+            },
         },
         {
             "type": "function",
@@ -136,35 +173,32 @@ class AgentSynthesizerClass:
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "The file ID of the floor plan image"
+                            "description": "The file ID of the floor plan image",
                         },
                         "furniture_list": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "List of furniture items to place on the floor plan (e.g., ['sofa', 'dining table', 'bed'])"
-                        }
+                            "description": "List of furniture items to place on the floor plan (e.g., ['sofa', 'dining table', 'bed'])",
+                        },
                     },
-                    "required": ["file_id", "furniture_list"]
-                }
-            }
-        }
+                    "required": ["file_id", "furniture_list"],
+                },
+            },
+        },
     ]
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
-            cls._instance._file_registry = {}  # Maps file_id to file objects
+            cls._instance._file_registry = {}
         return cls._instance
 
     def initialize(self):
-        """Initialize the agent synthesizer"""
         if self._initialized:
             return
 
         try:
-            # LLMManager should already be initialized by the app
-            # We just verify it's ready
             if not LLMManager._initialized:
                 raise RuntimeError("LLMManager must be initialized before AgentSynthesizer")
 
@@ -176,11 +210,9 @@ class AgentSynthesizerClass:
             raise
 
     def register_file(self, file_id: str, file_obj: Any) -> None:
-        """Register an uploaded file for use in tool calls"""
         self._file_registry[file_id] = file_obj
 
     def clear_file_registry(self) -> None:
-        """Clear all registered files"""
         self._file_registry.clear()
 
     async def execute(
@@ -188,7 +220,7 @@ class AgentSynthesizerClass:
         user_id: str,
         query: str,
         session_id: Optional[str] = None,
-        max_iterations: int = 10
+        max_iterations: int = 10,
     ) -> Dict[str, Any]:
         """
         Execute an agentic query with tool calling and state tracking.
@@ -196,7 +228,7 @@ class AgentSynthesizerClass:
         Args:
             user_id: The user ID for database tracking
             query: The user's query/request
-            session_id: Optional session ID (generates new if not provided)
+            session_id: Optional preferred ID (used only when creating a new user session)
             max_iterations: Maximum number of think-act cycles
 
         Returns:
@@ -205,266 +237,644 @@ class AgentSynthesizerClass:
         if not self._initialized:
             raise RuntimeError("AgentSynthesizer not initialized. Call initialize() first.")
 
-        # Generate session ID if not provided
-        if not session_id:
-            session_id = str(uuid.uuid4())
+        session_data = self._get_or_initialize_session(
+            user_id=user_id,
+            requested_session_id=session_id,
+        )
+        current_session_id = session_data["session_id"]
+        history_steps = session_data.get("steps", [])[-self.HISTORY_LIMIT:]
 
-        # Initialize session in database
-        session_path = ["Users", user_id, "Agent", "sessions", session_id]
-        DM.set_value(session_path, {
-            "query": query,
-            "status": "initializing",
-            "current_step": "Starting agent execution",
-            "steps": [],
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        })
+        self._update_session_status(
+            user_id=user_id,
+            status="thinking",
+            current_step=self.THINKING_STEP,
+        )
+        self._add_step(user_id=user_id, step_type="user_query", content=query)
         DM.save()
 
         try:
-            # Build conversation history (OpenAI format for Groq)
-            messages = [
-                {
-                    "role": "system",
-                    "content": "You are an AI design assistant with access to tools for image generation, style analysis, furniture detection, recommendations, and more. Use tools when appropriate to help users with their interior design needs. Be helpful, creative, and detailed in your responses."
-                },
-                {
-                    "role": "user",
-                    "content": query
-                }
-            ]
+            messages = self._build_messages(query=query, history_steps=history_steps)
 
             iteration = 0
             while iteration < max_iterations:
                 iteration += 1
 
-                # Update status: thinking
                 self._update_session_status(
-                    session_path,
-                    "thinking",
-                    f"Analyzing query and deciding next action (iteration {iteration})"
+                    user_id=user_id,
+                    status="thinking",
+                    current_step=self.THINKING_STEP,
                 )
-                self._add_step(session_path, "thought", f"Iteration {iteration}: Thinking...")
+                self._add_step(
+                    user_id=user_id,
+                    step_type="thought",
+                    content=f"Iteration {iteration}: Thinking...",
+                )
 
-                # Call LLM with tools via LLMManager
                 try:
                     response = LLMManager.chat_with_tools(
                         messages=messages,
                         tools=self.TOOLS,
                         temperature=0.2,
-                        max_tokens=2048
+                        max_tokens=2048,
                     )
                 except Exception as e:
                     error_msg = f"LLM call failed: {str(e)}"
                     Logger.log(f"[AGENT SYNTHESIZER] - ERROR: {error_msg}")
-                    self._update_session_status(session_path, "error", error_msg)
+                    self._update_session_status(
+                        user_id=user_id,
+                        status="error",
+                        current_step=self.THINKING_STEP,
+                    )
                     DM.save()
                     return {
-                        "session_id": session_id,
+                        "session_id": current_session_id,
                         "status": "error",
                         "error": error_msg,
-                        "response": "I encountered an error while processing your request."
+                        "response": self.USER_ERROR_MESSAGE,
                     }
 
-                # Check if there are function calls
                 tool_calls = response.get("tool_calls", [])
                 text_response = response.get("content")
 
-                # If no function calls, we have a final response
                 if not tool_calls:
                     final_response = text_response or "I've completed processing your request."
 
-                    self._add_step(session_path, "response", final_response)
-                    self._update_session_status(session_path, "completed", "Query completed successfully")
+                    self._add_step(
+                        user_id=user_id,
+                        step_type="response",
+                        content=final_response,
+                    )
+                    self._update_session_status(
+                        user_id=user_id,
+                        status="completed",
+                        current_step=self.DONE_STEP,
+                    )
                     DM.save()
 
                     return {
-                        "session_id": session_id,
+                        "session_id": current_session_id,
                         "status": "completed",
                         "response": final_response,
-                        "iterations": iteration
+                        "iterations": iteration,
                     }
 
-                # Add assistant's response to conversation
                 assistant_message = {
                     "role": "assistant",
                     "content": text_response,
-                    "tool_calls": tool_calls
+                    "tool_calls": tool_calls,
                 }
                 messages.append(assistant_message)
 
-                # Execute function calls
                 for tool_call in tool_calls:
                     function_name = tool_call["function"]["name"]
-                    function_args = json.loads(tool_call["function"]["arguments"])
+                    function_args = self._safe_parse_tool_args(
+                        tool_call["function"].get("arguments", "{}")
+                    )
                     tool_call_id = tool_call["id"]
 
-                    # Update status: executing tool
                     self._update_session_status(
-                        session_path,
-                        "executing",
-                        f"Executing tool: {function_name}"
+                        user_id=user_id,
+                        status="executing",
+                        current_step=self._tool_current_step(function_name),
                     )
-                    self._add_step(session_path, "tool_call", {
-                        "tool": function_name,
-                        "args": function_args
-                    })
+                    self._add_step(
+                        user_id=user_id,
+                        step_type="tool_call",
+                        content=function_args,
+                        tool_name=function_name,
+                    )
 
-                    # Execute the tool
                     try:
                         result = await self._execute_tool(function_name, function_args)
 
-                        self._add_step(session_path, "tool_result", {
-                            "tool": function_name,
-                            "result": result
-                        })
+                        output_summary = self._store_tool_output(
+                            user_id=user_id,
+                            tool_name=function_name,
+                            args=function_args,
+                            result=result,
+                        )
 
-                        # Add tool result to conversation
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": json.dumps(result)
-                        })
+                        if output_summary:
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="tool_result",
+                                content=output_summary,
+                                tool_name=function_name,
+                            )
+
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": json.dumps(result),
+                            }
+                        )
+                        DM.save()
 
                     except Exception as e:
                         error_msg = f"Tool execution failed for {function_name}: {str(e)}"
                         Logger.log(f"[AGENT SYNTHESIZER] - ERROR: {error_msg}")
 
-                        self._add_step(session_path, "error", {
-                            "tool": function_name,
-                            "error": str(e)
-                        })
+                        self._add_step(
+                            user_id=user_id,
+                            step_type="error",
+                            content={"error": str(e)},
+                            tool_name=function_name,
+                        )
 
-                        # Add error to conversation
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": json.dumps({"error": str(e)})
-                        })
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": json.dumps({"error": str(e)}),
+                            }
+                        )
+                        DM.save()
 
-                # Update status: observing results
                 self._update_session_status(
-                    session_path,
-                    "observing",
-                    "Processing tool results and planning next step"
+                    user_id=user_id,
+                    status="thinking",
+                    current_step=self.THINKING_STEP,
                 )
 
-                # Continue loop to let LLM process results
-
-            # Max iterations reached
             self._update_session_status(
-                session_path,
-                "completed",
-                "Maximum iterations reached"
+                user_id=user_id,
+                status="completed",
+                current_step=self.DONE_STEP,
             )
             DM.save()
 
             return {
-                "session_id": session_id,
+                "session_id": current_session_id,
                 "status": "completed",
-                "response": "I've processed your request through multiple steps. The results are available in the session history.",
+                "response": "I've processed your request through multiple steps. The results are available in Agent Outputs.",
                 "iterations": max_iterations,
-                "note": "Maximum iterations reached"
+                "note": "Maximum iterations reached",
             }
 
         except Exception as e:
             error_msg = f"Agent execution failed: {str(e)}"
             Logger.log(f"[AGENT SYNTHESIZER] - ERROR: {error_msg}")
-            self._update_session_status(session_path, "error", error_msg)
+            self._update_session_status(
+                user_id=user_id,
+                status="error",
+                current_step=self.THINKING_STEP,
+            )
             DM.save()
 
             return {
-                "session_id": session_id,
+                "session_id": current_session_id,
                 "status": "error",
                 "error": error_msg,
-                "response": "I encountered an error while processing your request."
+                "response": self.USER_ERROR_MESSAGE,
             }
+
+    def _agent_path(self, user_id: str) -> List[str]:
+        return ["Users", user_id, "Agent"]
+
+    def _default_outputs(self) -> Dict[str, List[Any]]:
+        return {
+            "Generated Images": [],
+            "Generated Floor Plans": [],
+            "Classified Style": [],
+            "Detected Furniture": [],
+            "Reccomendations": [],
+            "Web Searches": [],
+            "Extracted Colors": [],
+        }
+
+    def _default_agent_record(self, session_id: str) -> Dict[str, Any]:
+        return {
+            "session_id": session_id,
+            "status": "idle",
+            "current_step": self.THINKING_STEP,
+            "steps": [],
+            "Outputs": self._default_outputs(),
+        }
+
+    def _normalize_outputs(self, outputs: Any) -> Dict[str, List[Any]]:
+        normalized = self._default_outputs()
+        if not isinstance(outputs, dict):
+            return normalized
+
+        for branch_name in normalized:
+            branch_value = outputs.get(branch_name)
+            if isinstance(branch_value, list):
+                normalized[branch_name] = branch_value
+
+        return normalized
+
+    def _build_messages(self, query: str, history_steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+
+        if history_steps:
+            history_payload = []
+            for step in history_steps[-self.HISTORY_LIMIT :]:
+                if not isinstance(step, dict):
+                    continue
+                history_payload.append(
+                    {
+                        "type": step.get("type"),
+                        "tool": step.get("tool"),
+                        "content": step.get("content"),
+                        "timestamp": step.get("timestamp"),
+                    }
+                )
+
+            if history_payload:
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "Session history from previous interactions (chronological, "
+                            f"last {self.HISTORY_LIMIT} items): "
+                            f"{json.dumps(history_payload, ensure_ascii=False)}"
+                        ),
+                    }
+                )
+
+        messages.append({"role": "user", "content": query})
+        return messages
+
+    def _safe_parse_tool_args(self, raw_args: str) -> Dict[str, Any]:
+        try:
+            parsed = json.loads(raw_args or "{}")
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _normalize_steps(self, steps: Any) -> List[Dict[str, Any]]:
+        if not isinstance(steps, list):
+            return []
+
+        normalized = []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            normalized.append(
+                {
+                    "type": step.get("type"),
+                    "content": step.get("content"),
+                    "timestamp": step.get("timestamp", datetime.now().isoformat()),
+                    "tool": step.get("tool"),
+                }
+            )
+
+        return normalized[-self.HISTORY_LIMIT :]
+
+    def _select_legacy_session_id(
+        self,
+        sessions: Dict[str, Any],
+        requested_session_id: Optional[str],
+    ) -> Optional[str]:
+        if requested_session_id and requested_session_id in sessions:
+            return requested_session_id
+
+        if not sessions:
+            return None
+
+        sorted_ids = sorted(
+            sessions.keys(),
+            key=lambda sid: str(sessions.get(sid, {}).get("updated_at", ""))
+            if isinstance(sessions.get(sid), dict)
+            else "",
+            reverse=True,
+        )
+        return sorted_ids[0] if sorted_ids else None
+
+    def _normalize_session_data(
+        self,
+        raw_session_data: Any,
+        requested_session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw_session_data, dict):
+            return None
+
+        if isinstance(raw_session_data.get("sessions"), dict):
+            sessions = raw_session_data.get("sessions", {})
+            selected_id = self._select_legacy_session_id(sessions, requested_session_id)
+            if not selected_id:
+                return None
+
+            selected_session = sessions.get(selected_id, {})
+            if not isinstance(selected_session, dict):
+                selected_session = {}
+
+            normalized = self._default_agent_record(selected_id)
+            normalized["status"] = selected_session.get("status", "idle")
+            normalized["current_step"] = self._sanitize_current_step(selected_session.get("current_step"))
+            normalized["steps"] = self._normalize_steps(selected_session.get("steps", []))
+
+            existing_outputs = selected_session.get("Outputs")
+            if not isinstance(existing_outputs, dict):
+                existing_outputs = raw_session_data.get("Outputs")
+            normalized["Outputs"] = self._normalize_outputs(existing_outputs)
+            return normalized
+
+        existing_session_id = raw_session_data.get("session_id")
+        normalized_session_id = (
+            existing_session_id
+            if isinstance(existing_session_id, str) and existing_session_id.strip()
+            else (requested_session_id or str(uuid.uuid4()))
+        )
+
+        normalized = self._default_agent_record(normalized_session_id)
+        normalized["status"] = raw_session_data.get("status", "idle")
+        normalized["current_step"] = self._sanitize_current_step(raw_session_data.get("current_step"))
+        normalized["steps"] = self._normalize_steps(raw_session_data.get("steps", []))
+        normalized["Outputs"] = self._normalize_outputs(raw_session_data.get("Outputs"))
+        return normalized
+
+    def _get_or_initialize_session(
+        self,
+        user_id: str,
+        requested_session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        existing = DM.peek(self._agent_path(user_id))
+        normalized = self._normalize_session_data(existing, requested_session_id)
+
+        if not normalized:
+            normalized = self._default_agent_record(requested_session_id or str(uuid.uuid4()))
+
+        DM.data["Users"][user_id]["Agent"] = normalized
+        return normalized
+
+    def _get_agent_record(self, user_id: str) -> Dict[str, Any]:
+        raw_agent = DM.peek(self._agent_path(user_id))
+        normalized = self._normalize_session_data(raw_agent)
+
+        if not normalized:
+            normalized = self._default_agent_record(str(uuid.uuid4()))
+
+        DM.data["Users"][user_id]["Agent"] = normalized
+        return DM.data["Users"][user_id]["Agent"]
+
+    def _update_session_status(self, user_id: str, status: str, current_step: str) -> None:
+        agent_data = self._get_agent_record(user_id)
+        agent_data["status"] = status
+        agent_data["current_step"] = self._sanitize_current_step(current_step)
+        DM.save()
+
+    def _sanitize_current_step(self, current_step: Any) -> str:
+        if isinstance(current_step, str) and current_step in {self.THINKING_STEP, self.DONE_STEP, *self.TOOL_CURRENT_STEPS.values()}:
+            return current_step
+        return self.THINKING_STEP
+
+    def _tool_current_step(self, tool_name: str) -> str:
+        return self.TOOL_CURRENT_STEPS.get(tool_name, self.THINKING_STEP)
+
+    def _add_step(
+        self,
+        user_id: str,
+        step_type: str,
+        content: Any,
+        tool_name: Optional[str] = None,
+    ) -> None:
+        agent_data = self._get_agent_record(user_id)
+
+        if not isinstance(agent_data.get("steps"), list):
+            agent_data["steps"] = []
+
+        step = {
+            "type": step_type,
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if tool_name:
+            step["tool"] = tool_name
+
+        agent_data["steps"].append(step)
+        agent_data["steps"] = self._normalize_steps(agent_data["steps"])
+
+    def _resolve_image_url(self, file_id: Optional[str], result: Any) -> Optional[str]:
+        if isinstance(result, dict):
+            for key in ("url", "image_url", "image", "floor_plan_url"):
+                value = result.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        if isinstance(file_id, str) and file_id.strip():
+            cleaned = file_id.strip()
+            if cleaned.startswith("http://") or cleaned.startswith("https://"):
+                return cleaned
+
+            try:
+                return FM.get_optimized_url(cleaned)
+            except Exception:
+                return None
+
+        return None
+
+    def _extract_urls_from_result(self, tool_name: str, result: Any) -> List[str]:
+        urls: List[str] = []
+
+        def add_url(candidate: Any) -> None:
+            if not isinstance(candidate, str):
+                return
+            value = candidate.strip()
+            if value:
+                urls.append(value)
+
+        if tool_name in {"generate_image", "generate_floor_plan"}:
+            if isinstance(result, dict):
+                add_url(result.get("url"))
+                add_url(result.get("floor_plan_url"))
+
+        elif tool_name == "detect_furniture":
+            detections = result.get("detections", []) if isinstance(result, dict) else []
+            if isinstance(detections, list):
+                for item in detections:
+                    if isinstance(item, dict):
+                        add_url(item.get("url"))
+
+        elif tool_name in {"get_recommendations"}:
+            recommendations = result.get("recommendations", []) if isinstance(result, dict) else []
+            if isinstance(recommendations, list):
+                for item in recommendations:
+                    if isinstance(item, dict):
+                        add_url(item.get("url"))
+                        add_url(item.get("image"))
+
+        unique_urls = list(dict.fromkeys(urls))
+        return unique_urls
+
+    def _extract_search_result(self, result: Any) -> str:
+        if isinstance(result, str):
+            return result
+
+        if isinstance(result, dict):
+            for key in ("answer", "result", "response", "message", "error"):
+                value = result.get(key)
+                if isinstance(value, str):
+                    return value
+            return json.dumps(result, ensure_ascii=False)
+
+        try:
+            return json.dumps(result, ensure_ascii=False)
+        except Exception:
+            return str(result)
+
+    def _store_tool_output(
+        self,
+        user_id: str,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+    ) -> Optional[Dict[str, Any]]:
+        branch_name = self.OUTPUT_BRANCHES.get(tool_name)
+        if not branch_name:
+            return None
+
+        agent_data = self._get_agent_record(user_id)
+        outputs = self._normalize_outputs(agent_data.get("Outputs"))
+
+        if not isinstance(outputs.get(branch_name), list):
+            outputs[branch_name] = []
+
+        target_list = outputs[branch_name]
+        items_added = 0
+
+        if tool_name in self.URL_OUTPUT_TOOLS:
+            url_list = self._extract_urls_from_result(tool_name=tool_name, result=result)
+            for url in url_list:
+                target_list.append(url)
+                items_added += 1
+
+        elif tool_name == "detect_furniture":
+            image_url = self._resolve_image_url(args.get("file_id"), result)
+            furniture_urls = self._extract_urls_from_result(tool_name=tool_name, result=result)
+            target_list.append(
+                {
+                    "image_url": image_url,
+                    "furniture": furniture_urls,
+                }
+            )
+            items_added = 1
+
+        elif tool_name == "classify_style":
+            image_url = self._resolve_image_url(args.get("file_id"), result)
+            style = "Unknown"
+            if isinstance(result, dict):
+                style = (
+                    result.get("detected_style")
+                    or result.get("style")
+                    or result.get("classified_style")
+                    or "Unknown"
+                )
+
+            target_list.append(
+                {
+                    "image_url": image_url,
+                    "style": style,
+                }
+            )
+            items_added = 1
+
+        elif tool_name == "web_search":
+            target_list.append(
+                {
+                    "query": args.get("query", ""),
+                    "result": self._extract_search_result(result),
+                }
+            )
+            items_added = 1
+
+        elif tool_name == "extract_colors":
+            image_url = self._resolve_image_url(args.get("file_id"), result)
+            colors = []
+            if isinstance(result, dict) and isinstance(result.get("colors"), list):
+                colors = result.get("colors", [])
+
+            target_list.append(
+                {
+                    "image_url": image_url,
+                    "colors": colors,
+                }
+            )
+            items_added = 1
+
+        else:
+            return None
+
+        agent_data["Outputs"] = outputs
+        return {
+            "output_branch": f"Outputs/{branch_name}",
+            "items_added": items_added,
+        }
 
     async def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
         """Execute a tool from ServiceOrchestra"""
 
         if tool_name == "generate_image":
-            result = SO.generate_image(prompt=args["prompt"])
-            return result
+            return SO.generate_image(prompt=args["prompt"])
 
-        elif tool_name == "classify_style":
+        if tool_name == "classify_style":
             file_obj = self._file_registry.get(args["file_id"])
             if not file_obj:
                 return {"error": "File not found in registry"}
-            result = await SO.classify_style(file=file_obj)
-            return result
+            return await SO.classify_style(file=file_obj)
 
-        elif tool_name == "detect_furniture":
+        if tool_name == "detect_furniture":
             file_obj = self._file_registry.get(args["file_id"])
             if not file_obj:
                 return {"error": "File not found in registry"}
-            result = await SO.detect_furniture(file=file_obj)
-            return result
+            return await SO.detect_furniture(file=file_obj)
 
-        elif tool_name == "get_recommendations":
-            result = await SO.get_recommendations(
+        if tool_name in {"get_recommendations"}:
+            return await SO.get_recommendations(
                 style=args["style"],
-                furniture_name=args["furniture_name"]
+                furniture_name=args["furniture_name"],
             )
-            return result
 
-        elif tool_name == "web_search":
-            result = await SO.web_search(query=args["query"])
-            return result
+        if tool_name == "web_search":
+            return await SO.web_search(query=args["query"])
 
-        elif tool_name == "extract_colors":
+        if tool_name == "extract_colors":
             file_obj = self._file_registry.get(args["file_id"])
             if not file_obj:
                 return {"error": "File not found in registry"}
-            result = await SO.extract_colors(file=file_obj)
-            return result
+            return await SO.extract_colors(file=file_obj)
 
-        elif tool_name == "generate_floor_plan":
+        if tool_name == "generate_floor_plan":
             file_obj = self._file_registry.get(args["file_id"])
             if not file_obj:
                 return {"error": "File not found in registry"}
-            result = await SO.generate_floor_plan(
+            return await SO.generate_floor_plan(
                 file=file_obj,
-                furniture_list=args["furniture_list"]
+                furniture_list=args["furniture_list"],
             )
-            return result
 
-        else:
-            raise ValueError(f"Unknown tool: {tool_name}")
+        raise ValueError(f"Unknown tool: {tool_name}")
 
-    def _update_session_status(self, session_path: List[str], status: str, current_step: str):
-        """Update the session status and current step in database"""
-        session_data = DM.peek(session_path)
-        if session_data:
-            session_data["status"] = status
-            session_data["current_step"] = current_step
-            session_data["updated_at"] = datetime.now().isoformat()
-            DM.set_value(session_path, session_data)
+    def get_session(self, user_id: str, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        raw = DM.peek(self._agent_path(user_id))
+        normalized = self._normalize_session_data(raw, requested_session_id=session_id)
+        if not normalized:
+            return None
 
-    def _add_step(self, session_path: List[str], step_type: str, content: Any):
-        """Add a step to the session history"""
-        session_data = DM.peek(session_path)
-        if session_data:
-            if "steps" not in session_data:
-                session_data["steps"] = []
+        if session_id and normalized.get("session_id") != session_id:
+            return None
 
-            session_data["steps"].append({
-                "type": step_type,
-                "content": content,
-                "timestamp": datetime.now().isoformat()
-            })
+        return normalized
 
-            DM.set_value(session_path, session_data)
+    def list_sessions(self, user_id: str) -> Optional[Dict[str, Any]]:
+        session = self.get_session(user_id=user_id)
+        if not session:
+            return {}
 
-    def get_session(self, user_id: str, session_id: str) -> Optional[Dict]:
-        """Retrieve a session from the database"""
-        session_path = ["Users", user_id, "Agent", "sessions", session_id]
-        return DM.peek(session_path)
+        active_session_id = session.get("session_id")
+        return {active_session_id: session} if active_session_id else {}
 
-    def list_sessions(self, user_id: str) -> Optional[Dict]:
-        """List all sessions for a user"""
-        sessions_path = ["Users", user_id, "Agent", "sessions"]
-        return DM.peek(sessions_path)
+    def clear_session(self, user_id: str) -> bool:
+        user_data = DM.data["Users"].get(user_id)
+        if not isinstance(user_data, dict):
+            return True
+
+        if "Agent" in user_data:
+            del user_data["Agent"]
+            return DM.save()
+
+        return True
 
 
 AgentSynthesizer = AgentSynthesizerClass()
