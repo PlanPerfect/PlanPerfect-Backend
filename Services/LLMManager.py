@@ -1,10 +1,11 @@
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Any
 from groq import Groq
 from google import genai
 import os
 import re
 import time
 import httpx
+import json
 from datetime import datetime, timedelta
 from Services import Logger
 from dotenv import load_dotenv
@@ -18,6 +19,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     LLMManager is a service which serves as a high-level wrapper for all LLM calls, rate-limit management and smart model selection.
     It supports both Groq and Gemini LLMs, automatically switching between models based on rate-limit status.
     It handles rate-limit parsing, cooldown tracking, logging, and provides a unified chat pipeline which integrates with RAGManager.
+
+    NOW INCLUDES: Agent-specific models with tool calling support for autonomous agents.
 """
 
 class RateLimitCapturingClient(httpx.Client): # custom HTTPX client to capture x-rate-limit response headers
@@ -133,18 +136,29 @@ class _RateLimitManager: # manages rate limit info for a single model
         return 60.0
 
 class _ModelManager: # manages available models and their rate-limit status. Backbone of the smart model-switching mechanism.
-    MODELS = [
+    CHAT_MODELS = [
         {"name": "llama-3.3-70b-versatile", "provider": "groq"},      # 30 RPM, 1K RPD, 12K TPM, 100K TPD
         {"name": "llama-3.1-8b-instant", "provider": "groq"},         # 30 RPM, 14.4K RPD, 6K TPM, 500K TPD
-        {"name": "gemini-3-flash", "provider": "gemini"},             # 5 RPM, 250K TPM
-        {"name": "gemini-2.5-flash", "provider": "gemini"},           # 5 RPM, 250K TPM
-        {"name": "gemini-2.5-flash-lite", "provider": "gemini"}       # 10 RPM, 250K TPM
+        {"name": "gemini-3-flash", "provider": "gemini"},             # 1K RPM, 1M TPM, 10K RPD
+        {"name": "gemini-2.5-flash", "provider": "gemini"},           # 1K RPM, 1M TPM, 10K RPD
+        {"name": "gemini-2.5-flash-lite", "provider": "gemini"}       # 4K RPM, 4M TPM, UNLIMITED RPD
     ]
 
-    def __init__(self):
+    AGENT_MODELS = [
+        {"name": "moonshotai/kimi-k2-instruct-0905", "provider": "groq"},                       # 60 RPM, 1K RPD, 10K TPM, 300K TPD
+        {"name": "llama-3.3-70b-versatile", "provider": "groq"},                                # 30 RPM, 1K RPD, 12K TPM, 100K TPD
+        {"name": "meta-llama/llama-4-scout-17b-16e-instruct", "provider": "groq"},              # 30 RPM, 1K RPD, 30K TPM, 500K TPD
+        {"name": "meta-llama/llama-4-maverick-17b-128e-instruct", "provider": "groq"},          # 30 RPM, 1K RPD, 6K TPM, 500K TPD
+        {"name": "llama-3.1-8b-instant", "provider": "groq"},                                   # 30 RPM, 14.4K RPD, 6K TPM, 500K TPD
+        {"name": "qwen/qwen3-32b", "provider": "groq"},                                         # 60 RPM, 1K RPD, 6K TPM, 500K TPD                             # 4K RPM, 4M TPM, UNLIMITED RPD
+    ]
+
+    def __init__(self, use_agent_models: bool = False):
+        self.use_agent_models = use_agent_models
+        self.models = self.AGENT_MODELS if use_agent_models else self.CHAT_MODELS
         self.current_model_index = 0
         self.model_rate_limits: Dict[str, _RateLimitManager] = {
-            model["name"]: _RateLimitManager() for model in self.MODELS
+            model["name"]: _RateLimitManager() for model in self.models
         }
         self.rate_limit_cooldowns: Dict[str, datetime] = {}
 
@@ -152,19 +166,19 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
         original_index = self.current_model_index
         attempts = 0
 
-        while attempts < len(self.MODELS):
-            model = self.MODELS[self.current_model_index]
+        while attempts < len(self.models):
+            model = self.models[self.current_model_index]
 
             if self._model_available(model["name"]):
                 return model
 
-            self.current_model_index = (self.current_model_index + 1) % len(self.MODELS)
+            self.current_model_index = (self.current_model_index + 1) % len(self.models)
             attempts += 1
 
             if self.current_model_index == original_index:
                 return self._get_model_with_shortest_cd()
 
-        return self.MODELS[self.current_model_index]
+        return self.models[self.current_model_index]
 
     def _model_available(self, model_name: str) -> bool: # check if model is not currently rate-limited
         if model_name not in self.rate_limit_cooldowns:
@@ -179,7 +193,7 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
 
     def _get_model_with_shortest_cd(self) -> Dict: # get model with shortest cooldown time
         if not self.rate_limit_cooldowns:
-            return self.MODELS[0]
+            return self.models[0]
 
         now = datetime.now()
         min_cooldown_model_name = min(
@@ -187,11 +201,11 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
             key=lambda x: (x[1] - now).total_seconds()
         )[0]
 
-        for model in self.MODELS:
+        for model in self.models:
             if model["name"] == min_cooldown_model_name:
                 return model
 
-        return self.MODELS[0]
+        return self.models[0]
 
     def update_rate_limit_info(self, model_name: str, headers: Dict[str, str]): # update for tracking and logging
         if model_name in self.model_rate_limits:
@@ -216,10 +230,18 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
 
         self.rate_limit_cooldowns[model_name] = cooldown_time
 
-        self.current_model_index = (self.current_model_index + 1) % len(self.MODELS)
+        self.current_model_index = (self.current_model_index + 1) % len(self.models)
+
+    def mark_model_unavailable(self, model_name: str, cooldown_seconds: int = 86400):
+        """
+        Mark a model as unavailable (decommissioned/unsupported) and skip it for a long cooldown.
+        Reuses cooldown storage so model selection can avoid it.
+        """
+        self.rate_limit_cooldowns[model_name] = datetime.now() + timedelta(seconds=cooldown_seconds)
+        self.current_model_index = (self.current_model_index + 1) % len(self.models)
 
     def all_models_rate_limited(self) -> bool: # DANGER: all models rate-limited
-        return len(self.rate_limit_cooldowns) >= len(self.MODELS)
+        return len(self.rate_limit_cooldowns) >= len(self.models)
 
 class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and model-switching
     _instance = None
@@ -233,6 +255,7 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             cls._instance._groq_client = None
             cls._instance._gemini_client = None
             cls._instance._model_manager = None
+            cls._instance._agent_model_manager = None  # Separate manager for agent models
         return cls._instance
 
     def initialize(self):
@@ -241,8 +264,38 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
 
         self._groq_client = Groq(api_key=GROQ_API_KEY, http_client=self._http_client)
         self._gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-        self._model_manager = _ModelManager()
+        self._model_manager = _ModelManager(use_agent_models=False)  # For regular chat
+        self._agent_model_manager = _ModelManager(use_agent_models=True)  # For agent chat with tools
         self._initialized = True
+
+    @staticmethod
+    def _is_rate_limit_error(error_str: str) -> bool:
+        return (
+            "rate_limit" in error_str
+            or "429" in error_str
+            or "too many requests" in error_str
+            or "quota" in error_str
+            or "resource_exhausted" in error_str
+        )
+
+    @staticmethod
+    def _is_tool_use_failed_error(error_str: str) -> bool:
+        return (
+            "tool_use_failed" in error_str
+            or "failed to call a function" in error_str
+            or "failed_generation" in error_str
+        )
+
+    @staticmethod
+    def _is_model_unavailable_error(error_str: str) -> bool:
+        return (
+            "model_decommissioned" in error_str
+            or "decommissioned" in error_str
+            or "no longer supported" in error_str
+            or "model_not_found" in error_str
+            or "does not exist" in error_str
+            or "not found" in error_str and "model" in error_str
+        )
 
     def chat(self, prompt: str) -> str: # main chat method with smart model switching and rate-limit handling
         if not self._initialized:
@@ -279,7 +332,7 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             except Exception as e:
                 error_str = str(e).lower()
 
-                if "rate_limit" in error_str or "429" in error_str or "too many requests" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
+                if self._is_rate_limit_error(error_str):
                     retry_after = None
                     if hasattr(e, 'response') and hasattr(e.response, 'headers'):
                         retry_after = e.response.headers.get('retry-after')
@@ -295,12 +348,126 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
                     else:
                         self._log_all_models_exhausted()
                         return self.FALLBACK_MESSAGE
+                elif self._is_model_unavailable_error(error_str):
+                    Logger.log(
+                        f"[LLM MANAGER] - Model unavailable {provider}/{model_name}. "
+                        f"Skipping model. Error: {str(e)}"
+                    )
+                    self._model_manager.mark_model_unavailable(model_name)
+                    attempts += 1
+                    if attempts < max_retries:
+                        continue
+                    return self.FALLBACK_MESSAGE
                 else:
                     Logger.log(f"[LLM MANAGER] - Error with {provider}/{model_name}: {str(e)}")
                     raise
 
         self._log_all_models_exhausted()
         return self.FALLBACK_MESSAGE
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048
+    ) -> Dict[str, Any]:
+        """
+        Agent-specific chat method with tool calling support.
+        Uses Groq models with function calling capabilities.
+
+        Args:
+            messages: Conversation history in OpenAI format
+            tools: List of tool definitions
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            Dict containing the response with potential function calls
+        """
+        if not self._initialized:
+            raise RuntimeError("LLMManager not initialized. Call initialize() first.")
+
+        max_retries = 8
+        attempts = 0
+
+        while attempts < max_retries:
+            if self._agent_model_manager.all_models_rate_limited():
+                self._log_all_models_exhausted(is_agent=True)
+                raise Exception("All agent models are rate-limited. Please try again later.")
+
+            current_model = self._agent_model_manager.get_current_model()
+            model_name = current_model["name"]
+            provider = current_model["provider"]
+
+            try:
+                if provider == "groq":
+                    response = self._call_groq_with_tools(
+                        model_name, messages, tools, temperature, max_tokens
+                    )
+                else:
+                    response = self._call_gemini_with_tools(
+                        model_name, messages, tools, temperature, max_tokens
+                    )
+
+                self._log_success(model_name, provider)
+
+                return response
+
+            except Exception as e:
+                error_str = str(e).lower()
+
+                if self._is_rate_limit_error(error_str):
+                    retry_after = None
+                    if hasattr(e, 'response') and hasattr(e.response, 'headers'):
+                        retry_after = e.response.headers.get('retry-after')
+
+                    self._agent_model_manager.mark_rate_limited(model_name, retry_after)
+                    self._log_rate_limit_hit(model_name, provider, str(e))
+
+                    attempts += 1
+
+                    if attempts < max_retries:
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        self._log_all_models_exhausted(is_agent=True)
+                        raise Exception("All agent models are rate-limited. Please try again later.")
+                elif self._is_model_unavailable_error(error_str):
+                    Logger.log(
+                        f"[LLM MANAGER] - Agent model unavailable {provider}/{model_name}. "
+                        f"Skipping model. Error: {str(e)}"
+                    )
+                    self._agent_model_manager.mark_model_unavailable(model_name)
+                    attempts += 1
+                    if attempts < max_retries:
+                        continue
+                    raise Exception("All configured agent models are unavailable. Please update model list.")
+                elif self._is_tool_use_failed_error(error_str):
+                    Logger.log(
+                        f"[LLM MANAGER] - Tool call formatting failed on "
+                        f"{provider}/{model_name}. Rotating to next agent model. Error: {str(e)}"
+                    )
+
+                    attempts += 1
+                    self._agent_model_manager.current_model_index = (
+                        self._agent_model_manager.current_model_index + 1
+                    ) % len(self._agent_model_manager.models)
+
+                    if attempts < max_retries:
+                        time.sleep(0.25)
+                        continue
+                    else:
+                        raise Exception(
+                            "Tool calling failed across available agent models. "
+                            "Please retry your request."
+                        )
+                else:
+                    Logger.log(f"[LLM MANAGER] - Error with agent {provider}/{model_name}: {str(e)}")
+                    raise
+
+        self._log_all_models_exhausted(is_agent=True)
+        raise Exception("All agent models are rate-limited. Please try again later.")
 
     def _call_groq(self, model_name: str, prompt: str, temperature: float, max_tokens: int) -> str:
         response = self._groq_client.chat.completions.create(
@@ -327,27 +494,169 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
 
         return response.text
 
+    def _call_groq_with_tools(
+        self,
+        model_name: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int
+    ) -> Dict[str, Any]:
+        """Call Groq with tool support"""
+        response = self._groq_client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tool_choice="auto"
+        )
+
+        headers = self._http_client.last_response_headers
+        self._agent_model_manager.update_rate_limit_info(model_name, headers)
+
+        # Parse response
+        choice = response.choices[0]
+        message = choice.message
+
+        result = {
+            "content": message.content,
+            "tool_calls": [],
+            "finish_reason": choice.finish_reason
+        }
+
+        if message.tool_calls:
+            for tool_call in message.tool_calls:
+                result["tool_calls"].append({
+                    "id": tool_call.id,
+                    "type": tool_call.type,
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments
+                    }
+                })
+
+        return result
+
+    def _call_gemini_with_tools(
+        self,
+        model_name: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int
+    ) -> Dict[str, Any]:
+        """Call Gemini with tool support (fallback)"""
+        # Convert OpenAI-style messages to Gemini format
+        # Convert OpenAI-style tools to Gemini FunctionDeclarations
+        # This is a simplified version - you may need to expand based on your needs
+
+        from google.genai import types
+
+        # Convert tools to Gemini format
+        function_declarations = []
+        for tool in tools:
+            if tool["type"] == "function":
+                func = tool["function"]
+                function_declarations.append(
+                    types.FunctionDeclaration(
+                        name=func["name"],
+                        description=func["description"],
+                        parameters=func["parameters"]
+                    )
+                )
+
+        # Convert messages to Gemini format
+        gemini_messages = []
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+            gemini_messages.append({
+                "role": role,
+                "parts": [{"text": msg["content"]}]
+            })
+
+        response = self._gemini_client.models.generate_content(
+            model=model_name,
+            contents=gemini_messages,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(function_declarations=function_declarations)],
+                temperature=temperature,
+                max_output_tokens=max_tokens
+            )
+        )
+
+        # Parse response and convert to OpenAI-style format
+        result = {
+            "content": None,
+            "tool_calls": [],
+            "finish_reason": "stop"
+        }
+
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, 'text') and part.text:
+                result["content"] = part.text
+            elif hasattr(part, 'function_call') and part.function_call:
+                result["tool_calls"].append({
+                    "id": f"call_{part.function_call.name}",
+                    "type": "function",
+                    "function": {
+                        "name": part.function_call.name,
+                        "arguments": json.dumps(dict(part.function_call.args))
+                    }
+                })
+
+        return result
+
     def _log_success(self, model_name: str, provider: str): # logging call
-            if provider == "groq":
-                rate_limit_mgr = self._model_manager.model_rate_limits.get(model_name)
-                if rate_limit_mgr:
-                    remaining_requests = f"{rate_limit_mgr.requests_remaining}/{rate_limit_mgr.requests_limit}" if rate_limit_mgr.requests_remaining is not None else "N/A"
-                    remaining_tokens = f"{rate_limit_mgr.tokens_remaining}/{rate_limit_mgr.tokens_limit}" if rate_limit_mgr.tokens_remaining is not None else "N/A"
+        if provider != "groq":
+            return
 
-                    now = datetime.now()
-                    requests_reset = f"Resetting in {int((rate_limit_mgr.requests_reset_time - now).total_seconds())}s" if rate_limit_mgr.requests_reset_time else "N/A"
-                    tokens_reset = f"Resetting in {int((rate_limit_mgr.tokens_reset_time - now).total_seconds())}s" if rate_limit_mgr.tokens_reset_time else "N/A"
+        remaining_requests = "N/A"
+        remaining_tokens = "N/A"
+        requests_reset = "N/A"
+        tokens_reset = "N/A"
 
-                with open("rate_limit.log", "a", encoding="utf-8") as log_file:
-                    log_file.write(f"------------------SUCCESS------------------\n")
-                    log_file.write(f"Provider: {provider}\n")
-                    log_file.write(f"Model: {model_name}\n")
-                    log_file.write(f"Remaining Requests (RPM): {remaining_requests}\n")
-                    log_file.write(f"Requests resetting in: {requests_reset}\n")
-                    log_file.write(f"Remaining Tokens (TPM): {remaining_tokens}\n")
-                    log_file.write(f"Tokens resetting in: {tokens_reset}\n")
-                    log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    log_file.write(f"------------------------------------------\n\n")
+        rate_limit_mgr = None
+
+        if self._model_manager and model_name in self._model_manager.model_rate_limits:
+            rate_limit_mgr = self._model_manager.model_rate_limits.get(model_name)
+        elif self._agent_model_manager and model_name in self._agent_model_manager.model_rate_limits:
+            rate_limit_mgr = self._agent_model_manager.model_rate_limits.get(model_name)
+
+        if rate_limit_mgr:
+            remaining_requests = (
+                f"{rate_limit_mgr.requests_remaining}/{rate_limit_mgr.requests_limit}"
+                if rate_limit_mgr.requests_remaining is not None
+                else "N/A"
+            )
+            remaining_tokens = (
+                f"{rate_limit_mgr.tokens_remaining}/{rate_limit_mgr.tokens_limit}"
+                if rate_limit_mgr.tokens_remaining is not None
+                else "N/A"
+            )
+
+            now = datetime.now()
+            requests_reset = (
+                f"Resetting in {int((rate_limit_mgr.requests_reset_time - now).total_seconds())}s"
+                if rate_limit_mgr.requests_reset_time
+                else "N/A"
+            )
+            tokens_reset = (
+                f"Resetting in {int((rate_limit_mgr.tokens_reset_time - now).total_seconds())}s"
+                if rate_limit_mgr.tokens_reset_time
+                else "N/A"
+            )
+
+        with open("rate_limit.log", "a", encoding="utf-8") as log_file:
+            log_file.write(f"------------------SUCCESS------------------\n")
+            log_file.write(f"Provider: {provider}\n")
+            log_file.write(f"Model: {model_name}\n")
+            log_file.write(f"Remaining Requests (RPM): {remaining_requests}\n")
+            log_file.write(f"Requests resetting in: {requests_reset}\n")
+            log_file.write(f"Remaining Tokens (TPM): {remaining_tokens}\n")
+            log_file.write(f"Tokens resetting in: {tokens_reset}\n")
+            log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"------------------------------------------\n\n")
 
     def _log_rate_limit_hit(self, model_name: str, provider: str, error_message: str): # logging call
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
@@ -378,37 +687,40 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             log_file.write(f"------------------------------------------\n\n")
 
-    def _log_all_models_exhausted(self): # logging call
+    def _log_all_models_exhausted(self, is_agent: bool = False): # logging call
+        manager = self._agent_model_manager if is_agent else self._model_manager
         best_model = None
         best_wait = None
 
-        for model_dict in self._model_manager.MODELS:
+        for model_dict in manager.models:
             model_name = model_dict["name"]
-            if model_name in self._model_manager.model_rate_limits:
-                wait = self._model_manager.model_rate_limits[model_name].get_wait_time()
+            if model_name in manager.model_rate_limits:
+                wait = manager.model_rate_limits[model_name].get_wait_time()
                 if wait is not None:
                     if best_wait is None or wait < best_wait:
                         best_wait = wait
                         best_model = model_name
 
-        if best_model is None and self._model_manager.rate_limit_cooldowns:
+        if best_model is None and manager.rate_limit_cooldowns:
             now = datetime.now()
             min_model, min_time = min(
-                self._model_manager.rate_limit_cooldowns.items(),
+                manager.rate_limit_cooldowns.items(),
                 key=lambda x: (x[1] - now).total_seconds()
             )
             best_model = min_model
             best_wait = (min_time - now).total_seconds()
 
+        model_type = "AGENT MODELS" if is_agent else "CHAT MODELS"
+
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             if best_model and best_wait is not None:
                 wait_seconds = max(0, int(best_wait))
-                log_file.write(f"--------------------ALL MODELS EXHAUSTED--------------------\n")
+                log_file.write(f"--------------------ALL {model_type} EXHAUSTED--------------------\n")
                 log_file.write(f"{best_model} available in {wait_seconds:.1f}s\n")
                 log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 log_file.write(f"------------------------------------------------------------\n\n")
             else:
-                log_file.write(f"--------------------ALL MODELS EXHAUSTED--------------------\n")
+                log_file.write(f"--------------------ALL {model_type} EXHAUSTED--------------------\n")
                 log_file.write("No reset times or cooldowns known. Fallback wait 60s\n")
                 log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 log_file.write(f"------------------------------------------------------------\n\n")
@@ -428,6 +740,13 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             raise RuntimeError("LLMManager not initialized. Call initialize() first.")
 
         model = self._model_manager.get_current_model()
+        return f"{model['provider']}/{model['name']}"
+
+    def get_current_agent_model(self) -> str:
+        if not self._initialized:
+            raise RuntimeError("LLMManager not initialized. Call initialize() first.")
+
+        model = self._agent_model_manager.get_current_model()
         return f"{model['provider']}/{model['name']}"
 
 

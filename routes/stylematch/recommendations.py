@@ -65,7 +65,7 @@ async def fetch_preferences(
 
         if not image_url or not style:
             return JSONResponse(
-                status_code=404,
+                status_code=200,
                 content={"preferences": {}}
             )
 

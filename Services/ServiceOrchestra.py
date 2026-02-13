@@ -13,7 +13,6 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from io import BytesIO
-from bs4 import BeautifulSoup
 from sklearn.cluster import KMeans
 from datetime import datetime
 from Services import Logger
@@ -21,6 +20,7 @@ from Services import FileManager as FM
 from dotenv import load_dotenv
 from gradio_client import Client, handle_file
 from sklearn.cluster import KMeans
+from linkup import LinkupClient
 
 load_dotenv()
 
@@ -68,7 +68,7 @@ class ServiceOrchestraClass:
                     response_modalities=['TEXT', 'IMAGE'],
                     image_config=types.ImageConfig(
                         aspect_ratio="16:9",
-                        image_size="4K"
+                        image_size="2K"
                     ),
                 )
             )
@@ -412,7 +412,26 @@ class ServiceOrchestraClass:
             Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Failed to get recommendations. {str(e)}")
             return None
 
-    # async def web_search()
+    @staticmethod
+    async def web_search(query: str) -> Optional[Dict[str, any]]:
+        try:
+            client = LinkupClient(api_key=os.getenv("LINKUP_API_KEY"))
+
+            response = client.search(
+                query=query,
+                depth="deep",
+                output_type="sourcedAnswer",
+                include_images=False,
+            )
+
+            data = response.dict()
+
+            answer = data.get("answer", "")
+
+            return { "answer": answer }
+        except Exception as e:
+            Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Web search failed. {str(e)}")
+            return None
 
     async def extract_colors(
         self,
@@ -579,7 +598,7 @@ Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid
                     response_modalities=['TEXT', 'IMAGE'],
                     image_config=types.ImageConfig(
                         aspect_ratio="1:1",
-                        image_size="4K"
+                        image_size="2K"
                     ),
                 )
             )
