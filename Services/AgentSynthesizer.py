@@ -28,6 +28,9 @@ class AgentSynthesizerClass:
     ANALYZING_FILES_STEP = "Analysing files..."
     DONE_STEP = "Done!"
     USER_ERROR_MESSAGE = "I'm sorry, but i'm having trouble completing your request right now. Please try again later."
+    OUT_OF_SCOPE_MESSAGE = (
+        "Sorry, but I'm only able to help with interior design related questions and tasks. If you need help, feel free to ask!"
+    )
     TOOL_CURRENT_STEPS = {
         "generate_image": "Generating Image...",
         "classify_style": "Classifying Style...",
@@ -38,10 +41,11 @@ class AgentSynthesizerClass:
         "generate_floor_plan": "Generating Floor Plan...",
     }
     SYSTEM_PROMPT = (
-        "You are an AI design assistant with access to tools for image generation, "
-        "style analysis, furniture detection, recommendations, and more. Use tools "
-        "when appropriate to help users with their interior design needs. Be "
-        "helpful, creative, and detailed in your responses."
+        "You are an interior design assistant. You must only help with interior design workflows, "
+        "design questions, and tasks related to rooms, furniture, floor plans, layouts, decor, "
+        "styles, and color palettes. If a user asks for anything outside interior design, refuse "
+        "briefly and redirect to interior-design help. Never call tools for out-of-scope tasks. "
+        "When image tools require file types, use only files that match the tool requirement."
     )
 
     OUTPUT_BRANCHES = {
@@ -73,6 +77,17 @@ class AgentSynthesizerClass:
         "extract_colors": "an image with visible colors (photo, artwork, or palette)",
         "generate_floor_plan": "a top-down floor plan or architectural layout image",
     }
+
+    SCOPE_CLASSIFIER_INSTRUCTION = (
+        "You are a strict scope classifier for an interior-design assistant. "
+        "Classify the latest user query into exactly one category:\n"
+        "1) interior_design: The user asks for interior design workflows/questions, or is continuing an existing interior design task.\n"
+        "2) small_talk: Greeting/pleasantry/chitchat without requesting unrelated domain knowledge.\n"
+        "3) out_of_scope: The user asks for non-interior-design tasks or information.\n\n"
+        "Return JSON only with keys: classification, confidence, explanation.\n"
+        "Valid classification values: interior_design, small_talk, out_of_scope.\n"
+        "confidence must be a float from 0 to 1."
+    )
 
     # Tool definitions in OpenAI/Groq format
     TOOLS = [
@@ -152,7 +167,7 @@ class AgentSynthesizerClass:
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the web for current information. Use when user asks about recent events, current data, or information that requires up-to-date knowledge beyond your training.",
+                "description": "Search the web for current interior-design information only. Use when user asks for recent interior design trends, products, materials, or style information requiring up-to-date data.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -396,6 +411,41 @@ class AgentSynthesizerClass:
                     if isinstance(confirmed_query, str) and confirmed_query.strip():
                         effective_query = confirmed_query
 
+            scope_decision = None
+            if not forced_file_context:
+                scope_decision = self._evaluate_request_scope(
+                    effective_query,
+                    user_id=user_id,
+                    record_step=True,
+                )
+
+            if scope_decision and not scope_decision.get("allowed", True):
+                self._add_step(
+                    user_id=user_id,
+                    step_type="scope_blocked",
+                    content={
+                        "query": effective_query,
+                        "reason": "out_of_scope",
+                        "scope_decision": scope_decision,
+                    },
+                )
+                self._add_step(
+                    user_id=user_id,
+                    step_type="response",
+                    content=self.OUT_OF_SCOPE_MESSAGE,
+                )
+                self._update_session_status(
+                    user_id=user_id,
+                    status="completed",
+                    current_step=self.DONE_STEP,
+                )
+                DM.save()
+                return {
+                    "session_id": current_session_id,
+                    "status": "completed",
+                    "response": self.OUT_OF_SCOPE_MESSAGE,
+                }
+
             messages = self._build_messages(query=effective_query, history_steps=history_steps)
 
             iteration = 0
@@ -535,7 +585,11 @@ class AgentSynthesizerClass:
                     )
 
                     try:
-                        result = await self._execute_tool(function_name, function_args)
+                        result = await self._execute_tool(
+                            function_name,
+                            function_args,
+                            user_id=user_id,
+                        )
 
                         output_summary = self._store_tool_output(
                             user_id=user_id,
@@ -910,11 +964,221 @@ class AgentSynthesizerClass:
     def _required_file_description(self, tool_name: str) -> str:
         return self.FILE_REQUIREMENTS.get(tool_name, "a valid input file")
 
+    def _scope_context(self, user_id: str, limit: int = 8) -> List[Dict[str, Any]]:
+        agent_data = self._get_agent_record(user_id)
+        steps = agent_data.get("steps", [])
+        if not isinstance(steps, list):
+            return []
+
+        snippets: List[Dict[str, Any]] = []
+        for step in steps[-40:]:
+            if not isinstance(step, dict):
+                continue
+
+            step_type = step.get("type")
+            content = step.get("content")
+
+            if step_type == "user_query" and isinstance(content, str):
+                text = content.strip()
+                if text:
+                    snippets.append({"type": "user_query", "text": text[:300]})
+            elif step_type == "tool_call":
+                tool_name = step.get("tool")
+                if isinstance(tool_name, str):
+                    snippets.append({"type": "tool_call", "tool": tool_name})
+            elif step_type == "scope_decision" and isinstance(content, dict):
+                classification = content.get("classification")
+                if isinstance(classification, str):
+                    snippets.append(
+                        {
+                            "type": "scope_decision",
+                            "classification": classification,
+                            "confidence": content.get("confidence"),
+                        }
+                    )
+
+        return snippets[-limit:]
+
+    def _parse_scope_classifier_response(self, raw_response: str) -> Optional[Dict[str, Any]]:
+        text = str(raw_response or "").strip()
+        if not text:
+            return None
+
+        candidates = [text]
+        start_index = text.find("{")
+        end_index = text.rfind("}")
+        if start_index >= 0 and end_index > start_index:
+            candidates.append(text[start_index : end_index + 1])
+
+        parsed_payload: Optional[Dict[str, Any]] = None
+        for candidate in candidates:
+            try:
+                loaded = json.loads(candidate)
+                if isinstance(loaded, dict):
+                    parsed_payload = loaded
+                    break
+            except Exception:
+                continue
+
+        if not parsed_payload:
+            return None
+
+        raw_classification = str(parsed_payload.get("classification", "")).strip().lower()
+        classification_aliases = {
+            "interior": "interior_design",
+            "interior_design": "interior_design",
+            "interior-design": "interior_design",
+            "small_talk": "small_talk",
+            "small-talk": "small_talk",
+            "smalltalk": "small_talk",
+            "out_of_scope": "out_of_scope",
+            "out-of-scope": "out_of_scope",
+            "outofscope": "out_of_scope",
+        }
+        classification = classification_aliases.get(raw_classification)
+        if not classification:
+            return None
+
+        confidence_raw = parsed_payload.get("confidence", 0.5)
+        try:
+            confidence_value = float(confidence_raw)
+        except Exception:
+            confidence_value = 0.5
+        confidence_value = max(0.0, min(1.0, confidence_value))
+
+        explanation = parsed_payload.get("explanation", "")
+        if not isinstance(explanation, str):
+            explanation = str(explanation)
+
+        return {
+            "classification": classification,
+            "confidence": confidence_value,
+            "explanation": explanation.strip(),
+        }
+
+    def _evaluate_request_scope(
+        self,
+        query: str,
+        user_id: Optional[str] = None,
+        record_step: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
+            decision = {
+                "classification": "small_talk",
+                "confidence": 1.0,
+                "explanation": "Empty/neutral input treated as small talk.",
+                "allowed": True,
+            }
+            if record_step and user_id:
+                self._add_step(user_id=user_id, step_type="scope_decision", content=decision)
+            return decision
+
+        scope_context: List[Dict[str, Any]] = []
+        if user_id:
+            scope_context = self._scope_context(user_id=user_id, limit=8)
+
+        classifier_prompt = (
+            f"{self.SCOPE_CLASSIFIER_INSTRUCTION}\n\n"
+            f"Recent conversation context (oldest to newest):\n"
+            f"{json.dumps(scope_context, ensure_ascii=False)}\n\n"
+            f"Latest user query:\n{normalized_query}"
+        )
+
+        parsed = None
+        try:
+            raw_response = LLMManager.chat(classifier_prompt)
+            parsed = self._parse_scope_classifier_response(raw_response)
+        except Exception as e:
+            Logger.log(f"[AGENT SYNTHESIZER] - WARNING: Scope classifier failed. Error: {e}")
+
+        if not parsed:
+            parsed = {
+                "classification": "interior_design",
+                "confidence": 0.35,
+                "explanation": "Fallback applied because scope classifier output was invalid.",
+            }
+
+        parsed["allowed"] = parsed["classification"] in {"interior_design", "small_talk"}
+
+        if record_step and user_id:
+            self._add_step(
+                user_id=user_id,
+                step_type="scope_decision",
+                content=parsed,
+            )
+
+        return parsed
+
     def _get_session_files(self, user_id: str) -> List[Dict[str, Any]]:
         agent_data = self._get_agent_record(user_id)
         normalized_files = self._normalize_uploaded_files(agent_data.get("Uploaded Files"))
         agent_data["Uploaded Files"] = normalized_files
         return normalized_files
+
+    def _session_file_info(self, user_id: Optional[str], file_id: str) -> Dict[str, Any]:
+        if user_id:
+            for item in self._get_session_files(user_id=user_id):
+                if item.get("file_id") == file_id:
+                    return item
+
+        file_obj = self._file_registry.get(file_id)
+        return {
+            "file_id": file_id,
+            "filename": str(getattr(file_obj, "filename", "") or file_id),
+            "content_type": str(getattr(file_obj, "content_type", "") or ""),
+        }
+
+    async def _validate_tool_file_input(
+        self,
+        user_id: Optional[str],
+        tool_name: str,
+        args: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not self._tool_requires_file(tool_name):
+            return None
+
+        file_id = args.get("file_id")
+        if not isinstance(file_id, str) or not file_id.strip():
+            needed = self._required_file_description(tool_name)
+            return {
+                "error": "missing_file",
+                "message": f"I need {needed} before I can continue.",
+            }
+
+        cleaned_file_id = file_id.strip()
+        file_obj = self._file_registry.get(cleaned_file_id)
+        if not file_obj:
+            needed = self._required_file_description(tool_name)
+            return {
+                "error": "file_not_found",
+                "message": f"I can't access that file in this session. Please upload {needed}.",
+            }
+
+        # Strict type validation for these tools:
+        # - classify_style, detect_furniture: room/interior photos only
+        # - generate_floor_plan: floor plan images only
+        if tool_name in {"classify_style", "detect_furniture", "generate_floor_plan"}:
+            file_info = self._session_file_info(user_id=user_id, file_id=cleaned_file_id)
+            analysis = await self._analyze_uploaded_file_for_tool(
+                tool_name=tool_name,
+                file_info=file_info,
+                file_obj=file_obj,
+            )
+
+            if not analysis.get("suitable"):
+                filename = str(analysis.get("filename") or self._file_label(cleaned_file_id, user_id=user_id))
+                needed = self._required_file_description(tool_name)
+
+                return {
+                    "error": "invalid_file_type",
+                    "message": (
+                        f"I can't use `{filename}` for this step. "
+                        f"Please upload {needed}."
+                    ),
+                }
+
+        return None
 
     def _upsert_session_file(
         self,
@@ -1342,7 +1606,11 @@ class AgentSynthesizerClass:
         )
 
         try:
-            result = await self._execute_tool(tool_name, tool_args)
+            result = await self._execute_tool(
+                tool_name,
+                tool_args,
+                user_id=user_id,
+            )
 
             output_summary = self._store_tool_output(
                 user_id=user_id,
@@ -1520,6 +1788,7 @@ class AgentSynthesizerClass:
                 "file_id": item.get("file_id"),
                 "filename": item.get("filename"),
                 "description": item.get("description"),
+                "predicted_type": item.get("predicted_type"),
                 "suitable": item.get("suitable"),
                 "score": item.get("score"),
             }
@@ -1675,8 +1944,18 @@ class AgentSynthesizerClass:
             )
 
             likely_floor_plan = (
-                (saturation_mean < 55 and bright_ratio > 0.45 and edge_ratio > 0.08 and dark_ratio < 0.25)
-                or (floor_name_hint and saturation_mean < 85)
+                (
+                    saturation_mean < 45
+                    and bright_ratio > 0.45
+                    and edge_ratio > 0.08
+                    and dark_ratio < 0.30
+                )
+                or (
+                    floor_name_hint
+                    and saturation_mean < 65
+                    and bright_ratio > 0.38
+                    and edge_ratio > 0.06
+                )
             )
             likely_palette = (
                 palette_name_hint
@@ -1684,28 +1963,32 @@ class AgentSynthesizerClass:
             )
             likely_photo = (
                 not likely_floor_plan
-                and (saturation_mean > 45 or unique_colors > 140)
-                and edge_ratio < 0.45
+                and not likely_palette
+                and (saturation_mean > 40 or unique_colors > 130)
+                and edge_ratio < 0.48
             )
 
+            predicted_type = "unclear"
+            description = "an image with unclear structure"
             if likely_floor_plan:
+                predicted_type = "floor_plan"
                 description = "an image that looks like a floor plan or architectural layout"
             elif likely_photo:
+                predicted_type = "room_photo"
                 description = "an image that looks like a room/interior photo"
             elif likely_palette:
+                predicted_type = "palette_or_graphic"
                 description = "an image that looks like a color palette or graphic"
-            else:
-                description = "an image with unclear structure"
 
             if tool_name == "generate_floor_plan":
-                suitable = likely_floor_plan
-                score = 0.9 if likely_floor_plan else 0.2
+                suitable = predicted_type == "floor_plan"
+                score = 0.93 if suitable else 0.10
             elif tool_name in {"classify_style", "detect_furniture"}:
-                suitable = likely_photo
-                score = 0.85 if likely_photo else 0.15
+                suitable = predicted_type == "room_photo"
+                score = 0.90 if suitable else 0.10
             elif tool_name == "extract_colors":
                 suitable = True
-                score = 0.95 if likely_palette else 0.75
+                score = 0.95 if predicted_type == "palette_or_graphic" else 0.75
             else:
                 suitable = False
                 score = 0.0
@@ -1714,6 +1997,7 @@ class AgentSynthesizerClass:
                 "file_id": file_id,
                 "filename": filename or file_id,
                 "description": description,
+                "predicted_type": predicted_type,
                 "suitable": suitable,
                 "score": score,
             }
@@ -1722,6 +2006,7 @@ class AgentSynthesizerClass:
                 "file_id": file_id,
                 "filename": filename or file_id,
                 "description": f"`{filename or file_id}` couldn't be analyzed reliably",
+                "predicted_type": "unknown",
                 "suitable": False,
                 "score": 0.0,
             }
@@ -1934,8 +2219,21 @@ class AgentSynthesizerClass:
             "items_added": items_added,
         }
 
-    async def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
+    async def _execute_tool(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> Any:
         """Execute a tool from ServiceOrchestra"""
+
+        validation_error = await self._validate_tool_file_input(
+            user_id=user_id,
+            tool_name=tool_name,
+            args=args,
+        )
+        if validation_error:
+            return validation_error
 
         if tool_name == "generate_image":
             return SO.generate_image(prompt=args["prompt"])
@@ -1959,6 +2257,17 @@ class AgentSynthesizerClass:
             )
 
         if tool_name == "web_search":
+            query = str(args.get("query") or "")
+            scope_decision = self._evaluate_request_scope(
+                query,
+                user_id=user_id,
+                record_step=False,
+            )
+            if scope_decision.get("classification") != "interior_design":
+                return {
+                    "error": "out_of_scope",
+                    "message": self.OUT_OF_SCOPE_MESSAGE,
+                }
             return await SO.web_search(query=args["query"])
 
         if tool_name == "extract_colors":
