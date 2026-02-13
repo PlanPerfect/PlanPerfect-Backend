@@ -339,19 +339,6 @@ class AgentSynthesizerClass:
         max_iterations: int = 10,
         uploaded_files: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """
-        Execute an agentic query with tool calling and state tracking.
-
-        Args:
-            user_id: The user ID for database tracking
-            query: The user's query/request
-            session_id: Optional preferred ID (used only when creating a new user session)
-            max_iterations: Maximum number of think-act cycles
-            uploaded_files: Optional uploaded files to register for this user/session.
-
-        Returns:
-            Dict containing the final response and session metadata
-        """
         if not self._initialized:
             raise RuntimeError("AgentSynthesizer not initialized. Call initialize() first.")
 
@@ -2372,8 +2359,6 @@ class AgentSynthesizerClass:
         args: Dict[str, Any],
         user_id: Optional[str] = None,
     ) -> Any:
-        """Execute a tool from ServiceOrchestra"""
-
         validation_error = await self._validate_tool_file_input(
             user_id=user_id,
             tool_name=tool_name,
