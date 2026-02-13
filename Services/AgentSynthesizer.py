@@ -341,7 +341,7 @@ class AgentSynthesizerClass:
                 if pending_status == "waiting_for_confirmation":
                     waiting_message = pending_resolution.get(
                         "response",
-                        "Please reply with yes or no so I know whether to continue with that file.",
+                        "Please let me know if you'd like me to continue with that file, or use a different one.",
                     )
                     self._add_step(
                         user_id=user_id,
@@ -383,6 +383,14 @@ class AgentSynthesizerClass:
                     }
 
                 if pending_status == "confirmed":
+                    confirmed_action = pending_resolution.get("confirmed_action")
+                    if isinstance(confirmed_action, dict):
+                        return await self._execute_confirmed_file_action(
+                            user_id=user_id,
+                            current_session_id=current_session_id,
+                            confirmed_action=confirmed_action,
+                        )
+
                     forced_file_context = pending_resolution.get("forced_file_context")
                     confirmed_query = pending_resolution.get("effective_query")
                     if isinstance(confirmed_query, str) and confirmed_query.strip():
@@ -1051,6 +1059,11 @@ class AgentSynthesizerClass:
             "okay",
             "use it",
             "use that",
+            "use this",
+            "go with it",
+            "go with this",
+            "continue",
+            "proceed",
             "go ahead",
             "please do",
         )
@@ -1063,7 +1076,11 @@ class AgentSynthesizerClass:
             "not this",
             "another",
             "different",
+            "different one",
+            "different file",
             "new file",
+            "upload another",
+            "use another",
         )
 
         is_affirmative = any(keyword in normalized_reply for keyword in affirmative_keywords)
@@ -1085,6 +1102,12 @@ class AgentSynthesizerClass:
             return {
                 "status": "confirmed",
                 "effective_query": pending_action.get("original_query") or user_reply,
+                "confirmed_action": {
+                    "tool_name": pending_action.get("tool_name"),
+                    "file_id": pending_action.get("file_id"),
+                    "tool_args": pending_action.get("tool_args", {}),
+                    "original_query": pending_action.get("original_query") or user_reply,
+                },
                 "forced_file_context": {
                     "tool_name": pending_action.get("tool_name"),
                     "file_id": pending_action.get("file_id"),
@@ -1119,9 +1142,267 @@ class AgentSynthesizerClass:
             "status": "waiting_for_confirmation",
             "response": (
                 f"I can continue with {file_desc}. "
-                "Please reply with yes or no."
+                "Let me know if you'd like me to proceed with it, or if you want to use a different file."
             ),
         }
+
+    def _file_label(self, file_id: Any, user_id: Optional[str] = None) -> str:
+        if not isinstance(file_id, str) or not file_id.strip():
+            return "uploaded file"
+
+        cleaned_file_id = file_id.strip()
+
+        if user_id:
+            for item in self._get_session_files(user_id=user_id):
+                if item.get("file_id") != cleaned_file_id:
+                    continue
+                filename = str(item.get("filename") or "").strip()
+                if filename:
+                    return filename
+
+        file_obj = self._file_registry.get(cleaned_file_id)
+        filename = str(getattr(file_obj, "filename", "") or "").strip()
+        if filename:
+            return filename
+
+        return cleaned_file_id
+
+    def _build_direct_tool_response(
+        self,
+        user_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        result: Any,
+    ) -> str:
+        if isinstance(result, dict):
+            error_message = result.get("message")
+            if isinstance(error_message, str) and error_message.strip() and result.get("error"):
+                return error_message.strip()
+
+        if tool_name == "classify_style":
+            style = "Unknown"
+            confidence_text = ""
+            if isinstance(result, dict):
+                style = (
+                    result.get("detected_style")
+                    or result.get("style")
+                    or result.get("classified_style")
+                    or "Unknown"
+                )
+                confidence = result.get("confidence")
+                if isinstance(confidence, (int, float)):
+                    confidence_value = float(confidence)
+                    if 0.0 <= confidence_value <= 1.0:
+                        confidence_value *= 100.0
+                    confidence_text = f" ({confidence_value:.0f}% confidence)"
+
+            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
+            return (
+                f"I used `{source_name}` and detected the style as **{style}**{confidence_text}."
+            )
+
+        if tool_name == "detect_furniture":
+            total_items = 0
+            if isinstance(result, dict):
+                if isinstance(result.get("total_items"), int):
+                    total_items = result.get("total_items", 0)
+                elif isinstance(result.get("detections"), list):
+                    total_items = len(result.get("detections", []))
+
+            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
+            return (
+                f"I used `{source_name}` and detected {total_items} furniture item(s)."
+            )
+
+        if tool_name == "extract_colors":
+            colors: List[str] = []
+            if isinstance(result, dict) and isinstance(result.get("colors"), list):
+                for item in result.get("colors", []):
+                    if isinstance(item, dict):
+                        hex_code = item.get("hex")
+                        if isinstance(hex_code, str) and hex_code.strip():
+                            colors.append(hex_code.strip())
+
+            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
+            if colors:
+                color_text = ", ".join(colors[:5])
+                return f"I extracted colors from `{source_name}`: {color_text}."
+            return f"I used `{source_name}` and completed color extraction."
+
+        if tool_name == "generate_floor_plan":
+            if isinstance(result, dict):
+                floor_plan_url = result.get("floor_plan_url")
+                if isinstance(floor_plan_url, str) and floor_plan_url.strip():
+                    furniture_items = tool_args.get("furniture_list", [])
+                    furniture_text = ""
+                    if isinstance(furniture_items, list) and furniture_items:
+                        furniture_text = ", ".join(str(item) for item in furniture_items if str(item).strip())
+                    source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
+                    if furniture_text:
+                        return (
+                            f"I used `{source_name}` and generated an updated floor plan with {furniture_text}. "
+                            f"Result: {floor_plan_url.strip()}"
+                        )
+                    return (
+                        f"I used `{source_name}` and generated the updated floor plan. "
+                        f"Result: {floor_plan_url.strip()}"
+                    )
+
+            return "I ran the floor plan generation, but I couldn't produce a valid output."
+
+        if tool_name == "generate_image":
+            if isinstance(result, dict):
+                image_url = result.get("url")
+                if isinstance(image_url, str) and image_url.strip():
+                    return f"I generated the image. Result: {image_url.strip()}"
+            return "I ran image generation, but couldn't produce an image URL."
+
+        if tool_name == "get_recommendations":
+            if isinstance(result, dict) and isinstance(result.get("recommendations"), list):
+                count = len(result.get("recommendations", []))
+                return f"I found {count} recommendation(s) based on your request."
+            return "I ran the recommendation search, but couldn't retrieve recommendations."
+
+        if tool_name == "web_search":
+            answer = self._extract_search_result(result)
+            if isinstance(answer, str) and answer.strip():
+                return answer.strip()
+            return "I completed the web search."
+
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+        if isinstance(result, dict) and isinstance(result.get("message"), str):
+            message = result.get("message", "").strip()
+            if message:
+                return message
+
+        return "Done."
+
+    async def _execute_confirmed_file_action(
+        self,
+        user_id: str,
+        current_session_id: str,
+        confirmed_action: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        tool_name = str(confirmed_action.get("tool_name") or "").strip()
+        tool_args = confirmed_action.get("tool_args")
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+
+        file_id = confirmed_action.get("file_id")
+        if isinstance(file_id, str) and file_id.strip():
+            tool_args["file_id"] = file_id.strip()
+
+        if not tool_name:
+            fallback_response = "I couldn't determine which action to continue. Please resend your request."
+            self._add_step(user_id=user_id, step_type="response", content=fallback_response)
+            self._update_session_status(
+                user_id=user_id,
+                status="completed",
+                current_step=self.DONE_STEP,
+            )
+            DM.save()
+            return {
+                "session_id": current_session_id,
+                "status": "completed",
+                "response": fallback_response,
+            }
+
+        if self._tool_requires_file(tool_name):
+            file_id_value = tool_args.get("file_id")
+            if not isinstance(file_id_value, str) or file_id_value not in self._file_registry:
+                needed = self._required_file_description(tool_name)
+                upload_message = (
+                    "Sure! Please upload the file you'd like me to use instead. "
+                    f"I need {needed} before I can continue."
+                )
+                self._add_step(user_id=user_id, step_type="response", content=upload_message)
+                self._update_session_status(
+                    user_id=user_id,
+                    status="waiting_for_file_upload",
+                    current_step=self.DONE_STEP,
+                )
+                DM.save()
+                return {
+                    "session_id": current_session_id,
+                    "status": "waiting_for_file_upload",
+                    "response": upload_message,
+                }
+
+        self._update_session_status(
+            user_id=user_id,
+            status="executing",
+            current_step=self._tool_current_step(tool_name),
+        )
+        self._add_step(
+            user_id=user_id,
+            step_type="tool_call",
+            content=tool_args,
+            tool_name=tool_name,
+        )
+
+        try:
+            result = await self._execute_tool(tool_name, tool_args)
+
+            output_summary = self._store_tool_output(
+                user_id=user_id,
+                tool_name=tool_name,
+                args=tool_args,
+                result=result,
+            )
+            if output_summary:
+                self._add_step(
+                    user_id=user_id,
+                    step_type="tool_result",
+                    content=output_summary,
+                    tool_name=tool_name,
+                )
+
+            final_response = self._build_direct_tool_response(
+                user_id=user_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result=result,
+            )
+            self._add_step(
+                user_id=user_id,
+                step_type="response",
+                content=final_response,
+            )
+            self._update_session_status(
+                user_id=user_id,
+                status="completed",
+                current_step=self.DONE_STEP,
+            )
+            DM.save()
+
+            return {
+                "session_id": current_session_id,
+                "status": "completed",
+                "response": final_response,
+                "iterations": 1,
+            }
+        except Exception as e:
+            error_msg = f"Tool execution failed for {tool_name}: {str(e)}"
+            Logger.log(f"[AGENT SYNTHESIZER] - ERROR: {error_msg}")
+            self._add_step(
+                user_id=user_id,
+                step_type="error",
+                content={"error": str(e)},
+                tool_name=tool_name,
+            )
+            self._update_session_status(
+                user_id=user_id,
+                status="error",
+                current_step=self.THINKING_STEP,
+            )
+            DM.save()
+            return {
+                "session_id": current_session_id,
+                "status": "error",
+                "error": error_msg,
+                "response": self.USER_ERROR_MESSAGE,
+            }
 
     async def _resolve_tool_file_requirements(
         self,
@@ -1151,33 +1432,48 @@ class AgentSynthesizerClass:
             }
 
         provided_file_id = args.get("file_id")
+        cleaned_provided_file_id: Optional[str] = None
         if isinstance(provided_file_id, str) and provided_file_id.strip():
-            cleaned_id = provided_file_id.strip()
-            if cleaned_id in self._file_registry:
-                args["file_id"] = cleaned_id
-                self._upsert_session_file(
-                    user_id=user_id,
-                    file_id=cleaned_id,
-                    file_obj=self._file_registry.get(cleaned_id),
-                    source="tool-args",
-                )
-                return {"status": "ready", "tool_args": args}
-
-            needed = self._required_file_description(tool_name)
-            return {
-                "status": "needs_file_upload",
-                "response": (
-                    "I can see a file ID in the tool input, but I can't access that file in this session. "
-                    f"Please upload {needed} and let me know when you're ready."
-                ),
-            }
+            cleaned_provided_file_id = provided_file_id.strip()
+            if cleaned_provided_file_id not in self._file_registry:
+                needed = self._required_file_description(tool_name)
+                return {
+                    "status": "needs_file_upload",
+                    "response": (
+                        "I can see a file ID in the tool input, but I can't access that file in this session. "
+                        f"Please upload {needed} and let me know when you're ready."
+                    ),
+                }
 
         session_files = self._get_session_files(user_id=user_id)
-        candidates = [
-            item
-            for item in session_files
-            if isinstance(item.get("file_id"), str) and item.get("file_id") in self._file_registry
-        ]
+        candidates_by_id: Dict[str, Dict[str, Any]] = {}
+
+        for item in session_files:
+            file_id = item.get("file_id")
+            if not isinstance(file_id, str) or file_id not in self._file_registry:
+                continue
+            candidates_by_id[file_id] = item
+
+        # Ensure file IDs explicitly passed by the model are also analyzed.
+        if cleaned_provided_file_id and cleaned_provided_file_id in self._file_registry:
+            if cleaned_provided_file_id not in candidates_by_id:
+                referenced_file_obj = self._file_registry.get(cleaned_provided_file_id)
+                self._upsert_session_file(
+                    user_id=user_id,
+                    file_id=cleaned_provided_file_id,
+                    file_obj=referenced_file_obj,
+                    source="tool-args",
+                )
+                candidates_by_id[cleaned_provided_file_id] = {
+                    "file_id": cleaned_provided_file_id,
+                    "filename": str(getattr(referenced_file_obj, "filename", "") or ""),
+                    "content_type": str(getattr(referenced_file_obj, "content_type", "") or ""),
+                    "source": "tool-args",
+                    "uploaded_at": datetime.now().isoformat(),
+                    "analysis": {},
+                }
+
+        candidates = list(candidates_by_id.values())
 
         if not candidates:
             needed = self._required_file_description(tool_name)
@@ -1222,6 +1518,7 @@ class AgentSynthesizerClass:
         summarized = [
             {
                 "file_id": item.get("file_id"),
+                "filename": item.get("filename"),
                 "description": item.get("description"),
                 "suitable": item.get("suitable"),
                 "score": item.get("score"),
@@ -1244,7 +1541,21 @@ class AgentSynthesizerClass:
         ]
         suitable_files.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
 
-        if not suitable_files:
+        selected: Optional[Dict[str, Any]] = None
+        if cleaned_provided_file_id:
+            selected = next(
+                (
+                    item
+                    for item in suitable_files
+                    if item.get("file_id") == cleaned_provided_file_id
+                ),
+                None,
+            )
+
+        if not selected and suitable_files:
+            selected = suitable_files[0]
+
+        if not selected:
             needed = self._required_file_description(tool_name)
             return {
                 "status": "needs_file_upload",
@@ -1254,9 +1565,10 @@ class AgentSynthesizerClass:
                 ),
             }
 
-        selected = suitable_files[0]
         selected_file_id = selected.get("file_id")
+        selected_filename = str(selected.get("filename") or self._file_label(selected_file_id, user_id=user_id))
         selected_description = selected.get("description") or "an uploaded image"
+        selected_label = f"`{selected_filename}` ({selected_description})"
         needed = self._required_file_description(tool_name)
 
         self._set_pending_file_action(
@@ -1264,7 +1576,7 @@ class AgentSynthesizerClass:
             tool_name=tool_name,
             tool_args=args,
             file_id=selected_file_id,
-            file_description=selected_description,
+            file_description=selected_label,
             required_file_description=needed,
             original_query=query,
         )
@@ -1275,17 +1587,31 @@ class AgentSynthesizerClass:
                 "tool": tool_name,
                 "file_id": selected_file_id,
                 "description": selected_description,
+                "filename": selected_filename,
+                "from_explicit_file_id": bool(cleaned_provided_file_id),
             },
         )
         DM.save()
 
+        response_message = (
+            f"I found an uploaded image named `{selected_filename}` and it looks like {selected_description}. "
+            "Would you like me to use this image, or would you prefer a different file?"
+        )
+        if cleaned_provided_file_id and selected_file_id == cleaned_provided_file_id:
+            response_message = (
+                f"I analysed the files and `{selected_filename}` (the referenced image) looks suitable "
+                f"because it appears to be {selected_description}. "
+                "Would you like me to use it, or do you want a different file?"
+            )
+        elif cleaned_provided_file_id and selected_file_id != cleaned_provided_file_id:
+            response_message = (
+                f"I analysed the files and found a better match than the referenced image: `{selected_filename}` "
+                f"({selected_description}). Would you like me to use this one, or do you want a different file?"
+            )
+
         return {
             "status": "ask_confirmation",
-            "response": (
-                "I found a previously uploaded file that looks relevant: "
-                f"{selected_description}. Would you like me to use it? "
-                "Reply with yes or no."
-            ),
+            "response": response_message,
         }
 
     async def _analyze_uploaded_file_for_tool(
@@ -1306,6 +1632,7 @@ class AgentSynthesizerClass:
         if not lower_content_type.startswith("image/"):
             return {
                 "file_id": file_id,
+                "filename": filename or file_id,
                 "description": f"`{filename or file_id}` is not an image file",
                 "suitable": False,
                 "score": 0.0,
@@ -1385,6 +1712,7 @@ class AgentSynthesizerClass:
 
             return {
                 "file_id": file_id,
+                "filename": filename or file_id,
                 "description": description,
                 "suitable": suitable,
                 "score": score,
@@ -1392,6 +1720,7 @@ class AgentSynthesizerClass:
         except Exception:
             return {
                 "file_id": file_id,
+                "filename": filename or file_id,
                 "description": f"`{filename or file_id}` couldn't be analyzed reliably",
                 "suitable": False,
                 "score": 0.0,
