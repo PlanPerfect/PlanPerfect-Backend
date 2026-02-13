@@ -17,7 +17,7 @@ from Services import DatabaseManager as DM
 from Services import FileManager as FM
 from Services import LLMManager as LLM
 from Services import ServiceOrchestra as SO
-from Services.AgentSynthesizer import AgentSynthesizer
+from Services import AgentSynthesizer as AGS
 
 
 HELP_TEXT = """
@@ -153,7 +153,7 @@ def _steps_for_latest_query(session: Dict[str, Any], status: str) -> list[str]:
 
 
 def _print_session_trace(user_id: str, session_id: str) -> None:
-    session = AgentSynthesizer.get_session(user_id=user_id, session_id=session_id)
+    session = AGS.get_session(user_id=user_id, session_id=session_id)
     if not session:
         return
 
@@ -231,14 +231,14 @@ def _initialize_services() -> None:
     if not SO._initialized:
         SO.initialize()
 
-    if not AgentSynthesizer._initialized:
-        AgentSynthesizer.initialize()
+    if not AGS._initialized:
+        AGS.initialize()
 
 
 def _register_file(state: PlaygroundState, file_id: str, file_path: str) -> None:
     upload_file = LocalUploadFile(file_path)
     state.files[file_id] = upload_file
-    AgentSynthesizer.register_file(
+    AGS.register_file(
         file_id=file_id,
         file_obj=upload_file,
         user_id=state.user_id,
@@ -264,19 +264,19 @@ def _remove_file(state: PlaygroundState, file_id: str) -> None:
         return
 
     del state.files[file_id]
-    AgentSynthesizer.unregister_file(file_id=file_id, user_id=state.user_id)
+    AGS.unregister_file(file_id=file_id, user_id=state.user_id)
 
     print(f"Removed file_id='{file_id}'.")
 
 
 def _clear_files(state: PlaygroundState) -> None:
     state.files.clear()
-    AgentSynthesizer.clear_file_registry(user_id=state.user_id)
+    AGS.clear_file_registry(user_id=state.user_id)
     print("Cleared all registered files.")
 
 
 def _list_sessions(state: PlaygroundState) -> None:
-    sessions = AgentSynthesizer.list_sessions(user_id=state.user_id) or {}
+    sessions = AGS.list_sessions(user_id=state.user_id) or {}
     if not isinstance(sessions, dict) or not sessions:
         print("No sessions found.")
         return
@@ -290,7 +290,7 @@ def _list_sessions(state: PlaygroundState) -> None:
 
 def _show_session(state: PlaygroundState, session_id: Optional[str]) -> None:
     target_session_id = session_id or state.last_session_id
-    session = AgentSynthesizer.get_session(user_id=state.user_id, session_id=target_session_id)
+    session = AGS.get_session(user_id=state.user_id, session_id=target_session_id)
     if not session:
         print("Session not found.")
         return
@@ -301,14 +301,14 @@ def _show_session(state: PlaygroundState, session_id: Optional[str]) -> None:
 
 async def _execute_query(state: PlaygroundState, query: str) -> None:
     print("\nRunning agent...")
-    result = await AgentSynthesizer.execute(
+    result = await AGS.execute(
         user_id=state.user_id,
         query=query,
         max_iterations=state.max_iterations,
     )
 
     state.last_session_id = result.get("session_id")
-    session = AgentSynthesizer.get_session(
+    session = AGS.get_session(
         user_id=state.user_id,
         session_id=state.last_session_id,
     ) if state.last_session_id else None
@@ -416,7 +416,7 @@ async def _handle_command(state: PlaygroundState, raw: str) -> bool:
             return True
 
         if sub == "clear":
-            deleted = AgentSynthesizer.clear_session(user_id=state.user_id)
+            deleted = AGS.clear_session(user_id=state.user_id)
             state.last_session_id = None
             if deleted:
                 print("Session cleared.")
