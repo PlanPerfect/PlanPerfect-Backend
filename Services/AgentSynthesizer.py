@@ -37,7 +37,7 @@ class AgentSynthesizerClass:
         "generate_image": "Generating Image...",
         "classify_style": "Classifying Style...",
         "detect_furniture": "Detecting Furniture...",
-        "get_recommendations": "Getting Reccomendations...",
+        "get_recommendations": "Getting Recommendations...",
         "web_search": "Searching the web...",
         "extract_colors": "Extracting Colors...",
         "generate_floor_plan": "Generating Floor Plan...",
@@ -54,7 +54,7 @@ class AgentSynthesizerClass:
         "generate_image": "Generated Images",
         "classify_style": "Classified Style",
         "detect_furniture": "Detected Furniture",
-        "get_recommendations": "Reccomendations",
+        "get_recommendations": "Recommendations",
         "web_search": "Web Searches",
         "extract_colors": "Extracted Colors",
         "generate_floor_plan": "Generated Floor Plans",
@@ -699,7 +699,7 @@ class AgentSynthesizerClass:
             "Generated Floor Plans": [],
             "Classified Style": [],
             "Detected Furniture": [],
-            "Reccomendations": [],
+            "Recommendations": [],
             "Web Searches": [],
             "Extracted Colors": [],
         }
@@ -1527,14 +1527,21 @@ class AgentSynthesizerClass:
             )
 
         if tool_name == "detect_furniture":
-            total_items = 0
-            if isinstance(result, dict):
+            detected_furniture = self._extract_furniture_objects(result=result)
+            total_items = len(detected_furniture)
+            if total_items == 0 and isinstance(result, dict):
                 if isinstance(result.get("total_items"), int):
                     total_items = result.get("total_items", 0)
                 elif isinstance(result.get("detections"), list):
                     total_items = len(result.get("detections", []))
 
             source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
+            if detected_furniture:
+                detected_names = ", ".join(item.get("name", "") for item in detected_furniture if item.get("name"))
+                if detected_names:
+                    return (
+                        f"I used `{source_name}` and detected {total_items} furniture item(s): {detected_names}."
+                    )
             return (
                 f"I used `{source_name}` and detected {total_items} furniture item(s)."
             )
@@ -2176,6 +2183,48 @@ class AgentSynthesizerClass:
         unique_urls = list(dict.fromkeys(urls))
         return unique_urls
 
+    def _extract_furniture_objects(self, result: Any) -> List[Dict[str, str]]:
+        if not isinstance(result, dict):
+            return []
+
+        detections = result.get("detections", [])
+        if not isinstance(detections, list):
+            return []
+
+        furniture_objects: List[Dict[str, str]] = []
+        seen_pairs = set()
+
+        for item in detections:
+            if not isinstance(item, dict):
+                continue
+
+            name_candidate = item.get("class") or item.get("name") or item.get("label")
+            name = str(name_candidate).strip() if name_candidate is not None else ""
+            if not name:
+                name = "unknown"
+
+            url_candidate = item.get("url") or item.get("image_url") or item.get("image")
+            if not isinstance(url_candidate, str):
+                continue
+
+            url = url_candidate.strip()
+            if not url:
+                continue
+
+            dedupe_key = (name, url)
+            if dedupe_key in seen_pairs:
+                continue
+
+            seen_pairs.add(dedupe_key)
+            furniture_objects.append(
+                {
+                    "name": name,
+                    "url": url,
+                }
+            )
+
+        return furniture_objects
+
     def _extract_search_result(self, result: Any) -> str:
         if isinstance(result, str):
             return result
@@ -2211,6 +2260,7 @@ class AgentSynthesizerClass:
 
         target_list = outputs[branch_name]
         items_added = 0
+        tool_result_metadata: Dict[str, Any] = {}
 
         if tool_name in self.URL_OUTPUT_TOOLS:
             url_list = self._extract_urls_from_result(tool_name=tool_name, result=result)
@@ -2219,15 +2269,29 @@ class AgentSynthesizerClass:
                 items_added += 1
 
         elif tool_name == "detect_furniture":
-            image_url = self._resolve_image_url(args.get("file_id"), result)
-            furniture_urls = self._extract_urls_from_result(tool_name=tool_name, result=result)
+            source_file_id = args.get("file_id")
+            source_file_ref = source_file_id.strip() if isinstance(source_file_id, str) and source_file_id.strip() else None
+            image_url = None
+            if isinstance(result, dict):
+                for key in ("image_url", "url", "image"):
+                    value = result.get(key)
+                    if isinstance(value, str) and value.strip():
+                        image_url = value.strip()
+                        break
+            if not image_url and isinstance(source_file_ref, str) and source_file_ref.startswith(("http://", "https://")):
+                image_url = source_file_ref
+            furniture_objects = self._extract_furniture_objects(result=result)
+
             target_list.append(
                 {
                     "image_url": image_url,
-                    "furniture": furniture_urls,
+                    "source_file_id": source_file_ref,
+                    "furniture": furniture_objects,
                 }
             )
             items_added = 1
+            tool_result_metadata["source_file_id"] = source_file_ref
+            tool_result_metadata["furniture"] = furniture_objects
 
         elif tool_name == "classify_style":
             image_url = self._resolve_image_url(args.get("file_id"), result)
@@ -2275,10 +2339,12 @@ class AgentSynthesizerClass:
             return None
 
         agent_data["Outputs"] = outputs
-        return {
+        summary = {
             "output_branch": f"Outputs/{branch_name}",
             "items_added": items_added,
         }
+        summary.update(tool_result_metadata)
+        return summary
 
     async def _execute_tool(
         self,

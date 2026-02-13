@@ -32,7 +32,7 @@ async def register_user(user_data: UserData):
                     "Generated Floor Plans": [],
                     "Classified Style": [],
                     "Detected Furniture": [],
-                    "Reccomendations": [],
+                    "Recommendations": [],
                     "Web Searches": [],
                     "Extracted Colors": []
                 }
@@ -67,7 +67,7 @@ async def register_user(user_data: UserData):
                         "Generated Floor Plans": [],
                         "Classified Style": [],
                         "Detected Furniture": [],
-                        "Reccomendations": [],
+                        "Recommendations": [],
                         "Web Searches": [],
                         "Extracted Colors": []
                     }

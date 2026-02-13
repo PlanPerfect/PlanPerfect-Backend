@@ -100,7 +100,7 @@ def _tool_step_label(tool_name: Optional[str]) -> Optional[str]:
         "generate_image": "Generating Image...",
         "classify_style": "Classifying Style...",
         "detect_furniture": "Detecting Furniture...",
-        "get_recommendations": "Getting Reccomendations...",
+        "get_recommendations": "Getting Recommendations...",
         "web_search": "Searching the web...",
         "extract_colors": "Extracting Colors...",
         "generate_floor_plan": "Generating Floor Plan...",
