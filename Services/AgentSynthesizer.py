@@ -23,7 +23,9 @@ AgentSynthesizer is an autonomous agentic AI system that:
 
 class AgentSynthesizerClass:
     _instance = None
-    HISTORY_LIMIT = 20
+    STATUS_IDLE = "idle"
+    STATUS_RUNNING = "running"
+    HISTORY_LIMIT = 50
     THINKING_STEP = "Thinking..."
     ANALYZING_FILES_STEP = "Analysing files..."
     DONE_STEP = "Done!"
@@ -269,6 +271,11 @@ class AgentSynthesizerClass:
                     "source": source,
                 },
             )
+            self._update_session_status(
+                user_id=user_id,
+                status="completed",
+                current_step=self.DONE_STEP,
+            )
             DM.save()
 
     def unregister_file(self, file_id: str, user_id: Optional[str] = None) -> None:
@@ -276,6 +283,11 @@ class AgentSynthesizerClass:
 
         if user_id:
             self._remove_session_file(user_id=user_id, file_id=file_id)
+            self._update_session_status(
+                user_id=user_id,
+                status="completed",
+                current_step=self.DONE_STEP,
+            )
             DM.save()
 
     def clear_file_registry(self, user_id: Optional[str] = None) -> None:
@@ -289,6 +301,11 @@ class AgentSynthesizerClass:
             agent_data = self._get_agent_record(user_id)
             agent_data["Uploaded Files"] = []
             self._clear_pending_file_action(user_id=user_id)
+            self._update_session_status(
+                user_id=user_id,
+                status="completed",
+                current_step=self.DONE_STEP,
+            )
             DM.save()
             return
 
@@ -690,7 +707,7 @@ class AgentSynthesizerClass:
     def _default_agent_record(self, session_id: str) -> Dict[str, Any]:
         return {
             "session_id": session_id,
-            "status": "idle",
+            "status": self.STATUS_IDLE,
             "current_step": self.THINKING_STEP,
             "steps": [],
             "Outputs": self._default_outputs(),
@@ -858,8 +875,12 @@ class AgentSynthesizerClass:
                 selected_session = {}
 
             normalized = self._default_agent_record(selected_id)
-            normalized["status"] = selected_session.get("status", "idle")
-            normalized["current_step"] = self._sanitize_current_step(selected_session.get("current_step"))
+            normalized_current_step = self._sanitize_current_step(selected_session.get("current_step"))
+            normalized["current_step"] = normalized_current_step
+            normalized["status"] = self._sanitize_status(
+                selected_session.get("status", self.STATUS_IDLE),
+                current_step=normalized_current_step,
+            )
             normalized["steps"] = self._normalize_steps(selected_session.get("steps", []))
 
             existing_outputs = selected_session.get("Outputs")
@@ -882,8 +903,12 @@ class AgentSynthesizerClass:
         )
 
         normalized = self._default_agent_record(normalized_session_id)
-        normalized["status"] = raw_session_data.get("status", "idle")
-        normalized["current_step"] = self._sanitize_current_step(raw_session_data.get("current_step"))
+        normalized_current_step = self._sanitize_current_step(raw_session_data.get("current_step"))
+        normalized["current_step"] = normalized_current_step
+        normalized["status"] = self._sanitize_status(
+            raw_session_data.get("status", self.STATUS_IDLE),
+            current_step=normalized_current_step,
+        )
         normalized["steps"] = self._normalize_steps(raw_session_data.get("steps", []))
         normalized["Outputs"] = self._normalize_outputs(raw_session_data.get("Outputs"))
         normalized["Uploaded Files"] = self._normalize_uploaded_files(raw_session_data.get("Uploaded Files", []))
@@ -918,8 +943,12 @@ class AgentSynthesizerClass:
 
     def _update_session_status(self, user_id: str, status: str, current_step: str) -> None:
         agent_data = self._get_agent_record(user_id)
-        agent_data["status"] = status
-        agent_data["current_step"] = self._sanitize_current_step(current_step)
+        normalized_current_step = self._sanitize_current_step(current_step)
+        agent_data["current_step"] = normalized_current_step
+        agent_data["status"] = self._sanitize_status(
+            status,
+            current_step=normalized_current_step,
+        )
         DM.save()
 
     def _sanitize_current_step(self, current_step: Any) -> str:
@@ -931,6 +960,38 @@ class AgentSynthesizerClass:
         }:
             return current_step
         return self.THINKING_STEP
+
+    def _sanitize_status(self, status: Any, current_step: Optional[str] = None) -> str:
+        normalized_step = (
+            self._sanitize_current_step(current_step)
+            if current_step is not None
+            else None
+        )
+        if normalized_step == self.DONE_STEP:
+            return self.STATUS_IDLE
+
+        raw_status = str(status).strip().lower() if isinstance(status, str) else ""
+        if raw_status in {
+            self.STATUS_RUNNING,
+            "thinking",
+            "executing",
+            "analyzing_files",
+        }:
+            return self.STATUS_RUNNING
+
+        if raw_status in {
+            self.STATUS_IDLE,
+            "completed",
+            "error",
+            "awaiting_user_confirmation",
+            "waiting_for_file_upload",
+        }:
+            return self.STATUS_IDLE
+
+        if normalized_step in {self.THINKING_STEP, self.ANALYZING_FILES_STEP, *self.TOOL_CURRENT_STEPS.values()}:
+            return self.STATUS_RUNNING
+
+        return self.STATUS_IDLE
 
     def _tool_current_step(self, tool_name: str) -> str:
         return self.TOOL_CURRENT_STEPS.get(tool_name, self.THINKING_STEP)
