@@ -68,7 +68,7 @@ class ServiceOrchestraClass:
                     response_modalities=['TEXT', 'IMAGE'],
                     image_config=types.ImageConfig(
                         aspect_ratio="16:9",
-                        image_size="4K"
+                        image_size="2K"
                     ),
                 )
             )
@@ -598,7 +598,7 @@ Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid
                     response_modalities=['TEXT', 'IMAGE'],
                     image_config=types.ImageConfig(
                         aspect_ratio="1:1",
-                        image_size="4K"
+                        image_size="2K"
                     ),
                 )
             )

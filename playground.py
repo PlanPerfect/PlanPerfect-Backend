@@ -54,7 +54,7 @@ Commands:
     Exit.
 
 Any non-command text is sent to AgentSynthesizer.execute().
-Tip: mention a registered file_id in your prompt for file-based tools.
+Tip: once a file is registered, the agent can analyze and suggest it automatically.
 """
 
 
@@ -137,6 +137,10 @@ def _steps_for_latest_query(session: Dict[str, Any], status: str) -> list[str]:
         step_type = step.get("type")
         if step_type == "thought":
             append_unique("Thinking...")
+        elif step_type == "file_analysis":
+            append_unique("Analysing files...")
+        elif step_type == "file_confirmation_requested":
+            append_unique("Waiting for file confirmation...")
         elif step_type == "tool_call":
             append_unique(_tool_step_label(step.get("tool")))
 
@@ -177,7 +181,15 @@ def _print_session_trace(user_id: str, session_id: str) -> None:
             )
             print(f"  tool_result {tool}")
             print(f"    output: {output_text}")
-        elif step_type in {"user_query", "response", "thought"}:
+        elif step_type in {
+            "user_query",
+            "response",
+            "thought",
+            "file_uploaded",
+            "file_analysis",
+            "file_confirmation_requested",
+            "file_confirmation",
+        }:
             print(f"  {step_type}  {_compact(content)}")
         elif step_type == "error":
             error_text = (
@@ -224,7 +236,12 @@ def _initialize_services() -> None:
 def _register_file(state: PlaygroundState, file_id: str, file_path: str) -> None:
     upload_file = LocalUploadFile(file_path)
     state.files[file_id] = upload_file
-    AgentSynthesizer.register_file(file_id=file_id, file_obj=upload_file)
+    AgentSynthesizer.register_file(
+        file_id=file_id,
+        file_obj=upload_file,
+        user_id=state.user_id,
+        source="playground",
+    )
 
     print(f"Registered file_id='{file_id}' -> {upload_file.path}")
 
@@ -245,16 +262,14 @@ def _remove_file(state: PlaygroundState, file_id: str) -> None:
         return
 
     del state.files[file_id]
-    AgentSynthesizer.clear_file_registry()
-    for existing_file_id, upload_file in state.files.items():
-        AgentSynthesizer.register_file(existing_file_id, upload_file)
+    AgentSynthesizer.unregister_file(file_id=file_id, user_id=state.user_id)
 
     print(f"Removed file_id='{file_id}'.")
 
 
 def _clear_files(state: PlaygroundState) -> None:
     state.files.clear()
-    AgentSynthesizer.clear_file_registry()
+    AgentSynthesizer.clear_file_registry(user_id=state.user_id)
     print("Cleared all registered files.")
 
 
