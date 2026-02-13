@@ -91,7 +91,6 @@ class AgentSynthesizerClass:
         "confidence must be a float from 0 to 1."
     )
 
-    # Tool definitions in OpenAI/Groq format
     TOOLS = [
         {
             "type": "function",
@@ -1223,9 +1222,6 @@ class AgentSynthesizerClass:
                 "message": f"I can't access that file in this session. Please upload {needed}.",
             }
 
-        # Strict type validation for these tools:
-        # - classify_style, detect_furniture: room/interior photos only
-        # - generate_floor_plan: floor plan images only
         if tool_name in {"classify_style", "detect_furniture", "generate_floor_plan"}:
             file_info = self._session_file_info(user_id=user_id, file_id=cleaned_file_id)
             analysis = await self._analyze_uploaded_file_for_tool(
@@ -1797,7 +1793,6 @@ class AgentSynthesizerClass:
                 continue
             candidates_by_id[file_id] = item
 
-        # Ensure file IDs explicitly passed by the model are also analyzed.
         if cleaned_provided_file_id and cleaned_provided_file_id in self._file_registry:
             if cleaned_provided_file_id not in candidates_by_id:
                 referenced_file_obj = self._file_registry.get(cleaned_provided_file_id)

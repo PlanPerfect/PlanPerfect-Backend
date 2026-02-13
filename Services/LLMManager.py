@@ -150,12 +150,7 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
         {"name": "meta-llama/llama-4-scout-17b-16e-instruct", "provider": "groq"},              # 30 RPM, 1K RPD, 30K TPM, 500K TPD
         {"name": "meta-llama/llama-4-maverick-17b-128e-instruct", "provider": "groq"},          # 30 RPM, 1K RPD, 6K TPM, 500K TPD
         {"name": "llama-3.1-8b-instant", "provider": "groq"},                                   # 30 RPM, 14.4K RPD, 6K TPM, 500K TPD
-        {"name": "qwen/qwen3-32b", "provider": "groq"},                                         # 60 RPM, 1K RPD, 6K TPM, 500K TPD
-        {"name": "gemini-3-pro", "provider": "gemini"},                                         # 25 RPM, 1M TPM, 250 RPD
-        {"name": "gemini-3-flash", "provider": "gemini"},                                       # 1K RPM, 1M TPM, 10K RPD
-        {"name": "gemini-2.5-pro", "provider": "gemini"},                                       # 150 RPM, 2M TPM, 1K RPD
-        {"name": "gemini-2.5-flash", "provider": "gemini"},                                     # 1K RPM, 1M TPM, 10K RPD
-        {"name": "gemini-2.5-flash-lite", "provider": "gemini"}                                 # 4K RPM, 4M TPM, UNLIMITED RPD
+        {"name": "qwen/qwen3-32b", "provider": "groq"},                                         # 60 RPM, 1K RPD, 6K TPM, 500K TPD                             # 4K RPM, 4M TPM, UNLIMITED RPD
     ]
 
     def __init__(self, use_agent_models: bool = False):
