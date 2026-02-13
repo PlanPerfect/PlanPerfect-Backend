@@ -92,7 +92,7 @@ class ServiceOrchestraClass:
                 Logger.log("[SERVICE ORCHESTRA] - WARNING: No image data found in response.")
                 return None
 
-            filename = f"{datetime.now().strftime("%Y%m%d_%H%M%S")}.png"
+            filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             file_obj = BytesIO(image_bytes)
             file_obj.seek(0)
 
