@@ -23,6 +23,29 @@ def safe_get(dictionary, *keys, default='Not available'):
             return default
     return value if value else default
 
+def normalize_display_list(values):
+    """Flatten mixed/nested values into a clean, de-duplicated list of strings."""
+    if values is None:
+        return []
+
+    if not isinstance(values, list):
+        values = [values]
+
+    cleaned = []
+    seen = set()
+    for value in values:
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if not text or text.lower() in {"not specified", "not available"}:
+                continue
+            if text not in seen:
+                seen.add(text)
+                cleaned.append(text)
+    return cleaned
+
 def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, preferences, budget, unit_info):
     """
     Generate a formatted PDF from the provided design data parameters.
@@ -203,17 +226,17 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
     # Property information - all optional
     if unit_info:
         unit_rooms = safe_get(unit_info, 'unit_rooms', default='Residential Unit')
-        unit_sizes = safe_get(unit_info, 'unit_sizes', default=[])
-        unit_types = safe_get(unit_info, 'unit_types', default=[])
+        unit_sizes = normalize_display_list(safe_get(unit_info, 'unit_sizes', default=[]))
+        unit_types = normalize_display_list(safe_get(unit_info, 'unit_types', default=[]))
 
         property_info = f"<b>Unit Type:</b> {unit_rooms}"
         story.append(Paragraph(property_info, styles['Normal']))
 
-        if unit_types and len(unit_types) > 0:
-            story.append(Paragraph(f"<b>Unit Models:</b> {', '.join(set(unit_types))}", styles['Normal']))
+        if unit_types:
+            story.append(Paragraph(f"<b>Unit Models:</b> {', '.join(unit_types)}", styles['Normal']))
 
-        if unit_sizes and len(unit_sizes) > 0:
-            story.append(Paragraph(f"<b>Unit Sizes:</b> {', '.join(set(unit_sizes))}", styles['Normal']))
+        if unit_sizes:
+            story.append(Paragraph(f"<b>Unit Sizes:</b> {', '.join(unit_sizes)}", styles['Normal']))
 
     if budget:
         story.append(Paragraph(f"<b>Client's Budget:</b> {budget}", styles['Normal']))
