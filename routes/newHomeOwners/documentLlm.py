@@ -12,6 +12,7 @@ from Services import DatabaseManager as DM
 from Services import FileManager as FM
 from Services import RAGManager as RAG
 from Services.DesignDocsPdf import generate_pdf
+from Services import Logger
 
 router = APIRouter(prefix="/newHomeOwners/documentLlm", tags=["LLM PDF Generation"], dependencies=[Depends(_verify_api_key)])
 
@@ -68,7 +69,7 @@ async def save_generated_pdf(
         }
 
     except Exception as e:
-        print(f"Error saving generated PDF: {str(e)}")
+        Logger.log(f"[DOCUMENT LLM] - Error saving generated PDF: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={
@@ -187,7 +188,7 @@ async def generate_design_document(user_id: str):
                     tmp_file.write(response.content)
                     tmp_floor_plan_path = tmp_file.name
             except Exception as e:
-                print(f"Error downloading floor plan: {e}")
+                Logger.log(f"[DOCUMENT LLM] - Error downloading floor plan: {e}")
                 tmp_floor_plan_path = None
 
         # Download and save segmented floor plan temporarily if URL exists
@@ -200,7 +201,7 @@ async def generate_design_document(user_id: str):
                     tmp_file.write(response.content)
                     tmp_segmented_path = tmp_file.name
             except Exception as e:
-                print(f"Error downloading segmented floor plan: {e}")
+                Logger.log(f"[DOCUMENT LLM] - Error downloading segmented floor plan: {e}")
                 tmp_segmented_path = None
 
         # Process room counts to create summary
@@ -564,7 +565,7 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
             except:
                 pass
 
-        print(f"Error generating design document: {str(e)}")
+        Logger.log(f"[DOCUMENT LLM] - Error generating design document: {str(e)}")
 
         return JSONResponse(
             status_code=500,

@@ -20,6 +20,7 @@ from gradio_client import Client, handle_file
 from middleware.auth import _verify_api_key
 from Services.FileManager import FileManager
 from Services import DatabaseManager as DM
+from Services import Logger
 from datetime import datetime
 import tempfile
 import os
@@ -63,10 +64,10 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
         original_filename = file.filename
         file_extension = os.path.splitext(original_filename)[1] if original_filename else '.png'
         unique_filename = f"room_style_{user_id}_{timestamp}{file_extension}"
-        
+
         # Temporarily modify the file's filename attribute
         file.filename = unique_filename
-        
+
         # Upload to Cloudinary first
         # Store the uploaded image in Cloudinary for permanent storage
         cloudinary_result = FileManager.store_file(
@@ -237,7 +238,7 @@ async def save_preferences(
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Error saving preferences: {error_details}")
+        Logger.log(f"[CLASSIFICATION] - Error saving preferences: {error_details}")
 
         return JSONResponse(
             status_code=500,
@@ -282,7 +283,7 @@ async def get_preferences(user_id: str):
         # Also fetch the original image URL from Style Analysis
         analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
         analysis_data = DM.peek(analysis_path)
-        
+
         # Add original image URL to the response if available
         if analysis_data and analysis_data.get('image_url'):
             preferences_data['original_image_url'] = analysis_data.get('image_url')
@@ -298,7 +299,7 @@ async def get_preferences(user_id: str):
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Error retrieving preferences: {error_details}")
+        Logger.log(f"[CLASSIFICATION] - Error retrieving preferences: {error_details}")
 
         return JSONResponse(
             status_code=500,

@@ -19,50 +19,7 @@ from Services import LLMManager as LLM
 from Services import ServiceOrchestra as SO
 from Services import AgentSynthesizer as AGS
 
-
-HELP_TEXT = """
-Commands:
-  /help
-    Show this help.
-
-  /files add <file_id> <path>
-    Register a local file for agent tool calls (quote path if needed).
-
-  /files list
-    List registered file IDs.
-
-  /files remove <file_id>
-    Remove one registered file.
-
-  /files clear
-    Remove all registered files.
-
-  /max <iterations>
-    Set max think/act iterations per query.
-
-  /model
-    Show current agent model.
-
-  /sessions
-    Show the single active session for this user.
-
-  /session show
-    Print the current saved session JSON.
-
-  /session clear
-    Clear the current session (history + steps).
-
-  /quit
-    Exit.
-
-Any non-command text is sent to AgentSynthesizer.execute().
-Tip: once a file is registered, the agent can analyze and suggest it automatically.
-"""
-
-
 class LocalUploadFile:
-    """Lightweight async file wrapper compatible with ServiceOrchestra methods."""
-
     def __init__(self, path: str):
         resolved_path = Path(path).expanduser().resolve()
 
@@ -151,57 +108,6 @@ def _steps_for_latest_query(session: Dict[str, Any], status: str) -> list[str]:
 
     return labels
 
-
-def _print_session_trace(user_id: str, session_id: str) -> None:
-    session = AGS.get_session(user_id=user_id, session_id=session_id)
-    if not session:
-        return
-
-    steps = session.get("steps", [])
-    if not steps:
-        return
-
-    print("\nTrace:")
-    for step in steps:
-        step_type = step.get("type", "unknown")
-        content = step.get("content")
-        tool = step.get("tool", "unknown")
-
-        if step_type == "tool_call":
-            args_text = (
-                json.dumps(content, ensure_ascii=False)
-                if isinstance(content, (dict, list))
-                else str(content)
-            )
-            print(f"  tool_call  {tool}")
-            print(f"    args: {args_text}")
-        elif step_type == "tool_result":
-            output_text = (
-                json.dumps(content, ensure_ascii=False)
-                if isinstance(content, (dict, list))
-                else str(content)
-            )
-            print(f"  tool_result {tool}")
-            print(f"    output: {output_text}")
-        elif step_type in {
-            "user_query",
-            "response",
-            "thought",
-            "file_uploaded",
-            "file_analysis",
-            "file_confirmation_requested",
-            "file_confirmation",
-        }:
-            print(f"  {step_type}  {_compact(content)}")
-        elif step_type == "error":
-            error_text = (
-                json.dumps(content, ensure_ascii=False)
-                if isinstance(content, (dict, list))
-                else str(content)
-            )
-            print(f"  error      {error_text}")
-
-
 def _initialize_services() -> None:
     required_env = [
         "FIREBASE_DATABASE_URL",
@@ -274,31 +180,6 @@ def _clear_files(state: PlaygroundState) -> None:
     AGS.clear_file_registry(user_id=state.user_id)
     print("Cleared all registered files.")
 
-
-def _list_sessions(state: PlaygroundState) -> None:
-    sessions = AGS.list_sessions(user_id=state.user_id) or {}
-    if not isinstance(sessions, dict) or not sessions:
-        print("No sessions found.")
-        return
-
-    session_id, data = next(iter(sessions.items()))
-    status = data.get("status", "unknown")
-    current_step = _compact(data.get("current_step", ""), 100)
-    print("Session:")
-    print(f"  {session_id} | {status} | {current_step}")
-
-
-def _show_session(state: PlaygroundState, session_id: Optional[str]) -> None:
-    target_session_id = session_id or state.last_session_id
-    session = AGS.get_session(user_id=state.user_id, session_id=target_session_id)
-    if not session:
-        print("Session not found.")
-        return
-
-    state.last_session_id = session.get("session_id")
-    print(json.dumps(session, indent=2, ensure_ascii=False))
-
-
 async def _execute_query(state: PlaygroundState, query: str) -> None:
     print("\nRunning agent...")
     result = await AGS.execute(
@@ -342,33 +223,6 @@ async def _handle_command(state: PlaygroundState, raw: str) -> bool:
     if cmd in {"/quit", "/exit"}:
         return False
 
-    if cmd == "/help":
-        print(HELP_TEXT.strip())
-        return True
-
-    if cmd == "/model":
-        print(f"Current agent model: {LLM.get_current_agent_model()}")
-        return True
-
-    if cmd == "/max":
-        if len(parts) != 2:
-            print("Usage: /max <iterations>")
-            return True
-
-        try:
-            value = int(parts[1])
-        except ValueError:
-            print("Iterations must be an integer.")
-            return True
-
-        if value < 1:
-            print("Iterations must be at least 1.")
-            return True
-
-        state.max_iterations = value
-        print(f"max_iterations set to {state.max_iterations}")
-        return True
-
     if cmd == "/files":
         if len(parts) < 2:
             print("Usage: /files <add|list|remove|clear> ...")
@@ -400,34 +254,7 @@ async def _handle_command(state: PlaygroundState, raw: str) -> bool:
         print("Unknown /files command. Use add, list, remove, or clear.")
         return True
 
-    if cmd == "/sessions":
-        _list_sessions(state)
-        return True
-
-    if cmd == "/session":
-        if len(parts) < 2:
-            print("Usage: /session <show|clear>")
-            return True
-
-        sub = parts[1].lower()
-        if sub == "show":
-            target = parts[2] if len(parts) == 3 else None
-            _show_session(state, target)
-            return True
-
-        if sub == "clear":
-            deleted = AGS.clear_session(user_id=state.user_id)
-            state.last_session_id = None
-            if deleted:
-                print("Session cleared.")
-            else:
-                print("Failed to clear session.")
-            return True
-
-        print("Unknown /session command. Use show or clear.")
-        return True
-
-    print("Unknown command. Use /help.")
+    print("Unknown command.")
     return True
 
 
@@ -454,22 +281,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=os.getenv("PLAYGROUND_USER_ID", "playground-user"),
         help="User ID used for session tracking in Firebase.",
     )
-    parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=10,
-        help="Maximum agent think/act cycles per query.",
-    )
-    parser.add_argument(
-        "--query",
-        help="Run one query and exit (non-interactive mode).",
-    )
-    parser.add_argument(
-        "--file",
-        action="append",
-        default=[],
-        help="Register file on startup using <file_id>=<path>. Can be used multiple times.",
-    )
     return parser
 
 
@@ -491,7 +302,6 @@ async def _run(args: argparse.Namespace) -> int:
 
     print("Agent Playground Ready.")
     print(f"User ID: {state.user_id}")
-    print("Type /help for commands.\n")
 
     while True:
         try:

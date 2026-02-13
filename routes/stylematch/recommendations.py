@@ -59,7 +59,7 @@ async def fetch_preferences(
                 }
             )
 
-        image_url = DM.peek(["Users", x_user_id, "Existing Homeowner", "Preferences", "original_image_url"])
+        image_url = DM.peek(["Users", x_user_id, "Existing Homeowner", "Style Analysis", "image_url"])
 
         style = DM.peek(["Users", x_user_id, "Existing Homeowner", "Preferences", "selected_styles"])
 

@@ -239,8 +239,7 @@ class AgentSynthesizerClass:
 
             self._clear_all_user_agents()
             self._initialized = True
-            print("AGENT SYNTHESIZER INITIALIZED. AGENTIC SYSTEM READY.\n")
-            print(f"Using agent model: {LLMManager.get_current_agent_model()}\n")
+            print(f"AGENT SYNTHESIZER INITIALIZED. Model: {LLMManager.get_current_agent_model()}\n")
         except Exception as e:
             Logger.log(f"[AGENT SYNTHESIZER] - ERROR: Failed to initialize. Error: {e}")
             raise

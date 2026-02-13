@@ -13,6 +13,7 @@ from collections import Counter
 
 from Services import DatabaseManager as DM
 from Services import FileManager as FM
+from Services import Logger
 
 router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"], dependencies=[Depends(_verify_api_key)])
 
@@ -47,7 +48,7 @@ async def save_user_input(
         # Parse preferences JSON
         try:
             preferences_data = json.loads(preferences) if isinstance(preferences, str) else preferences
-            
+
             # Handle if preferences is a list or dict
             if isinstance(preferences_data, list):
                 styles_list = preferences_data
@@ -55,7 +56,7 @@ async def save_user_input(
                 styles_list = preferences_data.get("styles", [])
             else:
                 styles_list = []
-                
+
         except json.JSONDecodeError:
             return JSONResponse(
                 status_code=400,
@@ -64,7 +65,7 @@ async def save_user_input(
                     "result": "ERROR: Invalid preferences JSON format"
                 }
             )
-        
+
         # Parse unit info JSON if provided
         unit_info_dict = None
         if unit_info:
@@ -78,7 +79,7 @@ async def save_user_input(
                         "result": "ERROR: Invalid unit_info JSON format"
                     }
                 )
-        
+
         # Upload floor plan
         original_floor_plan_name = floor_plan.filename
         name, ext = os.path.splitext(original_floor_plan_name)
@@ -90,7 +91,7 @@ async def save_user_input(
         )
         floor_plan_url = floor_plan_result["url"]
         floor_plan_file_id = floor_plan_result["file_id"]
-        
+
         # Upload segmented floor plan if provided
         segmented_floor_plan_url = None
         segmented_floor_plan_file_id = None
@@ -106,28 +107,28 @@ async def save_user_input(
             )
             segmented_floor_plan_url = segmented_result["url"]
             segmented_floor_plan_file_id = segmented_result["file_id"]
-        
+
         # Set flow to "newHomeOwner"
         DM.data["Users"][user_id]["flow"] = "newHomeOwner"
-        
+
         # Set Preferences
         DM.data["Users"][user_id]["New Home Owner"]["Preferences"]["Preferred Styles"]["styles"] = styles_list
         DM.data["Users"][user_id]["New Home Owner"]["Preferences"]["budget"] = budget if budget else None
-        
+
         # Set Uploaded Floor Plan
         DM.data["Users"][user_id]["New Home Owner"]["Uploaded Floor Plan"]["url"] = floor_plan_url
-        
+
         # Set Segmented Floor Plan
         DM.data["Users"][user_id]["New Home Owner"]["Segmented Floor Plan"]["url"] = (
             segmented_floor_plan_url if segmented_floor_plan_url else None
         )
-        
+
         # Set Unit Information
         if unit_info_dict:
             # Set unit rooms (e.g., "2-BEDROOM")
             unit_value = unit_info_dict.get("unit_rooms") if unit_info_dict.get("unit_rooms") else None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = unit_value
-            
+
             # Set unit types
             unit_types = unit_info_dict.get("unit_types", [])
             if isinstance(unit_types, list):
@@ -138,7 +139,7 @@ async def save_user_input(
                 ]
             else:
                 DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = None
-            
+
             # Set unit sizes
             unit_sizes = unit_info_dict.get("unit_sizes", [])
             if isinstance(unit_sizes, list):
@@ -163,17 +164,17 @@ async def save_user_input(
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = None
-            
+
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["balcony"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bathroom"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bedroom"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["kitchen"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["ledge"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["livingRoom"] = None
-        
+
         # Save to Firebase RTDB
         DM.save()
-        
+
         return JSONResponse(
             status_code=200,
             content={
@@ -188,12 +189,12 @@ async def save_user_input(
                 }
             }
         )
-        
+
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Error saving user input: {error_details}")
-        
+        Logger.log(f"[EXTRACTION] - Error saving user input: {error_details}")
+
         return JSONResponse(
             status_code=500,
             content={
@@ -264,7 +265,7 @@ async def room_segmentation(file: UploadFile = File(...)):
                 os.unlink(tmp_file_path)
             except:
                 pass
-        
+
         return JSONResponse(
             status_code=500,
             content={

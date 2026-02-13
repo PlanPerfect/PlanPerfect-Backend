@@ -32,6 +32,7 @@ import requests
 from Services.LLMGemini import generate_interior_design
 from Services.FileManager import FileManager
 from Services import DatabaseManager as DM
+from Services import Logger
 from middleware.auth import _verify_api_key
 import re
 
@@ -97,11 +98,10 @@ def extract_keywords(user_prompt: str) -> list:
         # Filter out empty lines
         notes = [n for n in notes if n and len(n) > 3][:6]
 
-        print(f"LLM designer notes from '{user_prompt}': {notes}")
         return notes
 
     except Exception as e:
-        print(f"Error generating designer notes with LLM: {str(e)}")
+        Logger.log(f"[IMAGE GENERATION] - Error generating designer notes with LLM: {str(e)}")
         # Fallback to simple extraction if LLM fails
         return _simple_keyword_extraction(user_prompt)
 
@@ -221,10 +221,8 @@ async def generate_image(
                 user_modifications=user_prompt
             )
         except Exception as gen_error:
-            print(f"ERROR in generate_interior_design: {str(gen_error)}")
-            print(f"Error type: {type(gen_error).__name__}")
+            Logger.log(f"[IMAGE GENERATION] - ERROR in generate_interior_design: {str(gen_error)}. Error type: {type(gen_error).__name__}. Traceback: {traceback.format_exc()}")
             import traceback
-            print(f"Traceback: {traceback.format_exc()}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Image generation failed: {str(gen_error)}"
@@ -248,8 +246,6 @@ async def generate_image(
         # Clean up temporary file
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
-
-        print(" GENERATION COMPLETE ")
 
         # Save generated image to database
         # Extract designer notes from user prompt for better storage
@@ -288,5 +284,5 @@ async def generate_image(
             except:
                 pass
 
-        print(f"Error in generate_image: {str(e)}")
+        Logger.log(f"[IMAGE GENERATION] - Error in generate_image: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

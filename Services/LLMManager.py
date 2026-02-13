@@ -349,10 +349,6 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
                         self._log_all_models_exhausted()
                         return self.FALLBACK_MESSAGE
                 elif self._is_model_unavailable_error(error_str):
-                    Logger.log(
-                        f"[LLM MANAGER] - Model unavailable {provider}/{model_name}. "
-                        f"Skipping model. Error: {str(e)}"
-                    )
                     self._model_manager.mark_model_unavailable(model_name)
                     attempts += 1
                     if attempts < max_retries:
@@ -434,21 +430,12 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
                         self._log_all_models_exhausted(is_agent=True)
                         raise Exception("All agent models are rate-limited. Please try again later.")
                 elif self._is_model_unavailable_error(error_str):
-                    Logger.log(
-                        f"[LLM MANAGER] - Agent model unavailable {provider}/{model_name}. "
-                        f"Skipping model. Error: {str(e)}"
-                    )
                     self._agent_model_manager.mark_model_unavailable(model_name)
                     attempts += 1
                     if attempts < max_retries:
                         continue
                     raise Exception("All configured agent models are unavailable. Please update model list.")
                 elif self._is_tool_use_failed_error(error_str):
-                    Logger.log(
-                        f"[LLM MANAGER] - Tool call formatting failed on "
-                        f"{provider}/{model_name}. Rotating to next agent model. Error: {str(e)}"
-                    )
-
                     attempts += 1
                     self._agent_model_manager.current_model_index = (
                         self._agent_model_manager.current_model_index + 1
