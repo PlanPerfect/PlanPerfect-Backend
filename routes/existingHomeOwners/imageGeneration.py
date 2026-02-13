@@ -29,7 +29,6 @@ import io
 import tempfile
 import os
 import requests
-from datetime import datetime
 from Services.LLMGemini import generate_interior_design
 from Services.FileManager import FileManager
 from Services import DatabaseManager as DM
@@ -47,23 +46,23 @@ class UploadFileAdapter:
 def extract_keywords(user_prompt: str) -> list:
     """
     Convert user prompt into structured designer notes using Gemini LLM.
-    
+
     Args:
         user_prompt: Raw user input (e.g., "Make the walls brighter, add more lights and decorations")
-    
+
     Returns:
         List of actionable designer notes (e.g., ["Lighten wall colour to a warm off-white", "Add ambient lighting fixtures"])
     """
     if not user_prompt or not user_prompt.strip():
         return []
-    
+
     try:
         # Import Gemini client
         from google import genai
         from google.genai import types
-        
+
         client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        
+
         # Use Gemini 2.5 Flash Lite for fast, designer note generation
         extraction_prompt = f"""You are a professional interior design consultant summarizing a client's request into concise notes for the design team.
 
@@ -88,19 +87,19 @@ def extract_keywords(user_prompt: str) -> list:
                 max_output_tokens=50
             )
         )
-        
+
         # Parse the response - split bullet points into a list
         notes_text = response.text.strip()
-        
+
         # Split by newline and clean up bullet formatting
         notes = [line.strip().lstrip('-').strip() for line in notes_text.splitlines()]
-        
+
         # Filter out empty lines
         notes = [n for n in notes if n and len(n) > 3][:6]
-        
+
         print(f"LLM designer notes from '{user_prompt}': {notes}")
         return notes
-        
+
     except Exception as e:
         print(f"Error generating designer notes with LLM: {str(e)}")
         # Fallback to simple extraction if LLM fails
@@ -110,19 +109,19 @@ def extract_keywords(user_prompt: str) -> list:
 def _simple_keyword_extraction(user_prompt: str) -> list:
     """
     Fallback simple keyword extraction if LLM fails.
-    
+
     Args:
         user_prompt: Raw user input
-    
+
     Returns:
         List of basic extracted keywords
     """
     if not user_prompt or not user_prompt.strip():
         return []
-    
+
     # Convert to lowercase
     text = user_prompt.lower()
-    
+
     # Remove common stop words
     stop_words = {
         'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -132,13 +131,13 @@ def _simple_keyword_extraction(user_prompt: str) -> list:
         'add', 'more', 'some', 'any', 'it', 'this', 'that', 'these', 'those',
         'look', 'less', 'get', 'want', 'need'
     }
-    
+
     # Extract words (alphanumeric only)
     words = re.findall(r'\b[a-z]+\b', text)
-    
+
     # Filter out stop words and keep meaningful keywords
     keywords = [word for word in words if word not in stop_words and len(word) > 2]
-    
+
     # Remove duplicates while preserving order
     seen = set()
     unique_keywords = []
@@ -146,7 +145,7 @@ def _simple_keyword_extraction(user_prompt: str) -> list:
         if keyword not in seen:
             seen.add(keyword)
             unique_keywords.append(keyword)
-    
+
     # Limit to top 10 keywords
     return unique_keywords[:10]
 
@@ -179,30 +178,30 @@ async def generate_image(
             user_id = getattr(request.state, 'user_id', None)
             if not user_id:
                 user_id = request.headers.get('X-User-ID')
-        
+
         if not user_id:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="User ID is required"
             )
-        
+
         # Fetch image info from Style Analysis node
         analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
         analysis_data = DM.peek(analysis_path)
-        
+
         if not analysis_data:
             raise HTTPException(
                 status_code=404,
                 detail="No style analysis found. Please complete style analysis first."
             )
-        
+
         image_url = analysis_data.get('image_url')
         if not image_url:
             raise HTTPException(
                 status_code=404,
                 detail="Image URL not found in style analysis data."
             )
-        
+
         # Download image from Cloudinary
         response = requests.get(image_url)
         response.raise_for_status()
@@ -245,7 +244,7 @@ async def generate_image(
             file=file_adapter,
             subfolder="Generated Designs"
         )
-        
+
         # Clean up temporary file
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
@@ -255,15 +254,15 @@ async def generate_image(
         # Save generated image to database
         # Extract designer notes from user prompt for better storage
         designer_notes = extract_keywords(user_prompt) if user_prompt else []
-        
+
         generation_data = {
             "image_url": cloudinary_result["url"],
             "file_id": cloudinary_result["file_id"],
             "filename": cloudinary_result["filename"],
             "styles": styles,
-            "designer_notes": designer_notes, 
+            "designer_notes": designer_notes,
         }
-        
+
         # Path: Users/{userId}/Existing Homeowner/Image Generation
         generation_path = ["Users", user_id, "Existing Homeowner", "Image Generation"]
         DM.set_value(generation_path, generation_data)
