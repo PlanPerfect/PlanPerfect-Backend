@@ -102,7 +102,7 @@ async def save_user_input(
 
             segmented_result = FM.store_file(
                 file=segmented_floor_plan,
-                subfolder=f"    newHomeOwners/{user_id}"
+                subfolder=f"newHomeOwners/{user_id}"
             )
             segmented_floor_plan_url = segmented_result["url"]
             segmented_floor_plan_file_id = segmented_result["file_id"]
@@ -128,16 +128,28 @@ async def save_user_input(
             unit_value = unit_info_dict.get("unit_rooms") if unit_info_dict.get("unit_rooms") else None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = unit_value
             
-            # Set unit types (take first one if multiple)
+            # Set unit types
             unit_types = unit_info_dict.get("unit_types", [])
-            unit_type_value = unit_types[0] if unit_types and len(unit_types) > 0 else None
-            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = unit_type_value
+            if isinstance(unit_types, list):
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = unit_types
+            elif isinstance(unit_types, str):
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = [
+                    t.strip() for t in unit_types.split(",") if t.strip()
+                ]
+            else:
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = None
             
-            # Set unit sizes (take first one if multiple)
+            # Set unit sizes
             unit_sizes = unit_info_dict.get("unit_sizes", [])
-            unit_size_value = unit_sizes[0] if unit_sizes and len(unit_sizes) > 0 else None
-            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = unit_size_value
-            
+            if isinstance(unit_sizes, list):
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = unit_sizes
+            elif isinstance(unit_sizes, str):
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = [
+                    s.strip() for s in unit_sizes.split(",") if s.strip()
+                ]
+            else:
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = None
+
             # Set room counts
             room_counts = unit_info_dict.get("room_counts", {})
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["balcony"] = room_counts.get("BALCONY", 0)
