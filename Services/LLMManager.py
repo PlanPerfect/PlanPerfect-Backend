@@ -325,7 +325,6 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
                     assistant_response = self._call_gemini(model_name, prompt, temperature, max_tokens)
 
                 self._log_success(model_name, provider)
-                self._log(model=model_name, provider=provider, prompt=prompt, response=assistant_response)
 
                 return assistant_response
 
@@ -711,16 +710,6 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
                 log_file.write("No reset times or cooldowns known. Fallback wait 60s\n")
                 log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 log_file.write(f"------------------------------------------------------------\n\n")
-
-    def _log(self, model: str, provider: str, prompt: str, response: str): # logging call
-        with open("rag.log", "a", encoding="utf-8") as log_file:
-                log_file.write(f"---\n")
-                log_file.write(f"Provider: {provider}\n")
-                log_file.write(f"Chat Model: {model}\n")
-                log_file.write(f"RAG Output:\n{prompt}\n")
-                log_file.write(f"\nResponse:\n{response}\n")
-                log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                log_file.write(f"---\n\n")
 
     def get_current_model(self) -> str:
         if not self._initialized:
