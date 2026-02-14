@@ -145,7 +145,6 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
     ]
 
     AGENT_MODELS = [
-        {"name": "moonshotai/kimi-k2-instruct-0905", "provider": "groq"},                       # 60 RPM, 1K RPD, 10K TPM, 300K TPD
         {"name": "llama-3.3-70b-versatile", "provider": "groq"},                                # 30 RPM, 1K RPD, 12K TPM, 100K TPD
         {"name": "meta-llama/llama-4-scout-17b-16e-instruct", "provider": "groq"},              # 30 RPM, 1K RPD, 30K TPM, 500K TPD
         {"name": "meta-llama/llama-4-maverick-17b-128e-instruct", "provider": "groq"},          # 30 RPM, 1K RPD, 6K TPM, 500K TPD
