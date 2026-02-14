@@ -259,9 +259,6 @@ class AgentSynthesizerClass:
 
         if cleared_count > 0:
             DM.save()
-            Logger.log(
-                f"[AGENT SYNTHESIZER] - INFO: Cleared Agent state for {cleared_count} user(s) during initialization."
-            )
 
     def register_file(
         self,

@@ -277,6 +277,24 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Console playground for testing AgentSynthesizer + ServiceOrchestra."
     )
     parser.add_argument(
+        "--query",
+        help="Run a single query and exit.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        "--max_iterations",
+        type=int,
+        default=int(os.getenv("PLAYGROUND_MAX_ITERATIONS", "10")),
+        help="Maximum ReAct loop iterations per query.",
+    )
+    parser.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        metavar="FILE_ID=PATH",
+        help="Pre-register a file before running (can be repeated).",
+    )
+    parser.add_argument(
         "--user-id",
         default=os.getenv("PLAYGROUND_USER_ID", "playground-user"),
         help="User ID used for session tracking in Firebase.",
