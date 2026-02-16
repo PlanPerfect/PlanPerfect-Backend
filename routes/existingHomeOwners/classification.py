@@ -22,7 +22,9 @@ from Services.FileManager import FileManager
 from Services import DatabaseManager as DM
 from Services import Logger
 from datetime import datetime
+import traceback
 import tempfile
+import json
 import os
 
 router = APIRouter(prefix="/existingHomeOwners/styleClassification", tags=["Existing Home Owners Style Classification"], dependencies=[Depends(_verify_api_key)])
@@ -55,6 +57,15 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
                         status_code=400,
                         content={
                             "error": "UERROR: One or more required fields are invalid / missing."
+                        }
+                    )
+
+                user = DM.peek(["Users", user_id])
+                if user is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "error": "UERROR: Please login again."
                         }
                     )
 
@@ -136,13 +147,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             except:
                 pass
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to classify room style. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 
 # Save Preferences endpoint
@@ -170,21 +175,29 @@ async def save_preferences(
         JSONResponse: Success confirmation with timestamp
     """
     try:
-        # Parse JSON strings from form data
-        import json
+        if not user_id or not user_id.strip():
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: Please login again."
+                }
+            )
 
         try:
             preferences_dict = json.loads(preferences) if isinstance(preferences, str) else preferences
             selected_styles_list = json.loads(selected_styles) if isinstance(selected_styles, str) else selected_styles
             analysis_dict = json.loads(analysis_results) if isinstance(analysis_results, str) else analysis_results
         except json.JSONDecodeError as e:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "result": f"ERROR: Invalid JSON format - {str(e)}"
-                }
-            )
+            return JSONResponse(status_code=400, content={ "error": str(e) })
 
         # Prepare data for database
         timestamp = datetime.utcnow().isoformat()
@@ -236,17 +249,10 @@ async def save_preferences(
         )
 
     except Exception as e:
-        import traceback
         error_details = traceback.format_exc()
         Logger.log(f"[CLASSIFICATION] - Error saving preferences: {error_details}")
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to save preferences. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 
 # Get Preferences endpoint
@@ -297,14 +303,7 @@ async def get_preferences(user_id: str):
         )
 
     except Exception as e:
-        import traceback
         error_details = traceback.format_exc()
         Logger.log(f"[CLASSIFICATION] - Error retrieving preferences: {error_details}")
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to retrieve preferences. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
