@@ -22,12 +22,35 @@ from Services.FileManager import FileManager
 from Services import DatabaseManager as DM
 from Services import Logger
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 import traceback
 import tempfile
+import asyncio
+import httpx
 import json
 import os
 
 router = APIRouter(prefix="/existingHomeOwners/styleClassification", tags=["Existing Home Owners Style Classification"], dependencies=[Depends(_verify_api_key)])
+
+executor = ThreadPoolExecutor(max_workers=8)
+
+def run_style_classification(file_path: str):
+    client = Client(
+        "jiaxinnnnn/Interior-Style-Classification-Deployment",
+        httpx_kwargs={
+            "timeout": httpx.Timeout(
+                timeout=300.0,
+                connect=60.0,
+                read=240.0,
+                write=60.0
+            )
+        }
+    )
+
+    return client.predict(
+        handle_file(file_path),
+        api_name="/predict"
+    )
 
 # Style classification endpoint
 @router.post("/styleAnalysis")
@@ -97,12 +120,12 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
 
-        # Calls Hugging Face model for inference
-        client = Client("jiaxinnnnn/Interior-Style-Classification-Deployment")
-
-        result = client.predict(
-            handle_file(tmp_file_path),
-            api_name="/predict"
+        # Calls Hugging Face model for inference via thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            executor,
+            run_style_classification,
+            tmp_file_path
         )
 
         # Parse model output
@@ -138,6 +161,20 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             }
         )
 
+
+    except asyncio.TimeoutError:
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
+                os.unlink(tmp_file_path)
+            except:
+                pass
+
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": "ERROR: Service timeout. Please try again with a smaller image."
+            }
+        )
 
     except Exception as e:
         # Error handling and cleanup
@@ -288,7 +325,7 @@ async def get_preferences(user_id: str):
                     "error": "UERROR: Please login again."
                 }
             )
-        
+
         # Path: Users/{userId}/Existing Homeowner/Preferences
         path = ["Users", user_id, "Existing Homeowner", "Preferences"]
 
