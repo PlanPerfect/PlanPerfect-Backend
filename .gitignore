@@ -8,7 +8,6 @@ firebaseServiceAccountKey.json
 
 # Ignore system files
 app.log
-rag.log
 rate_limit.log
 static/predictions
 agent_images

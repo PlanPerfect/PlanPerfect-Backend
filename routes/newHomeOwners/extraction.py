@@ -3,18 +3,43 @@ from fastapi import APIRouter, File, UploadFile, Depends, Form
 from fastapi.responses import JSONResponse
 from gradio_client import Client, handle_file
 from middleware.auth import _verify_api_key
+from concurrent.futures import ThreadPoolExecutor
 import cv2
 import re
 import tempfile
 import os
 import base64
 import json
+import traceback
+import asyncio
+import httpx
 from collections import Counter
 
 from Services import DatabaseManager as DM
 from Services import FileManager as FM
+from Services import Logger
 
 router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"], dependencies=[Depends(_verify_api_key)])
+
+executor = ThreadPoolExecutor(max_workers=8)
+
+def run_room_segmentation(file_path: str):
+    client = Client(
+        "https://tallmanager267-sg-room-segmentation.hf.space/",
+        httpx_kwargs={
+            "timeout": httpx.Timeout(
+                timeout=300.0,
+                connect=60.0,
+                read=240.0,
+                write=60.0
+            )
+        }
+    )
+
+    return client.predict(
+        pil_img=handle_file(file_path),
+        api_name="/predict"
+    )
 
 # Lazy load OCR model only when needed
 _ocr_model = None
@@ -42,12 +67,31 @@ async def save_user_input(
     Stores floor plan and segmented floor plan images, along with preferences, budget, and unit information.
     """
     try:
+        if not user_id or not user_id.strip():
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "result": "ERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "result": "ERROR: Please login again."
+                }
+            )
+
         # Generate unique filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Parse preferences JSON
         try:
             preferences_data = json.loads(preferences) if isinstance(preferences, str) else preferences
-            
+
             # Handle if preferences is a list or dict
             if isinstance(preferences_data, list):
                 styles_list = preferences_data
@@ -55,30 +99,18 @@ async def save_user_input(
                 styles_list = preferences_data.get("styles", [])
             else:
                 styles_list = []
-                
+
         except json.JSONDecodeError:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "result": "ERROR: Invalid preferences JSON format"
-                }
-            )
-        
+            return JSONResponse(status_code=400, content={ "error": str(e) })
+
         # Parse unit info JSON if provided
         unit_info_dict = None
         if unit_info:
             try:
                 unit_info_dict = json.loads(unit_info) if isinstance(unit_info, str) else unit_info
             except json.JSONDecodeError:
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "success": False,
-                        "result": "ERROR: Invalid unit_info JSON format"
-                    }
-                )
-        
+                return JSONResponse(status_code=400, content={ "error": str(e) })
+
         # Upload floor plan
         original_floor_plan_name = floor_plan.filename
         name, ext = os.path.splitext(original_floor_plan_name)
@@ -90,7 +122,7 @@ async def save_user_input(
         )
         floor_plan_url = floor_plan_result["url"]
         floor_plan_file_id = floor_plan_result["file_id"]
-        
+
         # Upload segmented floor plan if provided
         segmented_floor_plan_url = None
         segmented_floor_plan_file_id = None
@@ -102,42 +134,54 @@ async def save_user_input(
 
             segmented_result = FM.store_file(
                 file=segmented_floor_plan,
-                subfolder=f"    newHomeOwners/{user_id}"
+                subfolder=f"newHomeOwners/{user_id}"
             )
             segmented_floor_plan_url = segmented_result["url"]
             segmented_floor_plan_file_id = segmented_result["file_id"]
-        
+
         # Set flow to "newHomeOwner"
         DM.data["Users"][user_id]["flow"] = "newHomeOwner"
-        
+
         # Set Preferences
         DM.data["Users"][user_id]["New Home Owner"]["Preferences"]["Preferred Styles"]["styles"] = styles_list
         DM.data["Users"][user_id]["New Home Owner"]["Preferences"]["budget"] = budget if budget else None
-        
+
         # Set Uploaded Floor Plan
         DM.data["Users"][user_id]["New Home Owner"]["Uploaded Floor Plan"]["url"] = floor_plan_url
-        
+
         # Set Segmented Floor Plan
         DM.data["Users"][user_id]["New Home Owner"]["Segmented Floor Plan"]["url"] = (
             segmented_floor_plan_url if segmented_floor_plan_url else None
         )
-        
+
         # Set Unit Information
         if unit_info_dict:
             # Set unit rooms (e.g., "2-BEDROOM")
             unit_value = unit_info_dict.get("unit_rooms") if unit_info_dict.get("unit_rooms") else None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = unit_value
-            
-            # Set unit types (take first one if multiple)
+
+            # Set unit types
             unit_types = unit_info_dict.get("unit_types", [])
-            unit_type_value = unit_types[0] if unit_types and len(unit_types) > 0 else None
-            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = unit_type_value
-            
-            # Set unit sizes (take first one if multiple)
+            if isinstance(unit_types, list):
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = unit_types
+            elif isinstance(unit_types, str):
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = [
+                    t.strip() for t in unit_types.split(",") if t.strip()
+                ]
+            else:
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = None
+
+            # Set unit sizes
             unit_sizes = unit_info_dict.get("unit_sizes", [])
-            unit_size_value = unit_sizes[0] if unit_sizes and len(unit_sizes) > 0 else None
-            DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = unit_size_value
-            
+            if isinstance(unit_sizes, list):
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = unit_sizes
+            elif isinstance(unit_sizes, str):
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = [
+                    s.strip() for s in unit_sizes.split(",") if s.strip()
+                ]
+            else:
+                DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = None
+
             # Set room counts
             room_counts = unit_info_dict.get("room_counts", {})
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["balcony"] = room_counts.get("BALCONY", 0)
@@ -151,17 +195,17 @@ async def save_user_input(
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unit"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitType"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["unitSize"] = None
-            
+
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["balcony"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bathroom"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["bedroom"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["kitchen"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["ledge"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["livingRoom"] = None
-        
+
         # Save to Firebase RTDB
         DM.save()
-        
+
         return JSONResponse(
             status_code=200,
             content={
@@ -176,19 +220,12 @@ async def save_user_input(
                 }
             }
         )
-        
+
     except Exception as e:
-        import traceback
         error_details = traceback.format_exc()
-        print(f"Error saving user input: {error_details}")
-        
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to save user input. Error: {str(e)}"
-            }
-        )
+        Logger.log(f"[EXTRACTION] - Error saving user input: {error_details}")
+
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 # Endpoint for room segmentation
 @router.post("/roomSegmentation")
@@ -205,13 +242,12 @@ async def room_segmentation(file: UploadFile = File(...)):
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
 
-        # Connect to Hugging Face API
-        client = Client("https://tallmanager267-sg-room-segmentation.hf.space/")
-
-        # Perform room segmentation
-        result = client.predict(
-            pil_img=handle_file(tmp_file_path),
-            api_name="/predict"
+        # Perform room segmentation via thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            executor,
+            run_room_segmentation,
+            tmp_file_path
         )
 
         #handle result
@@ -245,6 +281,20 @@ async def room_segmentation(file: UploadFile = File(...)):
             }
         )
 
+    except asyncio.TimeoutError:
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
+                os.unlink(tmp_file_path)
+            except:
+                pass
+
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": "ERROR: Service timeout. Please try again with a smaller image."
+            }
+        )
+
     except Exception as e:
         # Clean up temporary file if it exists before returning error
         if tmp_file_path and os.path.exists(tmp_file_path):
@@ -252,14 +302,8 @@ async def room_segmentation(file: UploadFile = File(...)):
                 os.unlink(tmp_file_path)
             except:
                 pass
-        
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to perform room segmentation. Error: {str(e)}"
-            }
-        )
+
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 # Endpoint for unit information extraction
 @router.post("/unitInformationExtraction")
@@ -307,13 +351,7 @@ async def unit_information_extraction(file: UploadFile = File(...)):
             except:
                 pass
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to extract unit information. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 
 def process_floorplan_image(img_path):

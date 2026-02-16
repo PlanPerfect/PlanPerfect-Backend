@@ -2,10 +2,8 @@ from typing import Optional, Dict, List, Any
 import uuid
 import json
 import inspect
-from io import BytesIO
+import re
 from datetime import datetime
-import numpy as np
-from PIL import Image
 from Services import Logger
 from Services import DatabaseManager as DM
 from Services import ServiceOrchestra as SO
@@ -215,6 +213,14 @@ class AgentSynthesizerClass:
                             "items": {"type": "string"},
                             "description": "List of furniture items to place on the floor plan (e.g., ['sofa', 'dining table', 'bed'])",
                         },
+                        "furniture_counts": {
+                            "type": "object",
+                            "description": "Optional quantities per furniture item. Keys are furniture names and values are counts (default count is 1 when omitted). Example: {'chair': 4, 'sofa': 1}",
+                            "additionalProperties": {
+                                "type": "integer",
+                                "minimum": 1,
+                            },
+                        },
                     },
                     "required": ["file_id", "furniture_list"],
                 },
@@ -237,13 +243,30 @@ class AgentSynthesizerClass:
             if not LLMManager._initialized:
                 raise RuntimeError("LLMManager must be initialized before AgentSynthesizer")
 
+            self._clear_all_pending_file_actions()
             self._clear_all_user_agents()
             self._initialized = True
-            print("AGENT SYNTHESIZER INITIALIZED. AGENTIC SYSTEM READY.\n")
-            print(f"Using agent model: {LLMManager.get_current_agent_model()}\n")
+            print(f"AGENT SYNTHESIZER INITIALIZED. Model: \033[94m{LLMManager.get_current_agent_model()}\033[0m\n")
         except Exception as e:
             Logger.log(f"[AGENT SYNTHESIZER] - ERROR: Failed to initialize. Error: {e}")
             raise
+
+    def _clear_all_pending_file_actions(self) -> None:
+        users = DM.data.get("Users")
+        if not isinstance(users, dict):
+            return
+
+        cleared_count = 0
+        for user_data in users.values():
+            if not isinstance(user_data, dict):
+                continue
+            agent_data = user_data.get("Agent")
+            if isinstance(agent_data, dict) and agent_data.get("Pending File Action"):
+                agent_data["Pending File Action"] = None
+                cleared_count += 1
+
+        if cleared_count > 0:
+            DM.save()
 
     def _clear_all_user_agents(self) -> None:
         users = DM.data.get("Users")
@@ -260,9 +283,6 @@ class AgentSynthesizerClass:
 
         if cleared_count > 0:
             DM.save()
-            Logger.log(
-                f"[AGENT SYNTHESIZER] - INFO: Cleared Agent state for {cleared_count} user(s) during initialization."
-            )
 
     def register_file(
         self,
@@ -274,6 +294,10 @@ class AgentSynthesizerClass:
         self._file_registry[file_id] = file_obj
 
         if user_id:
+            self._clear_stale_pending_file_action_for_new_upload(
+                user_id=user_id,
+                new_file_id=file_id,
+            )
             self._upsert_session_file(
                 user_id=user_id,
                 file_id=file_id,
@@ -347,6 +371,7 @@ class AgentSynthesizerClass:
         )
         current_session_id = session_data["session_id"]
         history_steps = session_data.get("steps", [])[-self.HISTORY_LIMIT:]
+        current_request_file_ids: List[str] = []
 
         if uploaded_files:
             self._ingest_uploaded_files(
@@ -354,6 +379,14 @@ class AgentSynthesizerClass:
                 uploaded_files=uploaded_files,
                 source="request",
             )
+            for item in uploaded_files:
+                if not isinstance(item, dict):
+                    continue
+                file_id = item.get("file_id")
+                if isinstance(file_id, str) and file_id.strip():
+                    current_request_file_ids.append(file_id.strip())
+            if current_request_file_ids:
+                current_request_file_ids = list(dict.fromkeys(current_request_file_ids))
 
         self._update_session_status(
             user_id=user_id,
@@ -381,6 +414,7 @@ class AgentSynthesizerClass:
                         "response",
                         "Please let me know if you'd like me to continue with that file, or use a different one.",
                     )
+                    waiting_message = self._sanitize_user_response(waiting_message)
                     self._add_step(
                         user_id=user_id,
                         step_type="response",
@@ -403,6 +437,7 @@ class AgentSynthesizerClass:
                         "response",
                         "Sure. Please upload the file you'd like me to use instead.",
                     )
+                    upload_message = self._sanitize_user_response(upload_message)
                     self._add_step(
                         user_id=user_id,
                         step_type="response",
@@ -443,6 +478,7 @@ class AgentSynthesizerClass:
                 )
 
             if scope_decision and not scope_decision.get("allowed", True):
+                out_of_scope_response = self._sanitize_user_response(self.OUT_OF_SCOPE_MESSAGE)
                 self._add_step(
                     user_id=user_id,
                     step_type="scope_blocked",
@@ -455,7 +491,7 @@ class AgentSynthesizerClass:
                 self._add_step(
                     user_id=user_id,
                     step_type="response",
-                    content=self.OUT_OF_SCOPE_MESSAGE,
+                    content=out_of_scope_response,
                 )
                 self._update_session_status(
                     user_id=user_id,
@@ -466,7 +502,7 @@ class AgentSynthesizerClass:
                 return {
                     "session_id": current_session_id,
                     "status": "completed",
-                    "response": self.OUT_OF_SCOPE_MESSAGE,
+                    "response": out_of_scope_response,
                 }
 
             messages = self._build_messages(query=effective_query, history_steps=history_steps)
@@ -506,14 +542,16 @@ class AgentSynthesizerClass:
                         "session_id": current_session_id,
                         "status": "error",
                         "error": error_msg,
-                        "response": self.USER_ERROR_MESSAGE,
+                        "response": self._sanitize_user_response(self.USER_ERROR_MESSAGE),
                     }
 
                 tool_calls = response.get("tool_calls", [])
                 text_response = response.get("content")
 
                 if not tool_calls:
-                    final_response = text_response or "I've completed processing your request."
+                    final_response = self._sanitize_user_response(
+                        text_response or "I've completed processing your request."
+                    )
 
                     self._add_step(
                         user_id=user_id,
@@ -554,6 +592,7 @@ class AgentSynthesizerClass:
                         tool_name=function_name,
                         tool_args=function_args,
                         forced_file_context=forced_file_context,
+                        current_request_file_ids=current_request_file_ids,
                     )
                     resolution_status = file_resolution.get("status")
 
@@ -567,6 +606,7 @@ class AgentSynthesizerClass:
                                 "I need a file before I can continue. "
                                 "Please upload one and let me know when you're ready."
                             )
+                        response_message = self._sanitize_user_response(response_message)
 
                         self._add_step(
                             user_id=user_id,
@@ -674,7 +714,9 @@ class AgentSynthesizerClass:
             return {
                 "session_id": current_session_id,
                 "status": "completed",
-                "response": "I've processed your request through multiple steps. The results are available in Agent Outputs.",
+                "response": self._sanitize_user_response(
+                    "I've processed your request through multiple steps. The results are available in Agent Outputs."
+                ),
                 "iterations": max_iterations,
                 "note": "Maximum iterations reached",
             }
@@ -693,7 +735,7 @@ class AgentSynthesizerClass:
                 "session_id": current_session_id,
                 "status": "error",
                 "error": error_msg,
-                "response": self.USER_ERROR_MESSAGE,
+                "response": self._sanitize_user_response(self.USER_ERROR_MESSAGE),
             }
 
     def _agent_path(self, user_id: str) -> List[str]:
@@ -1222,7 +1264,7 @@ class AgentSynthesizerClass:
                 "message": f"I can't access that file in this session. Please upload {needed}.",
             }
 
-        if tool_name in {"classify_style", "detect_furniture", "generate_floor_plan"}:
+        if tool_name in {"classify_style", "detect_furniture", "generate_floor_plan", "extract_colors"}:
             file_info = self._session_file_info(user_id=user_id, file_id=cleaned_file_id)
             analysis = await self._analyze_uploaded_file_for_tool(
                 tool_name=tool_name,
@@ -1336,6 +1378,19 @@ class AgentSynthesizerClass:
         agent_data["Pending File Action"] = normalized
         return normalized
 
+    def _clear_stale_pending_file_action_for_new_upload(self, user_id: str, new_file_id: str) -> None:
+        if not isinstance(new_file_id, str) or not new_file_id.strip():
+            return
+
+        pending_action = self._get_pending_file_action(user_id=user_id)
+        if not pending_action:
+            return
+
+        pending_file_id = str(pending_action.get("file_id") or "").strip()
+        cleaned_new_file_id = new_file_id.strip()
+        if pending_file_id and pending_file_id != cleaned_new_file_id:
+            self._clear_pending_file_action(user_id=user_id)
+
     def _ingest_uploaded_files(
         self,
         user_id: str,
@@ -1362,6 +1417,10 @@ class AgentSynthesizerClass:
                     source=source,
                 )
             else:
+                self._clear_stale_pending_file_action_for_new_upload(
+                    user_id=user_id,
+                    new_file_id=file_id.strip(),
+                )
                 self._upsert_session_file(
                     user_id=user_id,
                     file_id=file_id.strip(),
@@ -1459,7 +1518,7 @@ class AgentSynthesizerClass:
             needed = pending_action.get("required_file_description") or "the required file"
             return {
                 "status": "needs_file_upload",
-                "response": (
+                "response": self._sanitize_user_response(
                     "Sure! Please upload the file you'd like me to use instead. "
                     f"I need {needed} before I can continue."
                 ),
@@ -1468,7 +1527,7 @@ class AgentSynthesizerClass:
         file_desc = pending_action.get("file_description") or "that uploaded file"
         return {
             "status": "waiting_for_confirmation",
-            "response": (
+            "response": self._sanitize_user_response(
                 f"I can continue with {file_desc}. "
                 "Let me know if you'd like me to proceed with it, or if you want to use a different file."
             ),
@@ -1495,6 +1554,25 @@ class AgentSynthesizerClass:
 
         return cleaned_file_id
 
+    def _strip_links_from_text(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        cleaned = re.sub(
+            r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)",
+            r"\1",
+            text,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"(?:https?://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
+        return cleaned
+
+    def _sanitize_user_response(self, text: Any) -> str:
+        value = str(text or "")
+        without_links = self._strip_links_from_text(value)
+        compact = re.sub(r"\s{2,}", " ", without_links).strip()
+        return compact or "Done."
+
     def _build_direct_tool_response(
         self,
         user_id: str,
@@ -1502,10 +1580,63 @@ class AgentSynthesizerClass:
         tool_args: Dict[str, Any],
         result: Any,
     ) -> str:
+        response_text = "Done."
+
+        def _furniture_summary() -> str:
+            normalized: List[str] = []
+            entries = None
+            if isinstance(result, dict):
+                entries = result.get("furniture_placed")
+
+            if isinstance(entries, dict):
+                entries = [
+                    {"name": key, "count": value}
+                    for key, value in entries.items()
+                ]
+
+            if isinstance(entries, list) and entries:
+                for item in entries:
+                    if isinstance(item, dict):
+                        name = str(item.get("name") or "").strip()
+                        count_value = item.get("count", 1)
+                    else:
+                        name = str(item).strip()
+                        count_value = 1
+
+                    if not name:
+                        continue
+                    try:
+                        count = int(count_value)
+                    except Exception:
+                        count = 1
+                    count = max(1, count)
+                    normalized.append(f"{name} x{count}" if count > 1 else name)
+                if normalized:
+                    return ", ".join(normalized)
+
+            raw_furniture = tool_args.get("furniture_list", [])
+            raw_counts = tool_args.get("furniture_counts", {})
+            if isinstance(raw_furniture, list):
+                for item in raw_furniture:
+                    name = str(item).strip()
+                    if not name:
+                        continue
+                    count = 1
+                    if isinstance(raw_counts, dict):
+                        try:
+                            count = int(raw_counts.get(name, 1))
+                        except Exception:
+                            count = 1
+                    count = max(1, count)
+                    normalized.append(f"{name} x{count}" if count > 1 else name)
+
+            return ", ".join(normalized)
+
         if isinstance(result, dict):
             error_message = result.get("message")
             if isinstance(error_message, str) and error_message.strip() and result.get("error"):
-                return error_message.strip()
+                response_text = error_message.strip()
+                return self._sanitize_user_response(response_text)
 
         if tool_name == "classify_style":
             style = "Unknown"
@@ -1525,9 +1656,10 @@ class AgentSynthesizerClass:
                     confidence_text = f" ({confidence_value:.0f}% confidence)"
 
             source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-            return (
+            response_text = (
                 f"I used `{source_name}` and detected the style as **{style}**{confidence_text}."
             )
+            return self._sanitize_user_response(response_text)
 
         if tool_name == "detect_furniture":
             detected_furniture = self._extract_furniture_objects(result=result)
@@ -1542,12 +1674,14 @@ class AgentSynthesizerClass:
             if detected_furniture:
                 detected_names = ", ".join(item.get("name", "") for item in detected_furniture if item.get("name"))
                 if detected_names:
-                    return (
+                    response_text = (
                         f"I used `{source_name}` and detected {total_items} furniture item(s): {detected_names}."
                     )
-            return (
+                    return self._sanitize_user_response(response_text)
+            response_text = (
                 f"I used `{source_name}` and detected {total_items} furniture item(s)."
             )
+            return self._sanitize_user_response(response_text)
 
         if tool_name == "extract_colors":
             colors: List[str] = []
@@ -1561,57 +1695,67 @@ class AgentSynthesizerClass:
             source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
             if colors:
                 color_text = ", ".join(colors[:5])
-                return f"I extracted colors from `{source_name}`: {color_text}."
-            return f"I used `{source_name}` and completed color extraction."
+                response_text = f"I extracted colors from `{source_name}`: {color_text}."
+                return self._sanitize_user_response(response_text)
+            response_text = f"I used `{source_name}` and completed color extraction."
+            return self._sanitize_user_response(response_text)
 
         if tool_name == "generate_floor_plan":
             if isinstance(result, dict):
                 floor_plan_url = result.get("floor_plan_url")
                 if isinstance(floor_plan_url, str) and floor_plan_url.strip():
-                    furniture_items = tool_args.get("furniture_list", [])
-                    furniture_text = ""
-                    if isinstance(furniture_items, list) and furniture_items:
-                        furniture_text = ", ".join(str(item) for item in furniture_items if str(item).strip())
+                    furniture_text = _furniture_summary()
                     source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
                     if furniture_text:
-                        return (
+                        response_text = (
                             f"I used `{source_name}` and generated an updated floor plan with {furniture_text}. "
-                            f"Result: {floor_plan_url.strip()}"
+                            "The result is saved in your generated floor plan outputs."
                         )
-                    return (
+                        return self._sanitize_user_response(response_text)
+                    response_text = (
                         f"I used `{source_name}` and generated the updated floor plan. "
-                        f"Result: {floor_plan_url.strip()}"
+                        "The result is saved in your generated floor plan outputs."
                     )
+                    return self._sanitize_user_response(response_text)
 
-            return "I ran the floor plan generation, but I couldn't produce a valid output."
+            response_text = "I ran the floor plan generation, but I couldn't produce a valid output."
+            return self._sanitize_user_response(response_text)
 
         if tool_name == "generate_image":
             if isinstance(result, dict):
                 image_url = result.get("url")
                 if isinstance(image_url, str) and image_url.strip():
-                    return f"I generated the image. Result: {image_url.strip()}"
-            return "I ran image generation, but couldn't produce an image URL."
+                    response_text = "I generated the image and saved it in your generated image outputs."
+                    return self._sanitize_user_response(response_text)
+            response_text = "I ran image generation, but couldn't produce a valid image output."
+            return self._sanitize_user_response(response_text)
 
         if tool_name == "get_recommendations":
             if isinstance(result, dict) and isinstance(result.get("recommendations"), list):
                 count = len(result.get("recommendations", []))
-                return f"I found {count} recommendation(s) based on your request."
-            return "I ran the recommendation search, but couldn't retrieve recommendations."
+                response_text = f"I found {count} recommendation(s) based on your request."
+                return self._sanitize_user_response(response_text)
+            response_text = "I ran the recommendation search, but couldn't retrieve recommendations."
+            return self._sanitize_user_response(response_text)
 
         if tool_name == "web_search":
             answer = self._extract_search_result(result)
             if isinstance(answer, str) and answer.strip():
-                return answer.strip()
-            return "I completed the web search."
+                response_text = answer.strip()
+                return self._sanitize_user_response(response_text)
+            response_text = "I completed the web search."
+            return self._sanitize_user_response(response_text)
 
         if isinstance(result, str) and result.strip():
-            return result.strip()
+            response_text = result.strip()
+            return self._sanitize_user_response(response_text)
         if isinstance(result, dict) and isinstance(result.get("message"), str):
             message = result.get("message", "").strip()
             if message:
-                return message
+                response_text = message
+                return self._sanitize_user_response(response_text)
 
-        return "Done."
+        return self._sanitize_user_response(response_text)
 
     async def _execute_confirmed_file_action(
         self,
@@ -1629,7 +1773,9 @@ class AgentSynthesizerClass:
             tool_args["file_id"] = file_id.strip()
 
         if not tool_name:
-            fallback_response = "I couldn't determine which action to continue. Please resend your request."
+            fallback_response = self._sanitize_user_response(
+                "I couldn't determine which action to continue. Please resend your request."
+            )
             self._add_step(user_id=user_id, step_type="response", content=fallback_response)
             self._update_session_status(
                 user_id=user_id,
@@ -1651,6 +1797,7 @@ class AgentSynthesizerClass:
                     "Sure! Please upload the file you'd like me to use instead. "
                     f"I need {needed} before I can continue."
                 )
+                upload_message = self._sanitize_user_response(upload_message)
                 self._add_step(user_id=user_id, step_type="response", content=upload_message)
                 self._update_session_status(
                     user_id=user_id,
@@ -1703,6 +1850,7 @@ class AgentSynthesizerClass:
                 tool_args=tool_args,
                 result=result,
             )
+            final_response = self._sanitize_user_response(final_response)
             self._add_step(
                 user_id=user_id,
                 step_type="response",
@@ -1740,7 +1888,7 @@ class AgentSynthesizerClass:
                 "session_id": current_session_id,
                 "status": "error",
                 "error": error_msg,
-                "response": self.USER_ERROR_MESSAGE,
+                "response": self._sanitize_user_response(self.USER_ERROR_MESSAGE),
             }
 
     async def _resolve_tool_file_requirements(
@@ -1750,11 +1898,17 @@ class AgentSynthesizerClass:
         tool_name: str,
         tool_args: Dict[str, Any],
         forced_file_context: Optional[Dict[str, Any]] = None,
+        current_request_file_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         if not self._tool_requires_file(tool_name):
             return {"status": "ready", "tool_args": tool_args}
 
         args = dict(tool_args or {})
+        current_request_file_id_set = {
+            file_id.strip()
+            for file_id in (current_request_file_ids or [])
+            if isinstance(file_id, str) and file_id.strip()
+        }
 
         if (
             isinstance(forced_file_context, dict)
@@ -1775,14 +1929,21 @@ class AgentSynthesizerClass:
         if isinstance(provided_file_id, str) and provided_file_id.strip():
             cleaned_provided_file_id = provided_file_id.strip()
             if cleaned_provided_file_id not in self._file_registry:
-                needed = self._required_file_description(tool_name)
-                return {
-                    "status": "needs_file_upload",
-                    "response": (
-                        "I can see a file ID in the tool input, but I can't access that file in this session. "
-                        f"Please upload {needed} and let me know when you're ready."
-                    ),
-                }
+                if current_request_file_id_set:
+                    cleaned_provided_file_id = None
+                else:
+                    needed = self._required_file_description(tool_name)
+                    return {
+                        "status": "needs_file_upload",
+                        "response": self._sanitize_user_response(
+                            "I can see a file ID in the tool input, but I can't access that file in this session. "
+                            f"Please upload {needed} and let me know when you're ready."
+                        ),
+                    }
+
+        if cleaned_provided_file_id and current_request_file_id_set and cleaned_provided_file_id not in current_request_file_id_set:
+            # Prefer the files uploaded with the current prompt over stale references from previous turns.
+            cleaned_provided_file_id = None
 
         session_files = self._get_session_files(user_id=user_id)
         candidates_by_id: Dict[str, Dict[str, Any]] = {}
@@ -1817,7 +1978,7 @@ class AgentSynthesizerClass:
             needed = self._required_file_description(tool_name)
             return {
                 "status": "needs_file_upload",
-                "response": (
+                "response": self._sanitize_user_response(
                     "Sure! Before we continue, I'd need you to upload "
                     f"{needed}. Let me know when you're ready."
                 ),
@@ -1880,6 +2041,58 @@ class AgentSynthesizerClass:
         ]
         suitable_files.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
 
+        if current_request_file_id_set:
+            current_request_suitable = [
+                item
+                for item in suitable_files
+                if str(item.get("file_id") or "") in current_request_file_id_set
+            ]
+            current_request_suitable.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+
+            selected_current: Optional[Dict[str, Any]] = None
+            if cleaned_provided_file_id:
+                selected_current = next(
+                    (
+                        item
+                        for item in current_request_suitable
+                        if item.get("file_id") == cleaned_provided_file_id
+                    ),
+                    None,
+                )
+            if not selected_current and current_request_suitable:
+                selected_current = current_request_suitable[0]
+
+            if selected_current:
+                selected_file_id = str(selected_current.get("file_id") or "").strip()
+                if selected_file_id:
+                    merged_args = dict(args)
+                    merged_args["file_id"] = selected_file_id
+                    self._add_step(
+                        user_id=user_id,
+                        step_type="file_selected",
+                        content={
+                            "tool": tool_name,
+                            "file_id": selected_file_id,
+                            "reason": "auto-selected from files uploaded with current prompt",
+                            "filename": str(selected_current.get("filename") or ""),
+                            "description": str(selected_current.get("description") or ""),
+                        },
+                    )
+                    DM.save()
+                    return {
+                        "status": "ready",
+                        "tool_args": merged_args,
+                    }
+
+            needed = self._required_file_description(tool_name)
+            return {
+                "status": "needs_file_upload",
+                "response": self._sanitize_user_response(
+                    "I checked the file uploaded with your message, but it doesn't look suitable for this task. "
+                    f"Please upload {needed} and try again."
+                ),
+            }
+
         selected: Optional[Dict[str, Any]] = None
         if cleaned_provided_file_id:
             selected = next(
@@ -1898,7 +2111,7 @@ class AgentSynthesizerClass:
             needed = self._required_file_description(tool_name)
             return {
                 "status": "needs_file_upload",
-                "response": (
+                "response": self._sanitize_user_response(
                     "I checked the uploaded files, but none look suitable for this task. "
                     f"Please upload {needed}, then tell me when to continue."
                 ),
@@ -1950,7 +2163,7 @@ class AgentSynthesizerClass:
 
         return {
             "status": "ask_confirmation",
-            "response": response_message,
+            "response": self._sanitize_user_response(response_message),
         }
 
     async def _analyze_uploaded_file_for_tool(
@@ -1963,12 +2176,9 @@ class AgentSynthesizerClass:
         filename = str(file_info.get("filename") or getattr(file_obj, "filename", "") or "")
         content_type = str(file_info.get("content_type") or getattr(file_obj, "content_type", "") or "")
 
-        lower_filename = filename.lower()
-        lower_content_type = content_type.lower()
-        if not lower_content_type and "." in lower_filename:
-            lower_content_type = f"image/{lower_filename.rsplit('.', 1)[-1]}"
+        mime_type = self._infer_image_mime_type(filename=filename, content_type=content_type)
 
-        if not lower_content_type.startswith("image/"):
+        if not mime_type.startswith("image/"):
             return {
                 "file_id": file_id,
                 "filename": filename or file_id,
@@ -1982,96 +2192,86 @@ class AgentSynthesizerClass:
             if not file_bytes:
                 raise ValueError("Empty file content")
 
-            with Image.open(BytesIO(file_bytes)) as img:
-                rgb = img.convert("RGB")
-                width, height = rgb.size
-                sample_size = (min(width, 256), min(height, 256))
-                sample = rgb.resize(sample_size)
-
-                rgb_array = np.asarray(sample, dtype=np.float32)
-                gray = np.asarray(sample.convert("L"), dtype=np.float32)
-                hsv = np.asarray(sample.convert("HSV"), dtype=np.float32)
-
-                saturation_mean = float(hsv[:, :, 1].mean())
-                bright_ratio = float((gray > 215).mean())
-                dark_ratio = float((gray < 70).mean())
-
-                grad_x = np.abs(np.diff(gray, axis=1))
-                grad_y = np.abs(np.diff(gray, axis=0))
-                edge_ratio_x = float((grad_x > 35).mean()) if grad_x.size else 0.0
-                edge_ratio_y = float((grad_y > 35).mean()) if grad_y.size else 0.0
-                edge_ratio = (edge_ratio_x + edge_ratio_y) / 2.0
-
-                sampled_pixels = rgb_array.reshape(-1, 3)[::8]
-                unique_colors = int(np.unique(sampled_pixels.astype(np.uint8), axis=0).shape[0])
-
-            floor_name_hint = any(
-                keyword in lower_filename
-                for keyword in ("floor", "plan", "layout", "blueprint", "architect", "unit")
+            required_description = self._required_file_description(tool_name)
+            analysis_prompt = (
+                "You are validating uploaded images for an interior-design assistant tool.\n"
+                "Analyze the provided image and determine if it is suitable for the specified tool.\n\n"
+                f"Tool name: {tool_name}\n"
+                f"Required file description: {required_description}\n\n"
+                "Return JSON only with exactly these keys:\n"
+                "{\n"
+                '  "predicted_type": "floor_plan|room_photo|palette_or_graphic|unclear",\n'
+                '  "suitable": true,\n'
+                '  "score": 0.0,\n'
+                '  "description": "short plain-English description"\n'
+                "}\n\n"
+                "Guidelines:\n"
+                "- generate_floor_plan: suitable only for top-down floor plan / architectural layout images.\n"
+                "- classify_style and detect_furniture: suitable only for clear interior room photos.\n"
+                "- extract_colors: suitable for images with visible colors (photos, palettes, graphics).\n"
+                "- score must be between 0.0 and 1.0.\n"
+                "- description should describe what is visually present (objects, layout, colors, style cues).\n"
+                "- do not copy/rephrase the required file description.\n"
+                "- avoid generic requirement language like 'clear interior room photo with visible furniture'.\n"
+                "- description should be concise and should not include links."
             )
-            palette_name_hint = any(
-                keyword in lower_filename for keyword in ("palette", "swatch", "color", "colour")
+            raw_analysis = LLMManager.chat_with_vision(
+                prompt=analysis_prompt,
+                image_bytes=file_bytes,
+                mime_type=mime_type,
+                temperature=0.0,
+                max_tokens=300,
             )
+            parsed_analysis = self._parse_json_object(raw_analysis)
+            if not parsed_analysis:
+                raise ValueError("Vision model did not return valid JSON.")
 
-            likely_floor_plan = (
-                (
-                    saturation_mean < 45
-                    and bright_ratio > 0.45
-                    and edge_ratio > 0.08
-                    and dark_ratio < 0.30
-                )
-                or (
-                    floor_name_hint
-                    and saturation_mean < 65
-                    and bright_ratio > 0.38
-                    and edge_ratio > 0.06
-                )
-            )
-            likely_palette = (
-                palette_name_hint
-                or (unique_colors < 70 and edge_ratio < 0.12 and saturation_mean > 18)
-            )
-            likely_photo = (
-                not likely_floor_plan
-                and not likely_palette
-                and (saturation_mean > 40 or unique_colors > 130)
-                and edge_ratio < 0.48
-            )
+            predicted_type = str(parsed_analysis.get("predicted_type") or "unclear").strip().lower()
+            if predicted_type not in {"floor_plan", "room_photo", "palette_or_graphic", "unclear"}:
+                predicted_type = "unclear"
 
-            predicted_type = "unclear"
-            description = "an image with unclear structure"
-            if likely_floor_plan:
-                predicted_type = "floor_plan"
-                description = "an image that looks like a floor plan or architectural layout"
-            elif likely_photo:
-                predicted_type = "room_photo"
-                description = "an image that looks like a room/interior photo"
-            elif likely_palette:
-                predicted_type = "palette_or_graphic"
-                description = "an image that looks like a color palette or graphic"
-
-            if tool_name == "generate_floor_plan":
-                suitable = predicted_type == "floor_plan"
-                score = 0.93 if suitable else 0.10
-            elif tool_name in {"classify_style", "detect_furniture"}:
-                suitable = predicted_type == "room_photo"
-                score = 0.90 if suitable else 0.10
-            elif tool_name == "extract_colors":
-                suitable = True
-                score = 0.95 if predicted_type == "palette_or_graphic" else 0.75
+            suitable_raw = parsed_analysis.get("suitable")
+            suitable: bool
+            if isinstance(suitable_raw, bool):
+                suitable = suitable_raw
             else:
-                suitable = False
+                suitable = str(suitable_raw).strip().lower() in {"true", "1", "yes"}
+
+            score_raw = parsed_analysis.get("score", 0.0)
+            try:
+                score = float(score_raw)
+            except Exception:
                 score = 0.0
+            score = max(0.0, min(1.0, score))
+
+            description_raw = parsed_analysis.get("description")
+            if isinstance(description_raw, str) and description_raw.strip():
+                description = description_raw.strip()
+            else:
+                description = "an image with unclear structure"
+
+            if not suitable and score > 0.7:
+                score = 0.7
+            if suitable and score < 0.5:
+                score = 0.5
 
             return {
                 "file_id": file_id,
                 "filename": filename or file_id,
-                "description": description,
+                "description": self._normalize_analysis_description(
+                    tool_name=tool_name,
+                    description=description,
+                    predicted_type=predicted_type,
+                    required_description=required_description,
+                ),
                 "predicted_type": predicted_type,
                 "suitable": suitable,
                 "score": score,
             }
-        except Exception:
+        except Exception as e:
+            Logger.log(
+                f"[AGENT SYNTHESIZER] - WARNING: Vision file analysis failed for {filename or file_id}. Error: {str(e)}"
+            )
             return {
                 "file_id": file_id,
                 "filename": filename or file_id,
@@ -2080,6 +2280,126 @@ class AgentSynthesizerClass:
                 "suitable": False,
                 "score": 0.0,
             }
+
+    def _infer_image_mime_type(self, filename: str, content_type: str) -> str:
+        lower_content_type = str(content_type or "").strip().lower()
+        if lower_content_type.startswith("image/"):
+            return lower_content_type
+
+        lower_filename = str(filename or "").strip().lower()
+        extension_to_mime = {
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "png": "image/png",
+            "webp": "image/webp",
+            "gif": "image/gif",
+            "bmp": "image/bmp",
+            "tif": "image/tiff",
+            "tiff": "image/tiff",
+            "avif": "image/avif",
+            "heic": "image/heic",
+            "heif": "image/heif",
+        }
+        if "." in lower_filename:
+            extension = lower_filename.rsplit(".", 1)[-1]
+            if extension in extension_to_mime:
+                return extension_to_mime[extension]
+            return f"image/{extension}"
+
+        return ""
+
+    def _parse_json_object(self, raw_value: Any) -> Optional[Dict[str, Any]]:
+        text = str(raw_value or "").strip()
+        if not text:
+            return None
+
+        candidates = [text]
+        start_index = text.find("{")
+        end_index = text.rfind("}")
+        if start_index >= 0 and end_index > start_index:
+            candidates.append(text[start_index : end_index + 1])
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+
+        return None
+
+    def _normalize_analysis_description(
+        self,
+        tool_name: str,
+        description: str,
+        predicted_type: str,
+        required_description: str,
+    ) -> str:
+        cleaned_description = self._strip_links_from_text(str(description or "")).strip()
+        if not cleaned_description:
+            cleaned_description = "an image with unclear structure"
+
+        lower_description = cleaned_description.lower()
+        fallback_by_tool = {
+            "classify_style": "a room scene with visible decor, furnishings, and style cues",
+            "detect_furniture": "a room scene with visible furniture pieces and layout",
+            "generate_floor_plan": "a top-down plan showing walls, room boundaries, and layout lines",
+            "extract_colors": "a colorful image with distinct tones and color regions",
+        }
+        fallback_by_type = {
+            "room_photo": "a room scene with visible furnishings and decor",
+            "floor_plan": "a top-down layout drawing with room and wall structure",
+            "palette_or_graphic": "a graphic-style image with clear color blocks and tones",
+            "unclear": "an image with unclear structure",
+        }
+        fallback_description = fallback_by_tool.get(
+            tool_name,
+            fallback_by_type.get(predicted_type, "an image with unclear structure"),
+        )
+
+        # Guard against requirement-echo phrasing.
+        required_tokens = set(re.findall(r"[a-z0-9]+", str(required_description or "").lower()))
+        description_tokens = set(re.findall(r"[a-z0-9]+", lower_description))
+        token_overlap = 0.0
+        if required_tokens:
+            token_overlap = len(required_tokens & description_tokens) / float(len(required_tokens))
+
+        banned_starts = (
+            "clear interior room photo",
+            "an interior room photo",
+            "a clear room photo",
+            "a top down floor plan",
+            "a top-down floor plan",
+            "an image with visible colors",
+            "a valid floor plan",
+            "clear interior room",
+        )
+
+        looks_like_requirement_echo = (
+            lower_description in {
+                str(required_description or "").strip().lower(),
+                f"a {str(required_description or '').strip().lower()}",
+                f"an {str(required_description or '').strip().lower()}",
+            }
+            or any(lower_description.startswith(prefix) for prefix in banned_starts)
+            or (
+                token_overlap >= 0.65
+                and len(description_tokens) <= max(8, len(required_tokens) + 3)
+            )
+        )
+
+        if looks_like_requirement_echo:
+            return self._lowercase_leading_text(fallback_description)
+
+        return self._lowercase_leading_text(cleaned_description)
+
+    def _lowercase_leading_text(self, text: str) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return value
+
+        return value[:1].lower() + value[1:]
 
     async def _read_file_bytes(self, file_obj: Any) -> bytes:
         if hasattr(file_obj, "_content") and isinstance(getattr(file_obj, "_content"), (bytes, bytearray)):
@@ -2410,6 +2730,7 @@ class AgentSynthesizerClass:
             return await SO.generate_floor_plan(
                 file=file_obj,
                 furniture_list=args["furniture_list"],
+                furniture_counts=args.get("furniture_counts"),
             )
 
         raise ValueError(f"Unknown tool: {tool_name}")

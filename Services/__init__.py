@@ -5,6 +5,7 @@ from .RAGManager import RAGManager
 from .LLMManager import LLMManager
 from .FileManager import FileManager
 from .ServiceOrchestra import ServiceOrchestra
+from .AgentSynthesizer import AgentSynthesizer
 
 __all__ = [
     "Emailer",
@@ -13,5 +14,6 @@ __all__ = [
     "RAGManager",
     "LLMManager",
     "FileManager",
-    "ServiceOrchestra"
+    "ServiceOrchestra",
+    "AgentSynthesizer",
 ]
