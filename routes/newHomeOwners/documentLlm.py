@@ -40,6 +40,23 @@ async def save_generated_pdf(
     pdf_file: UploadFile = File(...)
 ):
     try:
+        if not user_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", user_id])
+
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: Please login again."
+                }
+            )
 
         # Generate unique filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -73,8 +90,7 @@ async def save_generated_pdf(
         return JSONResponse(
             status_code=500,
             content={
-                "success": False,
-                "message": f"Failed to save PDF: {str(e)}"
+                "error": f"ERROR: Failed to save PDF. {str(e)}"
             }
         )
 
@@ -138,6 +154,16 @@ async def generate_design_document(user_id: str):
                     "error": "UERROR: One or more required fields are invalid / missing."
                 }
             )
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: Please login again."
+                }
+            )
+
         # Retrieve user data from DatabaseManager
         user_path = ["Users", user_id, "New Home Owner"]
         user_data = DM.peek(user_path)
@@ -146,8 +172,7 @@ async def generate_design_document(user_id: str):
             return JSONResponse(
                 status_code=404,
                 content={
-                    "success": False,
-                    "result": "ERROR: User data not found in database"
+                    "error": "ERROR: User data not found."
                 }
             )
 
@@ -570,7 +595,6 @@ Always be specific with measurements, costs, and actionable advice. Ensure the d
         return JSONResponse(
             status_code=500,
             content={
-                "success": False,
-                "result": f"ERROR: Failed to generate design document. Error: {str(e)}"
+                "error": f"ERROR: Failed to generate design document. {str(e)}"
             }
         )
