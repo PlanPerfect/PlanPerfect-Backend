@@ -22,7 +22,7 @@ Benefits over Stable Diffusion:
 - Can incorporate user-specific instructions dynamically
 """
 
-from fastapi import APIRouter, Form, HTTPException, Request, Depends
+from fastapi import APIRouter, Form, Request, Depends
 from fastapi.responses import JSONResponse
 from PIL import Image
 import uuid
