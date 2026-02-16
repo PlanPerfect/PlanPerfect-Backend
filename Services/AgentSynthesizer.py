@@ -246,7 +246,7 @@ class AgentSynthesizerClass:
             self._clear_all_pending_file_actions()
             self._clear_all_user_agents()
             self._initialized = True
-            print(f"AGENT SYNTHESIZER INITIALIZED. Model: {LLMManager.get_current_agent_model()}\n")
+            print(f"AGENT SYNTHESIZER INITIALIZED. Model: \033[94m{LLMManager.get_current_agent_model()}\033[0m\n")
         except Exception as e:
             Logger.log(f"[AGENT SYNTHESIZER] - ERROR: Failed to initialize. Error: {e}")
             raise
@@ -1940,7 +1940,7 @@ class AgentSynthesizerClass:
                             f"Please upload {needed} and let me know when you're ready."
                         ),
                     }
-        
+
         if cleaned_provided_file_id and current_request_file_id_set and cleaned_provided_file_id not in current_request_file_id_set:
             # Prefer the files uploaded with the current prompt over stale references from previous turns.
             cleaned_provided_file_id = None
