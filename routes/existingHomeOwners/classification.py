@@ -20,11 +20,37 @@ from gradio_client import Client, handle_file
 from middleware.auth import _verify_api_key
 from Services.FileManager import FileManager
 from Services import DatabaseManager as DM
+from Services import Logger
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+import traceback
 import tempfile
+import asyncio
+import httpx
+import json
 import os
 
 router = APIRouter(prefix="/existingHomeOwners/styleClassification", tags=["Existing Home Owners Style Classification"], dependencies=[Depends(_verify_api_key)])
+
+executor = ThreadPoolExecutor(max_workers=8)
+
+def run_style_classification(file_path: str):
+    client = Client(
+        "jiaxinnnnn/Interior-Style-Classification-Deployment",
+        httpx_kwargs={
+            "timeout": httpx.Timeout(
+                timeout=300.0,
+                connect=60.0,
+                read=240.0,
+                write=60.0
+            )
+        }
+    )
+
+    return client.predict(
+        handle_file(file_path),
+        api_name="/predict"
+    )
 
 # Style classification endpoint
 @router.post("/styleAnalysis")
@@ -57,16 +83,25 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
                         }
                     )
 
+                user = DM.peek(["Users", user_id])
+                if user is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "error": "UERROR: Please login again."
+                        }
+                    )
+
         # Generate unique filename to avoid duplicates
         # Use timestamp + user_id to ensure uniqueness
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
         original_filename = file.filename
         file_extension = os.path.splitext(original_filename)[1] if original_filename else '.png'
         unique_filename = f"room_style_{user_id}_{timestamp}{file_extension}"
-        
+
         # Temporarily modify the file's filename attribute
         file.filename = unique_filename
-        
+
         # Upload to Cloudinary first
         # Store the uploaded image in Cloudinary for permanent storage
         cloudinary_result = FileManager.store_file(
@@ -85,12 +120,12 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
 
-        # Calls Hugging Face model for inference
-        client = Client("jiaxinnnnn/Interior-Style-Classification-Deployment")
-
-        result = client.predict(
-            handle_file(tmp_file_path),
-            api_name="/predict"
+        # Calls Hugging Face model for inference via thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            executor,
+            run_style_classification,
+            tmp_file_path
         )
 
         # Parse model output
@@ -127,6 +162,20 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
         )
 
 
+    except asyncio.TimeoutError:
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
+                os.unlink(tmp_file_path)
+            except:
+                pass
+
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": "ERROR: Service timeout. Please try again with a smaller image."
+            }
+        )
+
     except Exception as e:
         # Error handling and cleanup
         if tmp_file_path and os.path.exists(tmp_file_path):
@@ -135,13 +184,7 @@ async def analyze_room_style(file: UploadFile = File(...), request: Request = No
             except:
                 pass
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to classify room style. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 
 # Save Preferences endpoint
@@ -169,21 +212,29 @@ async def save_preferences(
         JSONResponse: Success confirmation with timestamp
     """
     try:
-        # Parse JSON strings from form data
-        import json
+        if not user_id or not user_id.strip():
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: Please login again."
+                }
+            )
 
         try:
             preferences_dict = json.loads(preferences) if isinstance(preferences, str) else preferences
             selected_styles_list = json.loads(selected_styles) if isinstance(selected_styles, str) else selected_styles
             analysis_dict = json.loads(analysis_results) if isinstance(analysis_results, str) else analysis_results
         except json.JSONDecodeError as e:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "result": f"ERROR: Invalid JSON format - {str(e)}"
-                }
-            )
+            return JSONResponse(status_code=400, content={ "error": str(e) })
 
         # Prepare data for database
         timestamp = datetime.utcnow().isoformat()
@@ -195,8 +246,9 @@ async def save_preferences(
             "filename": analysis_dict.get('filename'),
             "detected_style": analysis_dict.get('detected_style')
         }
-        analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
-        DM.set_value(analysis_path, analysis_data)
+
+        DM.data["Users"][user_id]["Existing Homeowner"]["Style Analysis"] = analysis_data
+        DM.save()
 
         # Save Preferences data
         preferences_data = {
@@ -210,15 +262,9 @@ async def save_preferences(
 
         # Save preferences to Firebase Database
         # Path: Users/{userId}/Existing Homeowner/Preferences
-        preferences_path = ["Users", user_id, "Existing Homeowner", "Preferences"]
-        DM.set_value(preferences_path, preferences_data)
 
-        # Save flow at user level
-        # Path: Users/{userId}/flow
-        flow_path = ["Users", user_id, "flow"]
-        DM.set_value(flow_path, "existingHomeOwner")
-
-        # Save all changes to database
+        DM.data["Users"][user_id]["Existing Homeowner"]["Preferences"] = preferences_data
+        DM.data["Users"][user_id]["flow"] = "existingHomeOwner"
         DM.save()
 
         # Return success response
@@ -235,17 +281,10 @@ async def save_preferences(
         )
 
     except Exception as e:
-        import traceback
         error_details = traceback.format_exc()
-        print(f"Error saving preferences: {error_details}")
+        Logger.log(f"[CLASSIFICATION] - Error saving preferences: {error_details}")
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to save preferences. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 
 # Get Preferences endpoint
@@ -265,6 +304,23 @@ async def get_preferences(user_id: str):
         JSONResponse: User's preferences data including original image URL
     """
     try:
+        if not user_id or not user_id.strip():
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: Please login again."
+                }
+            )
+
         # Path: Users/{userId}/Existing Homeowner/Preferences
         path = ["Users", user_id, "Existing Homeowner", "Preferences"]
 
@@ -282,7 +338,7 @@ async def get_preferences(user_id: str):
         # Also fetch the original image URL from Style Analysis
         analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
         analysis_data = DM.peek(analysis_path)
-        
+
         # Add original image URL to the response if available
         if analysis_data and analysis_data.get('image_url'):
             preferences_data['original_image_url'] = analysis_data.get('image_url')
@@ -296,14 +352,7 @@ async def get_preferences(user_id: str):
         )
 
     except Exception as e:
-        import traceback
         error_details = traceback.format_exc()
-        print(f"Error retrieving preferences: {error_details}")
+        Logger.log(f"[CLASSIFICATION] - Error retrieving preferences: {error_details}")
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to retrieve preferences. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })

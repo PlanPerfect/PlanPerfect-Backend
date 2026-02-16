@@ -20,7 +20,6 @@ class Bootcheck:
         "SMTP_APP_PASSWORD",
         "FIREBASE_DATABASE_URL",
         "FIREBASE_CREDENTIALS_PATH",
-        "CLOUDSYNC_ENABLED",
         "VITE_FRONTEND_URL",
         "API_KEY",
         "PINECONE_API_KEY",
@@ -29,7 +28,8 @@ class Bootcheck:
         "GROQ_API_KEY",
         "RAG_DOCUMENT_PATH",
         "CLOUDINARY_URL",
-        "PEXELS_API_KEY"
+        "PEXELS_API_KEY",
+        "LINKUP_API_KEY"
     ]
 
     @staticmethod
