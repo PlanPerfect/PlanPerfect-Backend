@@ -3,6 +3,7 @@ from fastapi import APIRouter, File, UploadFile, Depends, Form
 from fastapi.responses import JSONResponse
 from gradio_client import Client, handle_file
 from middleware.auth import _verify_api_key
+from concurrent.futures import ThreadPoolExecutor
 import cv2
 import re
 import tempfile
@@ -10,6 +11,8 @@ import os
 import base64
 import json
 import traceback
+import asyncio
+import httpx
 from collections import Counter
 
 from Services import DatabaseManager as DM
@@ -17,6 +20,26 @@ from Services import FileManager as FM
 from Services import Logger
 
 router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"], dependencies=[Depends(_verify_api_key)])
+
+executor = ThreadPoolExecutor(max_workers=8)
+
+def run_room_segmentation(file_path: str):
+    client = Client(
+        "https://tallmanager267-sg-room-segmentation.hf.space/",
+        httpx_kwargs={
+            "timeout": httpx.Timeout(
+                timeout=300.0,
+                connect=60.0,
+                read=240.0,
+                write=60.0
+            )
+        }
+    )
+
+    return client.predict(
+        pil_img=handle_file(file_path),
+        api_name="/predict"
+    )
 
 # Lazy load OCR model only when needed
 _ocr_model = None
@@ -219,13 +242,12 @@ async def room_segmentation(file: UploadFile = File(...)):
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
 
-        # Connect to Hugging Face API
-        client = Client("https://tallmanager267-sg-room-segmentation.hf.space/")
-
-        # Perform room segmentation
-        result = client.predict(
-            pil_img=handle_file(tmp_file_path),
-            api_name="/predict"
+        # Perform room segmentation via thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            executor,
+            run_room_segmentation,
+            tmp_file_path
         )
 
         #handle result
@@ -256,6 +278,20 @@ async def room_segmentation(file: UploadFile = File(...)):
                     "segmented_image": data_url,
                     "message": "Room segmentation completed successfully"
                 }
+            }
+        )
+
+    except asyncio.TimeoutError:
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
+                os.unlink(tmp_file_path)
+            except:
+                pass
+
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": "ERROR: Service timeout. Please try again with a smaller image."
             }
         )
 
