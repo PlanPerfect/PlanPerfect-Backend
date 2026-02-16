@@ -23,18 +23,22 @@ Benefits over Stable Diffusion:
 """
 
 from fastapi import APIRouter, Form, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 from PIL import Image
 import uuid
 import io
 import tempfile
 import os
+import re
 import requests
+import traceback
 from Services.LLMGemini import generate_interior_design
 from Services.FileManager import FileManager
 from Services import DatabaseManager as DM
 from Services import Logger
 from middleware.auth import _verify_api_key
-import re
+from google import genai
+from google.genai import types
 
 
 class UploadFileAdapter:
@@ -58,10 +62,6 @@ def extract_keywords(user_prompt: str) -> list:
         return []
 
     try:
-        # Import Gemini client
-        from google import genai
-        from google.genai import types
-
         client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
         # Use Gemini 2.5 Flash Lite for fast, designer note generation
@@ -180,9 +180,20 @@ async def generate_image(
                 user_id = request.headers.get('X-User-ID')
 
         if not user_id:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=400,
-                detail="User ID is required"
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: Please login again."
+                }
             )
 
         # Fetch image info from Style Analysis node
@@ -190,16 +201,16 @@ async def generate_image(
         analysis_data = DM.peek(analysis_path)
 
         if not analysis_data:
-            raise HTTPException(
+            raise JSONResponse(
                 status_code=404,
-                detail="No style analysis found. Please complete style analysis first."
+                content={"error": "UERROR: Please complete style analysis first."}
             )
 
         image_url = analysis_data.get('image_url')
         if not image_url:
-            raise HTTPException(
+            raise JSONResponse(
                 status_code=404,
-                detail="Image URL not found in style analysis data."
+                content={ "error": "UERROR: Please complete style analysis first." }
             )
 
         # Download image from Cloudinary
@@ -220,12 +231,11 @@ async def generate_image(
                 styles=styles,
                 user_modifications=user_prompt
             )
-        except Exception as gen_error:
-            Logger.log(f"[IMAGE GENERATION] - ERROR in generate_interior_design: {str(gen_error)}. Error type: {type(gen_error).__name__}. Traceback: {traceback.format_exc()}")
-            import traceback
-            raise HTTPException(
+        except Exception as e:
+            Logger.log(f"[IMAGE GENERATION] - ERROR in generate_interior_design: {str(e)}. Error type: {type(e).__name__}. Traceback: {traceback.format_exc()}")
+            raise JSONResponse(
                 status_code=500,
-                detail=f"Image generation failed: {str(gen_error)}"
+                content={ "error": str(e) }
             )
 
         # Upload to Cloudinary
@@ -285,4 +295,4 @@ async def generate_image(
                 pass
 
         Logger.log(f"[IMAGE GENERATION] - Error in generate_image: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise JSONResponse(status_code=500, content={ "error": str(e) })
