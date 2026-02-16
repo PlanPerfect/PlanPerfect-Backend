@@ -41,12 +41,12 @@ async def chat_completion(request: ChatRequest):
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "UERROR: One or more required fields are invalid / missing."
+                    "error": "UERROR: Please login again."
                 }
             )
 
         if not request.query or not request.query.strip():
-            return JSONResponse(status_code=400, content={ "error": "UERROR: Query cannot be empty." })
+            return JSONResponse(status_code=400, content={ "error": "UERROR: Please send a valid message." })
 
         RAG.add_to_history(request.uid, "user", request.query)
 
@@ -83,7 +83,7 @@ async def clear_history(request: ClearHistoryRequest):
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "UERROR: One or more required fields are invalid / missing."
+                    "error": "UERROR: Please login again."
                 }
             )
 
@@ -97,7 +97,7 @@ async def get_history(uid: str):
     try:
         if not uid or not uid.strip():
             return JSONResponse(
-                status_code=404,
+                status_code=400,
                 content={
                     "error": "UERROR: One or more required fields are invalid / missing."
                 }
@@ -108,7 +108,7 @@ async def get_history(uid: str):
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "UERROR: One or more required fields are invalid / missing."
+                    "error": "UERROR: Please login again."
                 }
             )
 
