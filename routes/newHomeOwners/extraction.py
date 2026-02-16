@@ -9,6 +9,7 @@ import tempfile
 import os
 import base64
 import json
+import traceback
 from collections import Counter
 
 from Services import DatabaseManager as DM
@@ -43,6 +44,25 @@ async def save_user_input(
     Stores floor plan and segmented floor plan images, along with preferences, budget, and unit information.
     """
     try:
+        if not user_id or not user_id.strip():
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "result": "ERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "result": "ERROR: Please login again."
+                }
+            )
+
         # Generate unique filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Parse preferences JSON
@@ -58,13 +78,7 @@ async def save_user_input(
                 styles_list = []
 
         except json.JSONDecodeError:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "result": "ERROR: Invalid preferences JSON format"
-                }
-            )
+            return JSONResponse(status_code=400, content={ "error": str(e) })
 
         # Parse unit info JSON if provided
         unit_info_dict = None
@@ -72,13 +86,7 @@ async def save_user_input(
             try:
                 unit_info_dict = json.loads(unit_info) if isinstance(unit_info, str) else unit_info
             except json.JSONDecodeError:
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "success": False,
-                        "result": "ERROR: Invalid unit_info JSON format"
-                    }
-                )
+                return JSONResponse(status_code=400, content={ "error": str(e) })
 
         # Upload floor plan
         original_floor_plan_name = floor_plan.filename
@@ -191,17 +199,10 @@ async def save_user_input(
         )
 
     except Exception as e:
-        import traceback
         error_details = traceback.format_exc()
         Logger.log(f"[EXTRACTION] - Error saving user input: {error_details}")
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to save user input. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 # Endpoint for room segmentation
 @router.post("/roomSegmentation")
@@ -266,13 +267,7 @@ async def room_segmentation(file: UploadFile = File(...)):
             except:
                 pass
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to perform room segmentation. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 # Endpoint for unit information extraction
 @router.post("/unitInformationExtraction")
@@ -320,13 +315,7 @@ async def unit_information_extraction(file: UploadFile = File(...)):
             except:
                 pass
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "result": f"ERROR: Failed to extract unit information. Error: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 
 def process_floorplan_image(img_path):
