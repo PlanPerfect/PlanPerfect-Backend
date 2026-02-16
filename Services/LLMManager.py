@@ -1,11 +1,13 @@
 from typing import Optional, Dict, List, Any
 from groq import Groq
 from google import genai
+from google.genai import types
 import os
 import re
 import time
 import httpx
 import json
+import base64
 from datetime import datetime, timedelta
 from Services import Logger
 from dotenv import load_dotenv
@@ -152,9 +154,21 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
         {"name": "qwen/qwen3-32b", "provider": "groq"},                                         # 60 RPM, 1K RPD, 6K TPM, 500K TPD                             # 4K RPM, 4M TPM, UNLIMITED RPD
     ]
 
-    def __init__(self, use_agent_models: bool = False):
+    VISION_MODELS = [
+        {"name": "meta-llama/llama-4-scout-17b-16e-instruct", "provider": "groq"},
+        {"name": "meta-llama/llama-4-maverick-17b-128e-instruct", "provider": "groq"},
+        {"name": "gemini-2.5-flash", "provider": "gemini"},
+    ]
+
+    def __init__(self, use_agent_models: bool = False, use_vision_models: bool = False):
         self.use_agent_models = use_agent_models
-        self.models = self.AGENT_MODELS if use_agent_models else self.CHAT_MODELS
+        self.use_vision_models = use_vision_models
+        if use_vision_models:
+            self.models = self.VISION_MODELS
+        elif use_agent_models:
+            self.models = self.AGENT_MODELS
+        else:
+            self.models = self.CHAT_MODELS
         self.current_model_index = 0
         self.model_rate_limits: Dict[str, _RateLimitManager] = {
             model["name"]: _RateLimitManager() for model in self.models
@@ -255,6 +269,7 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             cls._instance._gemini_client = None
             cls._instance._model_manager = None
             cls._instance._agent_model_manager = None  # Separate manager for agent models
+            cls._instance._vision_model_manager = None  # Separate manager for vision analysis
         return cls._instance
 
     def initialize(self):
@@ -265,6 +280,7 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         self._gemini_client = genai.Client(api_key=GEMINI_API_KEY)
         self._model_manager = _ModelManager(use_agent_models=False)  # For regular chat
         self._agent_model_manager = _ModelManager(use_agent_models=True)  # For agent chat with tools
+        self._vision_model_manager = _ModelManager(use_vision_models=True)  # For image analysis
         self._initialized = True
 
     @staticmethod
@@ -294,6 +310,17 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             or "model_not_found" in error_str
             or "does not exist" in error_str
             or "not found" in error_str and "model" in error_str
+        )
+
+    @staticmethod
+    def _is_vision_not_supported_error(error_str: str) -> bool:
+        return (
+            "does not support image" in error_str
+            or "image_url is not supported" in error_str
+            or "multimodal is not supported" in error_str
+            or "vision is not supported" in error_str
+            or "unsupported image" in error_str
+            or "unsupported content type" in error_str
         )
 
     def chat(self, prompt: str) -> str: # main chat method with smart model switching and rate-limit handling
@@ -454,6 +481,89 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         self._log_all_models_exhausted(is_agent=True)
         raise Exception("All agent models are rate-limited. Please try again later.")
 
+    def chat_with_vision(
+        self,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str = "image/png",
+        temperature: float = 0.1,
+        max_tokens: int = 512,
+    ) -> str:
+        if not self._initialized:
+            raise RuntimeError("LLMManager not initialized. Call initialize() first.")
+
+        if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+            raise ValueError("chat_with_vision requires non-empty image bytes.")
+
+        vision_manager = self._vision_model_manager
+        if not vision_manager:
+            raise RuntimeError("Vision model manager not initialized.")
+
+        max_retries = 8
+        attempts = 0
+
+        while attempts < max_retries:
+            if vision_manager.all_models_rate_limited():
+                self._log_models_exhausted(vision_manager, "VISION MODELS")
+                raise Exception("All vision models are rate-limited. Please try again later.")
+
+            current_model = vision_manager.get_current_model()
+            model_name = current_model["name"]
+            provider = current_model["provider"]
+
+            try:
+                if provider == "groq":
+                    response_text = self._call_groq_with_vision(
+                        model_name=model_name,
+                        prompt=prompt,
+                        image_bytes=bytes(image_bytes),
+                        mime_type=mime_type,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                else:
+                    response_text = self._call_gemini_with_vision(
+                        model_name=model_name,
+                        prompt=prompt,
+                        image_bytes=bytes(image_bytes),
+                        mime_type=mime_type,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+
+                self._log_success(model_name, provider)
+                return response_text
+
+            except Exception as e:
+                error_str = str(e).lower()
+
+                if self._is_rate_limit_error(error_str):
+                    retry_after = None
+                    if hasattr(e, 'response') and hasattr(e.response, 'headers'):
+                        retry_after = e.response.headers.get('retry-after')
+
+                    vision_manager.mark_rate_limited(model_name, retry_after)
+                    self._log_rate_limit_hit(model_name, provider, str(e))
+                    attempts += 1
+                    if attempts < max_retries:
+                        time.sleep(0.5)
+                        continue
+                    self._log_models_exhausted(vision_manager, "VISION MODELS")
+                    raise Exception("All vision models are rate-limited. Please try again later.")
+
+                if self._is_model_unavailable_error(error_str) or self._is_vision_not_supported_error(error_str):
+                    vision_manager.mark_model_unavailable(model_name)
+                    attempts += 1
+                    if attempts < max_retries:
+                        continue
+                    raise Exception("All configured vision models are unavailable. Please update model list.")
+
+                Logger.log(f"[LLM MANAGER] - Error with vision {provider}/{model_name}: {str(e)}")
+                raise
+
+        self._log_models_exhausted(vision_manager, "VISION MODELS")
+        raise Exception("All vision models are rate-limited. Please try again later.")
+
     def _call_groq(self, model_name: str, prompt: str, temperature: float, max_tokens: int) -> str:
         response = self._groq_client.chat.completions.create(
             model=model_name,
@@ -478,6 +588,77 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         )
 
         return response.text
+
+    def _call_groq_with_vision(
+        self,
+        model_name: str,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        image_data_url = f"data:{mime_type};base64,{image_base64}"
+
+        response = self._groq_client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                    ],
+                }
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        headers = self._http_client.last_response_headers
+        if self._vision_model_manager:
+            self._vision_model_manager.update_rate_limit_info(model_name, headers)
+
+        content = response.choices[0].message.content
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            text_parts: List[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    part_text = part.get("text")
+                    if isinstance(part_text, str) and part_text.strip():
+                        text_parts.append(part_text.strip())
+            if text_parts:
+                return "\n".join(text_parts).strip()
+        return str(content or "").strip()
+
+    def _call_gemini_with_vision(
+        self,
+        model_name: str,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        response = self._gemini_client.models.generate_content(
+            model=model_name,
+            contents=[
+                prompt,
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime_type,
+                ),
+            ],
+            config=types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            ),
+        )
+
+        return str(response.text or "").strip()
 
     def _call_groq_with_tools(
         self,
@@ -535,8 +716,6 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         # Convert OpenAI-style messages to Gemini format
         # Convert OpenAI-style tools to Gemini FunctionDeclarations
         # This is a simplified version - you may need to expand based on your needs
-
-        from google.genai import types
 
         # Convert tools to Gemini format
         function_declarations = []
@@ -607,6 +786,8 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             rate_limit_mgr = self._model_manager.model_rate_limits.get(model_name)
         elif self._agent_model_manager and model_name in self._agent_model_manager.model_rate_limits:
             rate_limit_mgr = self._agent_model_manager.model_rate_limits.get(model_name)
+        elif self._vision_model_manager and model_name in self._vision_model_manager.model_rate_limits:
+            rate_limit_mgr = self._vision_model_manager.model_rate_limits.get(model_name)
 
         if rate_limit_mgr:
             remaining_requests = (
@@ -674,6 +855,13 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
 
     def _log_all_models_exhausted(self, is_agent: bool = False): # logging call
         manager = self._agent_model_manager if is_agent else self._model_manager
+        model_type = "AGENT MODELS" if is_agent else "CHAT MODELS"
+        self._log_models_exhausted(manager, model_type)
+
+    def _log_models_exhausted(self, manager: Optional[_ModelManager], model_type: str): # logging call
+        if manager is None:
+            return
+
         best_model = None
         best_wait = None
 
@@ -694,8 +882,6 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             )
             best_model = min_model
             best_wait = (min_time - now).total_seconds()
-
-        model_type = "AGENT MODELS" if is_agent else "CHAT MODELS"
 
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             if best_model and best_wait is not None:
@@ -722,6 +908,13 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             raise RuntimeError("LLMManager not initialized. Call initialize() first.")
 
         model = self._agent_model_manager.get_current_model()
+        return f"{model['provider']}/{model['name']}"
+
+    def get_current_vision_model(self) -> str:
+        if not self._initialized:
+            raise RuntimeError("LLMManager not initialized. Call initialize() first.")
+
+        model = self._vision_model_manager.get_current_model()
         return f"{model['provider']}/{model['name']}"
 
 

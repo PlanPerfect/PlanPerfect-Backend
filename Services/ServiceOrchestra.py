@@ -1,6 +1,6 @@
 from google import genai
 from google.genai import types
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Any
 import os
 import base64
 import tempfile
@@ -511,7 +511,8 @@ class ServiceOrchestraClass:
     async def generate_floor_plan(
         self,
         file,
-        furniture_list: list
+        furniture_list: list,
+        furniture_counts: Optional[Dict[str, int]] = None,
     ) -> Optional[Dict[str, any]]:
         if not self._initialized:
             raise RuntimeError("ServiceOrchestra not initialized. Call initialize() first.")
@@ -538,7 +539,40 @@ class ServiceOrchestraClass:
             elif suffix.lower() == '.webp':
                 mime_type = "image/webp"
 
-            furniture_str = ", ".join(furniture_list)
+            normalized_counts: Dict[str, int] = {}
+            if isinstance(furniture_counts, dict):
+                for raw_name, raw_count in furniture_counts.items():
+                    name = str(raw_name).strip()
+                    if not name:
+                        continue
+                    try:
+                        count = int(raw_count)
+                    except Exception:
+                        count = 1
+                    normalized_counts[name] = max(1, count)
+
+            normalized_furniture: List[Dict[str, Any]] = []
+            seen_names = set()
+            if isinstance(furniture_list, list):
+                for item in furniture_list:
+                    name = str(item).strip()
+                    if not name:
+                        continue
+                    count = normalized_counts.get(name, 1)
+                    normalized_furniture.append({"name": name, "count": count})
+                    seen_names.add(name)
+
+            for name, count in normalized_counts.items():
+                if name in seen_names:
+                    continue
+                normalized_furniture.append({"name": name, "count": count})
+
+            furniture_lines = "\n".join(
+                f"   - {entry['name']}: {entry['count']} item(s)"
+                for entry in normalized_furniture
+            )
+            if not furniture_lines:
+                furniture_lines = "   - No furniture provided"
 
             prompt = f"""CRITICAL INSTRUCTIONS - READ CAREFULLY:
 
@@ -553,7 +587,8 @@ class ServiceOrchestraClass:
    - Drawings should be appropriately sized and positioned in logical locations on the floor plan
 
 3. Furniture to place on the floor plan:
-   {furniture_str}
+{furniture_lines}
+   - Draw exactly the requested count for each furniture type
 
 4. Layout guidelines:
    - Place sofas along walls in living areas
@@ -613,7 +648,6 @@ Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid
                 if hasattr(part, 'inline_data') and part.inline_data:
                     image_data = part.inline_data.data
                     if image_data:
-                        has_image = True
                         if isinstance(image_data, bytes):
                             image_bytes_result = image_data
                         else:
@@ -663,7 +697,7 @@ Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid
                 "floor_plan_url": upload_result["url"],
                 "file_id": upload_result["file_id"],
                 "filename": upload_result["filename"],
-                "furniture_placed": furniture_list
+                "furniture_placed": normalized_furniture,
             }
 
         except Exception as e:
