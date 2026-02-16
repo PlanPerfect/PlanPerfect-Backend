@@ -246,8 +246,9 @@ async def save_preferences(
             "filename": analysis_dict.get('filename'),
             "detected_style": analysis_dict.get('detected_style')
         }
-        analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
-        DM.set_value(analysis_path, analysis_data)
+
+        DM.data["Users"][user_id]["Existing Homeowner"]["Style Analysis"] = analysis_data
+        DM.save()
 
         # Save Preferences data
         preferences_data = {
@@ -261,15 +262,9 @@ async def save_preferences(
 
         # Save preferences to Firebase Database
         # Path: Users/{userId}/Existing Homeowner/Preferences
-        preferences_path = ["Users", user_id, "Existing Homeowner", "Preferences"]
-        DM.set_value(preferences_path, preferences_data)
 
-        # Save flow at user level
-        # Path: Users/{userId}/flow
-        flow_path = ["Users", user_id, "flow"]
-        DM.set_value(flow_path, "existingHomeOwner")
-
-        # Save all changes to database
+        DM.data["Users"][user_id]["Existing Homeowner"]["Preferences"] = preferences_data
+        DM.data["Users"][user_id]["flow"] = "existingHomeOwner"
         DM.save()
 
         # Return success response
