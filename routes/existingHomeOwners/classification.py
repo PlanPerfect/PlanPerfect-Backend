@@ -272,6 +272,23 @@ async def get_preferences(user_id: str):
         JSONResponse: User's preferences data including original image URL
     """
     try:
+        if not user_id or not user_id.strip():
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: Please login again."
+                }
+            )
+        
         # Path: Users/{userId}/Existing Homeowner/Preferences
         path = ["Users", user_id, "Existing Homeowner", "Preferences"]
 
