@@ -371,6 +371,7 @@ class AgentSynthesizerClass:
         )
         current_session_id = session_data["session_id"]
         history_steps = session_data.get("steps", [])[-self.HISTORY_LIMIT:]
+        current_request_file_ids: List[str] = []
 
         if uploaded_files:
             self._ingest_uploaded_files(
@@ -378,6 +379,14 @@ class AgentSynthesizerClass:
                 uploaded_files=uploaded_files,
                 source="request",
             )
+            for item in uploaded_files:
+                if not isinstance(item, dict):
+                    continue
+                file_id = item.get("file_id")
+                if isinstance(file_id, str) and file_id.strip():
+                    current_request_file_ids.append(file_id.strip())
+            if current_request_file_ids:
+                current_request_file_ids = list(dict.fromkeys(current_request_file_ids))
 
         self._update_session_status(
             user_id=user_id,
@@ -583,6 +592,7 @@ class AgentSynthesizerClass:
                         tool_name=function_name,
                         tool_args=function_args,
                         forced_file_context=forced_file_context,
+                        current_request_file_ids=current_request_file_ids,
                     )
                     resolution_status = file_resolution.get("status")
 
@@ -1888,11 +1898,17 @@ class AgentSynthesizerClass:
         tool_name: str,
         tool_args: Dict[str, Any],
         forced_file_context: Optional[Dict[str, Any]] = None,
+        current_request_file_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         if not self._tool_requires_file(tool_name):
             return {"status": "ready", "tool_args": tool_args}
 
         args = dict(tool_args or {})
+        current_request_file_id_set = {
+            file_id.strip()
+            for file_id in (current_request_file_ids or [])
+            if isinstance(file_id, str) and file_id.strip()
+        }
 
         if (
             isinstance(forced_file_context, dict)
@@ -1913,14 +1929,21 @@ class AgentSynthesizerClass:
         if isinstance(provided_file_id, str) and provided_file_id.strip():
             cleaned_provided_file_id = provided_file_id.strip()
             if cleaned_provided_file_id not in self._file_registry:
-                needed = self._required_file_description(tool_name)
-                return {
-                    "status": "needs_file_upload",
-                    "response": self._sanitize_user_response(
-                        "I can see a file ID in the tool input, but I can't access that file in this session. "
-                        f"Please upload {needed} and let me know when you're ready."
-                    ),
-                }
+                if current_request_file_id_set:
+                    cleaned_provided_file_id = None
+                else:
+                    needed = self._required_file_description(tool_name)
+                    return {
+                        "status": "needs_file_upload",
+                        "response": self._sanitize_user_response(
+                            "I can see a file ID in the tool input, but I can't access that file in this session. "
+                            f"Please upload {needed} and let me know when you're ready."
+                        ),
+                    }
+        
+        if cleaned_provided_file_id and current_request_file_id_set and cleaned_provided_file_id not in current_request_file_id_set:
+            # Prefer the files uploaded with the current prompt over stale references from previous turns.
+            cleaned_provided_file_id = None
 
         session_files = self._get_session_files(user_id=user_id)
         candidates_by_id: Dict[str, Dict[str, Any]] = {}
@@ -2017,6 +2040,58 @@ class AgentSynthesizerClass:
             item for item in analysis_results if item.get("suitable") and item.get("file_id")
         ]
         suitable_files.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+
+        if current_request_file_id_set:
+            current_request_suitable = [
+                item
+                for item in suitable_files
+                if str(item.get("file_id") or "") in current_request_file_id_set
+            ]
+            current_request_suitable.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+
+            selected_current: Optional[Dict[str, Any]] = None
+            if cleaned_provided_file_id:
+                selected_current = next(
+                    (
+                        item
+                        for item in current_request_suitable
+                        if item.get("file_id") == cleaned_provided_file_id
+                    ),
+                    None,
+                )
+            if not selected_current and current_request_suitable:
+                selected_current = current_request_suitable[0]
+
+            if selected_current:
+                selected_file_id = str(selected_current.get("file_id") or "").strip()
+                if selected_file_id:
+                    merged_args = dict(args)
+                    merged_args["file_id"] = selected_file_id
+                    self._add_step(
+                        user_id=user_id,
+                        step_type="file_selected",
+                        content={
+                            "tool": tool_name,
+                            "file_id": selected_file_id,
+                            "reason": "auto-selected from files uploaded with current prompt",
+                            "filename": str(selected_current.get("filename") or ""),
+                            "description": str(selected_current.get("description") or ""),
+                        },
+                    )
+                    DM.save()
+                    return {
+                        "status": "ready",
+                        "tool_args": merged_args,
+                    }
+
+            needed = self._required_file_description(tool_name)
+            return {
+                "status": "needs_file_upload",
+                "response": self._sanitize_user_response(
+                    "I checked the file uploaded with your message, but it doesn't look suitable for this task. "
+                    f"Please upload {needed} and try again."
+                ),
+            }
 
         selected: Optional[Dict[str, Any]] = None
         if cleaned_provided_file_id:
