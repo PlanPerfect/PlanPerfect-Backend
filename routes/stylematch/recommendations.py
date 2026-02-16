@@ -55,17 +55,17 @@ async def fetch_preferences(
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "UERROR: One or more required fields are invalid / missing."
+                    "error": "UERROR: Please login again."
                 }
             )
 
-        image_url = DM.peek(["Users", x_user_id, "Existing Homeowner", "Preferences", "original_image_url"])
+        image_url = DM.peek(["Users", x_user_id, "Existing Homeowner", "Style Analysis", "image_url"])
 
         style = DM.peek(["Users", x_user_id, "Existing Homeowner", "Preferences", "selected_styles"])
 
         if not image_url or not style:
             return JSONResponse(
-                status_code=404,
+                status_code=200,
                 content={"preferences": {}}
             )
 
@@ -80,10 +80,7 @@ async def fetch_preferences(
         )
 
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={ "error": f"Error fetching preferences: {str(e)}" }
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 @router.post("/get-recommendations")
 async def get_recommendations(request: RecommendationRequest):
@@ -161,7 +158,7 @@ async def save_recommendation(
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "UERROR: One or more required fields are invalid / missing."
+                    "error": "UERROR: Please login again."
                 }
             )
 
@@ -197,10 +194,7 @@ async def save_recommendation(
         )
 
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error saving recommendation: {str(e)}"}
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 @router.delete("/delete-recommendation/{rec_id:path}")
 async def delete_recommendation(
@@ -221,7 +215,7 @@ async def delete_recommendation(
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "UERROR: One or more required fields are invalid / missing."
+                    "error": "UERROR: Please login again."
                 }
             )
 
@@ -234,7 +228,7 @@ async def delete_recommendation(
         if not success:
             return JSONResponse(
                 status_code=404,
-                content={"error": "Recommendation not found or already deleted"}
+                content={"error": "UERROR: Recommendation not found or already deleted"}
             )
 
         DM.save()
@@ -245,16 +239,30 @@ async def delete_recommendation(
         )
 
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error deleting recommendation: {str(e)}"}
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })
 
 @router.get("/get-saved-recommendations")
 async def get_saved_recommendations(
     x_user_id: str = Header(..., alias="X-User-ID")
 ):
     try:
+        if not x_user_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "UERROR: One or more required fields are invalid / missing."
+                }
+            )
+
+        user = DM.peek(["Users", x_user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "UERROR: Please login again."
+                }
+            )
+
         saved_recs = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations"])
 
         if not saved_recs:
@@ -274,7 +282,4 @@ async def get_saved_recommendations(
         )
 
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error fetching saved recommendations: {str(e)}"}
-        )
+        return JSONResponse(status_code=500, content={ "error": str(e) })

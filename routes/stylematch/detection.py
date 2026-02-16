@@ -63,7 +63,7 @@ async def detect_furniture(
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "UERROR: One or more required fields are invalid / missing."
+                    "error": "UERROR: Please login again."
                 }
             )
 
