@@ -78,12 +78,24 @@ class AgentSynthesizerClass:
         "generate_floor_plan": "a top-down floor plan or architectural layout image",
     }
 
+    # Change 15: Relaxed scope classifier — prefers interior_design/small_talk,
+    # only blocks genuinely unrelated requests. Also handles conversational memory
+    # questions (e.g. "what's my name?") as small_talk, not out_of_scope.
     SCOPE_CLASSIFIER_INSTRUCTION = (
-        "You are a strict scope classifier for an interior-design assistant. "
+        "You are a scope classifier for an interior-design assistant. "
         "Classify the latest user query into exactly one category:\n"
-        "1) interior_design: The user asks for interior design workflows/questions, or is continuing an existing interior design task.\n"
-        "2) small_talk: Greeting/pleasantry/chitchat without requesting unrelated domain knowledge.\n"
-        "3) out_of_scope: The user asks for non-interior-design tasks or information.\n\n"
+        "1) interior_design: The user asks about interior design, rooms, furniture, floor plans, "
+        "layouts, decor, styles, colors, design trends, or is continuing an interior design workflow. "
+        "Also use this for requests to search for design-related information.\n"
+        "2) small_talk: Greetings, pleasantries, chitchat, questions about the ongoing conversation "
+        "itself, questions the assistant can answer from conversation context "
+        "(e.g. 'what is my name?', 'what did I just ask?', 'can you summarise what we discussed?'), "
+        "or simple follow-up clarifications.\n"
+        "3) out_of_scope: The user explicitly requests help with topics entirely unrelated to "
+        "interior design AND unrelated to the current conversation "
+        "(e.g. writing code, medical advice, sports results, cooking recipes unrelated to design).\n\n"
+        "Important: When in doubt, prefer interior_design or small_talk over out_of_scope. "
+        "Only classify as out_of_scope when the request is clearly and completely unrelated.\n\n"
         "Return JSON only with keys: classification, confidence, explanation.\n"
         "Valid classification values: interior_design, small_talk, out_of_scope.\n"
         "confidence must be a float from 0 to 1."
@@ -1638,9 +1650,9 @@ class AgentSynthesizerClass:
                 response_text = error_message.strip()
                 return self._sanitize_user_response(response_text)
 
+        # Change 13: Removed confidence percentage from classify_style response.
         if tool_name == "classify_style":
             style = "Unknown"
-            confidence_text = ""
             if isinstance(result, dict):
                 style = (
                     result.get("detected_style")
@@ -1648,17 +1660,9 @@ class AgentSynthesizerClass:
                     or result.get("classified_style")
                     or "Unknown"
                 )
-                confidence = result.get("confidence")
-                if isinstance(confidence, (int, float)):
-                    confidence_value = float(confidence)
-                    if 0.0 <= confidence_value <= 1.0:
-                        confidence_value *= 100.0
-                    confidence_text = f" ({confidence_value:.0f}% confidence)"
 
             source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-            response_text = (
-                f"I used `{source_name}` and detected the style as **{style}**{confidence_text}."
-            )
+            response_text = f"I analysed `{source_name}` and detected the style as **{style}**."
             return self._sanitize_user_response(response_text)
 
         if tool_name == "detect_furniture":
@@ -1924,63 +1928,43 @@ class AgentSynthesizerClass:
                 "applied_forced_context": True,
             }
 
+        # Change 2: Strict prompt-file pairing.
+        # Tools requiring files can only use files uploaded with the current prompt.
+        # If no files were uploaded alongside this message, request an upload.
+        if not current_request_file_id_set:
+            needed = self._required_file_description(tool_name)
+            return {
+                "status": "needs_file_upload",
+                "response": self._sanitize_user_response(
+                    f"To use this tool, please upload {needed} together with your message."
+                ),
+            }
+
         provided_file_id = args.get("file_id")
         cleaned_provided_file_id: Optional[str] = None
         if isinstance(provided_file_id, str) and provided_file_id.strip():
             cleaned_provided_file_id = provided_file_id.strip()
             if cleaned_provided_file_id not in self._file_registry:
-                if current_request_file_id_set:
-                    cleaned_provided_file_id = None
-                else:
-                    needed = self._required_file_description(tool_name)
-                    return {
-                        "status": "needs_file_upload",
-                        "response": self._sanitize_user_response(
-                            "I can see a file ID in the tool input, but I can't access that file in this session. "
-                            f"Please upload {needed} and let me know when you're ready."
-                        ),
-                    }
+                cleaned_provided_file_id = None
+            elif cleaned_provided_file_id not in current_request_file_id_set:
+                # Stale reference from a previous prompt — ignore it.
+                cleaned_provided_file_id = None
 
-        if cleaned_provided_file_id and current_request_file_id_set and cleaned_provided_file_id not in current_request_file_id_set:
-            # Prefer the files uploaded with the current prompt over stale references from previous turns.
-            cleaned_provided_file_id = None
-
-        session_files = self._get_session_files(user_id=user_id)
-        candidates_by_id: Dict[str, Dict[str, Any]] = {}
-
-        for item in session_files:
-            file_id = item.get("file_id")
-            if not isinstance(file_id, str) or file_id not in self._file_registry:
+        # Build candidates exclusively from files uploaded with the current prompt.
+        candidates: List[Dict[str, Any]] = []
+        for fid in current_request_file_id_set:
+            if fid not in self._file_registry:
                 continue
-            candidates_by_id[file_id] = item
-
-        if cleaned_provided_file_id and cleaned_provided_file_id in self._file_registry:
-            if cleaned_provided_file_id not in candidates_by_id:
-                referenced_file_obj = self._file_registry.get(cleaned_provided_file_id)
-                self._upsert_session_file(
-                    user_id=user_id,
-                    file_id=cleaned_provided_file_id,
-                    file_obj=referenced_file_obj,
-                    source="tool-args",
-                )
-                candidates_by_id[cleaned_provided_file_id] = {
-                    "file_id": cleaned_provided_file_id,
-                    "filename": str(getattr(referenced_file_obj, "filename", "") or ""),
-                    "content_type": str(getattr(referenced_file_obj, "content_type", "") or ""),
-                    "source": "tool-args",
-                    "uploaded_at": datetime.now().isoformat(),
-                    "analysis": {},
-                }
-
-        candidates = list(candidates_by_id.values())
+            file_info = self._session_file_info(user_id=user_id, file_id=fid)
+            candidates.append(file_info)
 
         if not candidates:
             needed = self._required_file_description(tool_name)
             return {
                 "status": "needs_file_upload",
                 "response": self._sanitize_user_response(
-                    "Sure! Before we continue, I'd need you to upload "
-                    f"{needed}. Let me know when you're ready."
+                    f"I couldn't locate the uploaded file in this session. "
+                    f"Please upload {needed} and try again."
                 ),
             }
 
@@ -2041,69 +2025,13 @@ class AgentSynthesizerClass:
         ]
         suitable_files.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
 
-        if current_request_file_id_set:
-            current_request_suitable = [
-                item
-                for item in suitable_files
-                if str(item.get("file_id") or "") in current_request_file_id_set
-            ]
-            current_request_suitable.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
-
-            selected_current: Optional[Dict[str, Any]] = None
-            if cleaned_provided_file_id:
-                selected_current = next(
-                    (
-                        item
-                        for item in current_request_suitable
-                        if item.get("file_id") == cleaned_provided_file_id
-                    ),
-                    None,
-                )
-            if not selected_current and current_request_suitable:
-                selected_current = current_request_suitable[0]
-
-            if selected_current:
-                selected_file_id = str(selected_current.get("file_id") or "").strip()
-                if selected_file_id:
-                    merged_args = dict(args)
-                    merged_args["file_id"] = selected_file_id
-                    self._add_step(
-                        user_id=user_id,
-                        step_type="file_selected",
-                        content={
-                            "tool": tool_name,
-                            "file_id": selected_file_id,
-                            "reason": "auto-selected from files uploaded with current prompt",
-                            "filename": str(selected_current.get("filename") or ""),
-                            "description": str(selected_current.get("description") or ""),
-                        },
-                    )
-                    DM.save()
-                    return {
-                        "status": "ready",
-                        "tool_args": merged_args,
-                    }
-
-            needed = self._required_file_description(tool_name)
-            return {
-                "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    "I checked the file uploaded with your message, but it doesn't look suitable for this task. "
-                    f"Please upload {needed} and try again."
-                ),
-            }
-
+        # Select from current-request files only.
         selected: Optional[Dict[str, Any]] = None
         if cleaned_provided_file_id:
             selected = next(
-                (
-                    item
-                    for item in suitable_files
-                    if item.get("file_id") == cleaned_provided_file_id
-                ),
+                (item for item in suitable_files if item.get("file_id") == cleaned_provided_file_id),
                 None,
             )
-
         if not selected and suitable_files:
             selected = suitable_files[0]
 
@@ -2112,58 +2040,38 @@ class AgentSynthesizerClass:
             return {
                 "status": "needs_file_upload",
                 "response": self._sanitize_user_response(
-                    "I checked the uploaded files, but none look suitable for this task. "
-                    f"Please upload {needed}, then tell me when to continue."
+                    "The image you uploaded doesn't look suitable for this task. "
+                    f"Please upload {needed} and try again."
                 ),
             }
 
-        selected_file_id = selected.get("file_id")
-        selected_filename = str(selected.get("filename") or self._file_label(selected_file_id, user_id=user_id))
-        selected_description = selected.get("description") or "an uploaded image"
-        selected_label = f"`{selected_filename}` ({selected_description})"
+        selected_file_id = str(selected.get("file_id") or "").strip()
+        if selected_file_id:
+            merged_args = dict(args)
+            merged_args["file_id"] = selected_file_id
+            self._add_step(
+                user_id=user_id,
+                step_type="file_selected",
+                content={
+                    "tool": tool_name,
+                    "file_id": selected_file_id,
+                    "reason": "auto-selected from files uploaded with current prompt",
+                    "filename": str(selected.get("filename") or ""),
+                    "description": str(selected.get("description") or ""),
+                },
+            )
+            DM.save()
+            return {
+                "status": "ready",
+                "tool_args": merged_args,
+            }
+
         needed = self._required_file_description(tool_name)
-
-        self._set_pending_file_action(
-            user_id=user_id,
-            tool_name=tool_name,
-            tool_args=args,
-            file_id=selected_file_id,
-            file_description=selected_label,
-            required_file_description=needed,
-            original_query=query,
-        )
-        self._add_step(
-            user_id=user_id,
-            step_type="file_confirmation_requested",
-            content={
-                "tool": tool_name,
-                "file_id": selected_file_id,
-                "description": selected_description,
-                "filename": selected_filename,
-                "from_explicit_file_id": bool(cleaned_provided_file_id),
-            },
-        )
-        DM.save()
-
-        response_message = (
-            f"I found an uploaded image named `{selected_filename}` and it looks like {selected_description}. "
-            "Would you like me to use this image, or would you prefer a different file?"
-        )
-        if cleaned_provided_file_id and selected_file_id == cleaned_provided_file_id:
-            response_message = (
-                f"I analysed the files and `{selected_filename}` (the referenced image) looks suitable "
-                f"because it appears to be {selected_description}. "
-                "Would you like me to use it, or do you want a different file?"
-            )
-        elif cleaned_provided_file_id and selected_file_id != cleaned_provided_file_id:
-            response_message = (
-                f"I analysed the files and found a better match than the referenced image: `{selected_filename}` "
-                f"({selected_description}). Would you like me to use this one, or do you want a different file?"
-            )
-
         return {
-            "status": "ask_confirmation",
-            "response": self._sanitize_user_response(response_message),
+            "status": "needs_file_upload",
+            "response": self._sanitize_user_response(
+                f"Something went wrong selecting the file. Please upload {needed} and try again."
+            ),
         }
 
     async def _analyze_uploaded_file_for_tool(
@@ -2358,7 +2266,6 @@ class AgentSynthesizerClass:
             fallback_by_type.get(predicted_type, "an image with unclear structure"),
         )
 
-        # Guard against requirement-echo phrasing.
         required_tokens = set(re.findall(r"[a-z0-9]+", str(required_description or "").lower()))
         description_tokens = set(re.findall(r"[a-z0-9]+", lower_description))
         token_overlap = 0.0
@@ -2628,7 +2535,6 @@ class AgentSynthesizerClass:
 
             target_list.append(
                 {
-                    "image_url": image_url,
                     "style": style,
                 }
             )
@@ -2651,7 +2557,6 @@ class AgentSynthesizerClass:
 
             target_list.append(
                 {
-                    "image_url": image_url,
                     "colors": colors,
                 }
             )
@@ -2705,12 +2610,14 @@ class AgentSynthesizerClass:
 
         if tool_name == "web_search":
             query = str(args.get("query") or "")
+            # Change 15: Only block explicitly out_of_scope queries.
+            # interior_design and small_talk classified queries are allowed.
             scope_decision = self._evaluate_request_scope(
                 query,
                 user_id=user_id,
                 record_step=False,
             )
-            if scope_decision.get("classification") != "interior_design":
+            if scope_decision.get("classification") == "out_of_scope":
                 return {
                     "error": "out_of_scope",
                     "message": self.OUT_OF_SCOPE_MESSAGE,

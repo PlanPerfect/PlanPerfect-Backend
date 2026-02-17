@@ -3,6 +3,7 @@ from google.genai import types
 from typing import Optional, Dict, List, Any
 import os
 import base64
+import inspect
 import tempfile
 from io import BytesIO
 from PIL import Image
@@ -48,6 +49,63 @@ class ServiceOrchestraClass:
         except Exception as e:
             Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Failed to initialize. Error: {e}")
             raise
+
+    async def _read_input_file_bytes(self, file: Any) -> bytes:
+        if hasattr(file, "_content") and isinstance(getattr(file, "_content"), (bytes, bytearray)):
+            return bytes(getattr(file, "_content"))
+
+        read_obj = getattr(file, "read", None)
+        tell_obj = getattr(file, "tell", None)
+        seek_obj = getattr(file, "seek", None)
+
+        inner_file = getattr(file, "file", None)
+        inner_read_obj = getattr(inner_file, "read", None)
+        inner_tell_obj = getattr(inner_file, "tell", None)
+        inner_seek_obj = getattr(inner_file, "seek", None)
+
+        start_pos = None
+        if callable(tell_obj):
+            try:
+                current_pos = tell_obj()
+                start_pos = await current_pos if inspect.isawaitable(current_pos) else current_pos
+            except Exception:
+                start_pos = None
+        elif callable(inner_tell_obj):
+            try:
+                start_pos = inner_tell_obj()
+            except Exception:
+                start_pos = None
+
+        data: bytes = b""
+        if callable(read_obj):
+            raw = read_obj()
+            raw = await raw if inspect.isawaitable(raw) else raw
+            if isinstance(raw, (bytes, bytearray)):
+                data = bytes(raw)
+            elif isinstance(raw, str):
+                data = raw.encode("utf-8")
+        elif callable(inner_read_obj):
+            raw = inner_read_obj()
+            if isinstance(raw, (bytes, bytearray)):
+                data = bytes(raw)
+            elif isinstance(raw, str):
+                data = raw.encode("utf-8")
+
+        if start_pos is not None:
+            if callable(seek_obj):
+                try:
+                    result = seek_obj(start_pos)
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:
+                    pass
+            elif callable(inner_seek_obj):
+                try:
+                    inner_seek_obj(start_pos)
+                except Exception:
+                    pass
+
+        return data
 
     def generate_image(
         self,
@@ -131,10 +189,9 @@ class ServiceOrchestraClass:
         try:
             suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                if hasattr(file, 'read'):
-                    content = await file.read()
-                else:
-                    content = file.file.read()
+                content = await self._read_input_file_bytes(file)
+                if not content:
+                    raise ValueError("Empty file content")
 
                 tmp_file.write(content)
                 tmp_file_path = tmp_file.name
@@ -185,7 +242,9 @@ class ServiceOrchestraClass:
         try:
             suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                content = await file.read()
+                content = await self._read_input_file_bytes(file)
+                if not content:
+                    raise ValueError("Empty file content")
                 tmp_file.write(content)
                 tmp_file_path = tmp_file.name
 
@@ -445,7 +504,9 @@ class ServiceOrchestraClass:
         try:
             suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                content = await file.read()
+                content = await self._read_input_file_bytes(file)
+                if not content:
+                    raise ValueError("Empty file content")
                 tmp_file.write(content)
                 tmp_file_path = tmp_file.name
 
@@ -526,7 +587,9 @@ class ServiceOrchestraClass:
         try:
             suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                content = await file.read()
+                content = await self._read_input_file_bytes(file)
+                if not content:
+                    raise ValueError("Empty file content")
                 tmp_file.write(content)
                 tmp_file_path = tmp_file.name
 
