@@ -3,6 +3,7 @@ import uuid
 import json
 import inspect
 import re
+import random
 from datetime import datetime
 from Services import Logger
 from Services import DatabaseManager as DM
@@ -26,6 +27,7 @@ class AgentSynthesizerClass:
     HISTORY_LIMIT = 50
     THINKING_STEP = "Thinking..."
     ANALYZING_FILES_STEP = "Analysing files..."
+    SUMMARIZING_STEP = "Summarising..."
     DONE_STEP = "Done!"
     USER_ERROR_MESSAGE = "I ran into an issue while working on that request. Please try again in a moment."
     OUT_OF_SCOPE_MESSAGE = (
@@ -48,6 +50,7 @@ class AgentSynthesizerClass:
         "When image tools require file types, use only files that match the tool requirement. "
         "If files were uploaded in this request/session, do not ask the user to upload again; "
         "use the appropriate tool with the available uploaded file. "
+        "Never include URLs/links or confidence percentages/scores in user-facing responses. "
         "Use a warm, natural, conversational tone instead of robotic phrasing. Keep responses concise, "
         "clear, and helpful."
     )
@@ -524,6 +527,7 @@ class AgentSynthesizerClass:
                 }
 
             messages = self._build_messages(query=effective_query, history_steps=history_steps)
+            completed_tool_runs: List[Dict[str, Any]] = []
 
             iteration = 0
             while iteration < max_iterations:
@@ -567,9 +571,27 @@ class AgentSynthesizerClass:
                 text_response = response.get("content")
 
                 if not tool_calls:
-                    final_response = self._sanitize_user_response(
-                        text_response or "I've completed processing your request."
-                    )
+                    if completed_tool_runs:
+                        if len(completed_tool_runs) > 1:
+                            self._update_session_status(
+                                user_id=user_id,
+                                status="thinking",
+                                current_step=self.SUMMARIZING_STEP,
+                            )
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="thought",
+                                content=f"Iteration {iteration}: Summarising tool outputs...",
+                            )
+
+                        final_response = self._build_tool_run_response(
+                            user_id=user_id,
+                            completed_tool_runs=completed_tool_runs,
+                        )
+                    else:
+                        final_response = self._sanitize_user_response(
+                            text_response or "I've completed processing your request."
+                        )
 
                     self._add_step(
                         user_id=user_id,
@@ -694,6 +716,13 @@ class AgentSynthesizerClass:
                                 "content": json.dumps(result),
                             }
                         )
+                        completed_tool_runs.append(
+                            {
+                                "tool_name": function_name,
+                                "tool_args": function_args,
+                                "result": result,
+                            }
+                        )
                         DM.save()
 
                     except Exception as e:
@@ -712,6 +741,18 @@ class AgentSynthesizerClass:
                                 "role": "tool",
                                 "tool_call_id": tool_call_id,
                                 "content": json.dumps({"error": str(e)}),
+                            }
+                        )
+                        completed_tool_runs.append(
+                            {
+                                "tool_name": function_name,
+                                "tool_args": function_args,
+                                "result": {
+                                    "error": str(e),
+                                    "message": (
+                                        f"I ran into an issue while running `{function_name}`."
+                                    ),
+                                },
                             }
                         )
                         DM.save()
@@ -1021,6 +1062,7 @@ class AgentSynthesizerClass:
         if isinstance(current_step, str) and current_step in {
             self.THINKING_STEP,
             self.ANALYZING_FILES_STEP,
+            self.SUMMARIZING_STEP,
             self.DONE_STEP,
             *self.TOOL_CURRENT_STEPS.values(),
         }:
@@ -1054,7 +1096,12 @@ class AgentSynthesizerClass:
         }:
             return self.STATUS_IDLE
 
-        if normalized_step in {self.THINKING_STEP, self.ANALYZING_FILES_STEP, *self.TOOL_CURRENT_STEPS.values()}:
+        if normalized_step in {
+            self.THINKING_STEP,
+            self.ANALYZING_FILES_STEP,
+            self.SUMMARIZING_STEP,
+            *self.TOOL_CURRENT_STEPS.values(),
+        }:
             return self.STATUS_RUNNING
 
         return self.STATUS_IDLE
@@ -1585,11 +1632,155 @@ class AgentSynthesizerClass:
         cleaned = re.sub(r"(?:https?://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
         return cleaned
 
+    def _strip_confidence_from_text(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        cleaned = text
+        confidence_patterns = [
+            r"\(\s*(?:with\s+)?confidence(?:\s*(?:score|level))?\s*(?:is|was|of|:|=)?\s*\d+(?:\.\d+)?\s*%?\s*\)",
+            r"\b(?:with\s+)?confidence(?:\s*(?:score|level))?\s*(?:is|was|of|:|=)?\s*\d+(?:\.\d+)?\s*%?\b",
+            r"\b\d+(?:\.\d+)?\s*%\s*(?:confidence|certainty)\b",
+            r"\bconfidence\s*(?:score|level)?\s*(?:is|was|of|:|=)\s*\d+(?:\.\d+)?\s*%?\b",
+            r"\bconfidence\s*(?:score|level)?\s*(?:is|was|of|:|=)\s*(?:very\s+)?(?:high|medium|low)\b",
+            r"\bconfidence\s*(?:score|level)\b",
+        ]
+        for pattern in confidence_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+        return cleaned
+
+    def _strip_dangling_link_phrases(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        cleaned = text
+        cleaned = re.sub(
+            r"(?:^|\s)(?:you can|you may|please)?\s*(?:view|see|find|access)\s+"
+            r"(?:it|them|this|that)?\s*(?:here|at)\s*:?\s*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\b(?:here|link|url)\s*:\s*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        cleaned = re.sub(r"[:;]\s*$", "", cleaned).strip()
+        return cleaned
+
     def _sanitize_user_response(self, text: Any) -> str:
         value = str(text or "")
         without_links = self._strip_links_from_text(value)
-        compact = re.sub(r"\s{2,}", " ", without_links).strip()
+        without_confidence = self._strip_confidence_from_text(without_links)
+        compact = self._strip_dangling_link_phrases(without_confidence)
+        compact = re.sub(r"\s{2,}", " ", compact).strip()
         return compact or "Done."
+
+    def _pick_response_template(self, templates: List[str], fallback: str) -> str:
+        options = [str(item).strip() for item in templates if isinstance(item, str) and item.strip()]
+        if not options:
+            return fallback
+        return random.choice(options)
+
+    def _natural_join(self, values: List[str]) -> str:
+        cleaned_values: List[str] = []
+        seen = set()
+        for value in values:
+            entry = str(value or "").strip()
+            if not entry:
+                continue
+            key = entry.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned_values.append(entry)
+
+        if not cleaned_values:
+            return ""
+        if len(cleaned_values) == 1:
+            return cleaned_values[0]
+        if len(cleaned_values) == 2:
+            return f"{cleaned_values[0]} and {cleaned_values[1]}"
+        return f"{', '.join(cleaned_values[:-1])}, and {cleaned_values[-1]}"
+
+    def _build_tool_run_response(
+        self,
+        user_id: str,
+        completed_tool_runs: List[Dict[str, Any]],
+    ) -> str:
+        if not completed_tool_runs:
+            return self._sanitize_user_response("Done.")
+
+        if len(completed_tool_runs) == 1:
+            item = completed_tool_runs[0]
+            return self._build_direct_tool_response(
+                user_id=user_id,
+                tool_name=str(item.get("tool_name") or ""),
+                tool_args=item.get("tool_args") if isinstance(item.get("tool_args"), dict) else {},
+                result=item.get("result"),
+            )
+
+        return self._build_multi_tool_response(
+            user_id=user_id,
+            completed_tool_runs=completed_tool_runs,
+        )
+
+    def _build_multi_tool_response(
+        self,
+        user_id: str,
+        completed_tool_runs: List[Dict[str, Any]],
+    ) -> str:
+        snippets: List[str] = []
+        seen = set()
+
+        for item in completed_tool_runs:
+            tool_name = str(item.get("tool_name") or "").strip()
+            if not tool_name:
+                continue
+            tool_args = item.get("tool_args") if isinstance(item.get("tool_args"), dict) else {}
+            snippet = self._build_direct_tool_response(
+                user_id=user_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result=item.get("result"),
+            )
+            cleaned_snippet = self._sanitize_user_response(snippet)
+            if not cleaned_snippet:
+                continue
+            dedupe_key = cleaned_snippet.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            snippets.append(cleaned_snippet)
+
+        if not snippets:
+            return self._sanitize_user_response("Done.")
+
+        if len(snippets) == 1:
+            return self._sanitize_user_response(snippets[0])
+
+        opener = self._pick_response_template(
+            [
+                "I've completed the requested steps.",
+                "All requested steps are done.",
+                "Everything you asked for has been completed.",
+            ],
+            "I've completed the requested steps.",
+        )
+        closer = self._pick_response_template(
+            [
+                "Let me know if you want any refinements.",
+                "If you'd like changes, I can adjust it.",
+                "I can fine-tune any part of this if you want.",
+            ],
+            "Let me know if you want any refinements.",
+        )
+
+        if len(snippets) > 3:
+            snippet_text = " ".join(snippets[:3] + ["I also completed the remaining step(s)."])
+        else:
+            snippet_text = " ".join(snippets)
+
+        return self._sanitize_user_response(f"{opener} {snippet_text} {closer}")
 
     def _build_direct_tool_response(
         self,
@@ -1600,55 +1791,14 @@ class AgentSynthesizerClass:
     ) -> str:
         response_text = "Done."
 
-        def _furniture_summary() -> str:
-            normalized: List[str] = []
-            entries = None
-            if isinstance(result, dict):
-                entries = result.get("furniture_placed")
-
-            if isinstance(entries, dict):
-                entries = [
-                    {"name": key, "count": value}
-                    for key, value in entries.items()
-                ]
-
-            if isinstance(entries, list) and entries:
-                for item in entries:
-                    if isinstance(item, dict):
-                        name = str(item.get("name") or "").strip()
-                        count_value = item.get("count", 1)
-                    else:
-                        name = str(item).strip()
-                        count_value = 1
-
-                    if not name:
-                        continue
-                    try:
-                        count = int(count_value)
-                    except Exception:
-                        count = 1
-                    count = max(1, count)
-                    normalized.append(f"{name} x{count}" if count > 1 else name)
-                if normalized:
-                    return ", ".join(normalized)
-
-            raw_furniture = tool_args.get("furniture_list", [])
-            raw_counts = tool_args.get("furniture_counts", {})
-            if isinstance(raw_furniture, list):
-                for item in raw_furniture:
-                    name = str(item).strip()
-                    if not name:
-                        continue
-                    count = 1
-                    if isinstance(raw_counts, dict):
-                        try:
-                            count = int(raw_counts.get(name, 1))
-                        except Exception:
-                            count = 1
-                    count = max(1, count)
-                    normalized.append(f"{name} x{count}" if count > 1 else name)
-
-            return ", ".join(normalized)
+        def _has_generated_asset(payload: Any) -> bool:
+            if not isinstance(payload, dict):
+                return False
+            for key in ("url", "floor_plan_url", "file_id", "image_url"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return True
+            return False
 
         if isinstance(result, dict):
             error_message = result.get("message")
@@ -1656,40 +1806,107 @@ class AgentSynthesizerClass:
                 response_text = error_message.strip()
                 return self._sanitize_user_response(response_text)
 
-        # Change 13: Removed confidence percentage from classify_style response.
         if tool_name == "classify_style":
-            style = "Unknown"
+            style = "unknown"
             if isinstance(result, dict):
                 style = (
                     result.get("detected_style")
                     or result.get("style")
                     or result.get("classified_style")
-                    or "Unknown"
+                    or "unknown"
                 )
+            style = str(style).strip() or "unknown"
+            style_lower = style.lower()
+            if style_lower == "unknown":
+                response_text = self._pick_response_template(
+                    [
+                        "I couldn't determine a clear room style from the image yet. Let me know if you'd like further assistance!",
+                        "I wasn't able to identify a clear style this time. Let me know if you'd like further assistance!",
+                        "The style wasn't clear enough for me to classify yet. Let me know if you'd like further assistance!",
+                    ],
+                    "I couldn't determine a clear room style from the image yet. Let me know if you'd like further assistance!",
+                )
+                return self._sanitize_user_response(response_text)
 
-            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-            response_text = f"I took a look at `{source_name}`. The style reads as **{style}**."
+            response_text = self._pick_response_template(
+                [
+                    f"Your room style looks like **{style}**. Let me know if you'd like further assistance!",
+                    f"It seems your room is **{style}** in style. Let me know if you'd need help with your room!",
+                    f"I'd classify your room as **{style}**. I hope that helps! Let me know if you want to do anything else with your room.",
+                ],
+                f"Your room style looks like **{style}**. Let me know if you'd like further assistance!",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "detect_furniture":
-            detected_furniture = self._extract_furniture_objects(result=result)
-            total_items = len(detected_furniture)
+            counts_by_name: Dict[str, int] = {}
+            detections = result.get("detections", []) if isinstance(result, dict) else []
+            if isinstance(detections, list):
+                for item in detections:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("class") or item.get("name") or item.get("label") or "").strip()
+                    if not name:
+                        continue
+                    counts_by_name[name] = counts_by_name.get(name, 0) + 1
+
+            if not counts_by_name:
+                for item in self._extract_furniture_objects(result=result):
+                    name = str(item.get("name") or "").strip()
+                    if not name:
+                        continue
+                    counts_by_name[name] = counts_by_name.get(name, 0) + 1
+
+            total_items = sum(counts_by_name.values())
             if total_items == 0 and isinstance(result, dict):
                 if isinstance(result.get("total_items"), int):
-                    total_items = result.get("total_items", 0)
+                    total_items = max(0, int(result.get("total_items", 0)))
                 elif isinstance(result.get("detections"), list):
                     total_items = len(result.get("detections", []))
 
-            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-            if detected_furniture:
-                detected_names = ", ".join(item.get("name", "") for item in detected_furniture if item.get("name"))
-                if detected_names:
-                    response_text = (
-                        f"I checked `{source_name}` and spotted {total_items} furniture item(s): {detected_names}."
-                    )
-                    return self._sanitize_user_response(response_text)
-            response_text = (
-                f"I checked `{source_name}` and detected {total_items} furniture item(s)."
+            def _counted_name(name: str, count: int) -> str:
+                clean_name = str(name or "").strip()
+                if not clean_name:
+                    return ""
+
+                if count <= 1:
+                    lowered = clean_name.lower()
+                    article = "an" if lowered[:1] in {"a", "e", "i", "o", "u"} else "a"
+                    return f"{article} {clean_name}"
+
+                lowered = clean_name.lower()
+                if lowered.endswith(("s", "x", "z", "ch", "sh")):
+                    plural = f"{clean_name}es"
+                elif lowered.endswith("y") and len(clean_name) > 1 and lowered[-2] not in {"a", "e", "i", "o", "u"}:
+                    plural = f"{clean_name[:-1]}ies"
+                else:
+                    plural = f"{clean_name}s"
+                return f"{count} {plural}"
+
+            furniture_parts: List[str] = []
+            for name, count in counts_by_name.items():
+                counted = _counted_name(name=name, count=count)
+                if counted:
+                    furniture_parts.append(counted)
+            furniture_text = self._natural_join(furniture_parts)
+            if furniture_text:
+                response_text = self._pick_response_template(
+                    [
+                        f"It seems like your room has {furniture_text}. Let me know if you'd like further assistance!",
+                        f"From what I can see, your room includes {furniture_text}. Let me know if you'd need help with your room!",
+                        f"I can see {furniture_text} in your room. I hope that helps! Let me know if you want to do anything else with your room.",
+                    ],
+                    f"It seems like your room has {furniture_text}. Let me know if you'd like further assistance!",
+                )
+                return self._sanitize_user_response(response_text)
+
+            response_text = self._pick_response_template(
+                [
+                    f"It looks like I detected {total_items} furniture item(s) in your room. Let me know if you'd like further assistance!",
+                    f"I found {total_items} furniture item(s) in your room. Let me know if you'd need help with your room!",
+                    f"I detected {total_items} furniture item(s) in your room. I hope that helps! Let me know if you want to do anything else with your room.",
+                ],
+                f"It looks like I detected {total_items} furniture item(s) in your room. Let me know if you'd like further assistance!",
             )
             return self._sanitize_user_response(response_text)
 
@@ -1701,59 +1918,140 @@ class AgentSynthesizerClass:
                         hex_code = item.get("hex")
                         if isinstance(hex_code, str) and hex_code.strip():
                             colors.append(hex_code.strip())
+                    elif isinstance(item, str) and item.strip():
+                        colors.append(item.strip())
 
-            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
             if colors:
                 color_text = ", ".join(colors[:5])
-                response_text = f"I pulled a color palette from `{source_name}`: {color_text}."
+                response_text = self._pick_response_template(
+                    [
+                        f"The dominant colors I found are {color_text}. Let me know if you'd like further assistance!",
+                        f"Your palette looks like {color_text}. Let me know if you'd need help with your room!",
+                        f"I picked out these key colors: {color_text}. I hope that helps! Let me know if you want to do anything else with your room.",
+                    ],
+                    f"The dominant colors I found are {color_text}. Let me know if you'd like further assistance!",
+                )
                 return self._sanitize_user_response(response_text)
-            response_text = f"I finished color extraction for `{source_name}`."
+            response_text = self._pick_response_template(
+                [
+                    "I completed color extraction, but no clear palette was returned. Let me know if you'd like further assistance!",
+                    "I wasn't able to pull a clear color palette from this image. Let me know if you'd like further assistance!",
+                    "I finished the color analysis, but the palette wasn't clear enough to report. Let me know if you'd like further assistance!",
+                ],
+                "I completed color extraction, but no clear palette was returned. Let me know if you'd like further assistance!",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "generate_floor_plan":
-            if isinstance(result, dict):
-                floor_plan_url = result.get("floor_plan_url")
-                if isinstance(floor_plan_url, str) and floor_plan_url.strip():
-                    furniture_text = _furniture_summary()
-                    source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-                    if furniture_text:
-                        response_text = (
-                            f"I used `{source_name}` and created an updated floor plan with {furniture_text}. "
-                            "The result is saved in your generated floor plan outputs."
-                        )
-                        return self._sanitize_user_response(response_text)
-                    response_text = (
-                        f"I used `{source_name}` and created the updated floor plan. "
-                        "The result is saved in your generated floor plan outputs."
-                    )
-                    return self._sanitize_user_response(response_text)
+            if _has_generated_asset(result):
+                response_text = self._pick_response_template(
+                    [
+                        "I've successfully generated your updated floor plan and saved it to the Agent Ensemble. Let me know if you'd like further assistance!",
+                        "Your new floor plan is ready and stored in the Agent Ensemble. Let me know if you'd like further assistance!",
+                        "Floor plan generation is complete, and the result is saved in the Agent Ensemble. Let me know if you'd like further assistance!",
+                    ],
+                    "I've successfully generated your updated floor plan and saved it to the Agent Ensemble. Let me know if you'd like further assistance!",
+                )
+                return self._sanitize_user_response(response_text)
 
-            response_text = "I tried generating the floor plan, but couldn't produce a valid output."
+            response_text = self._pick_response_template(
+                [
+                    "I tried generating the floor plan, but couldn't produce a valid output. Let me know if you'd like further assistance!",
+                    "I wasn't able to generate a valid floor plan this time. Let me know if you'd like further assistance!",
+                    "Floor plan generation started, but no valid output was produced. Let me know if you'd like further assistance!",
+                ],
+                "I tried generating the floor plan, but couldn't produce a valid output. Let me know if you'd like further assistance!",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "generate_image":
-            if isinstance(result, dict):
-                image_url = result.get("url")
-                if isinstance(image_url, str) and image_url.strip():
-                    response_text = "Your generated image is ready and saved in your generated image outputs."
-                    return self._sanitize_user_response(response_text)
-            response_text = "I tried generating the image, but couldn't produce a valid output."
+            if _has_generated_asset(result):
+                response_text = self._pick_response_template(
+                    [
+                        "Your generated image is ready and saved to the Agent Ensemble.",
+                        "Done. I generated the image and saved it to the Agent Ensemble.",
+                        "Image generation is complete, and it's now saved to the Agent Ensemble.",
+                    ],
+                    "Your generated image is ready and saved to the Agent Ensemble.",
+                )
+                return self._sanitize_user_response(response_text)
+
+            response_text = self._pick_response_template(
+                [
+                    "I tried generating the image, but couldn't produce a valid output.",
+                    "Image generation didn't return a valid output this time.",
+                    "I couldn't generate a valid image from that request.",
+                ],
+                "I tried generating the image, but couldn't produce a valid output.",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "get_recommendations":
             if isinstance(result, dict) and isinstance(result.get("recommendations"), list):
                 count = len(result.get("recommendations", []))
-                response_text = f"I pulled {count} recommendation(s) based on your request."
+                recommendation_names: List[str] = []
+                for item in result.get("recommendations", []):
+                    if not isinstance(item, dict):
+                        continue
+                    name = (
+                        item.get("name")
+                        or item.get("title")
+                        or item.get("product_name")
+                        or item.get("furniture_name")
+                    )
+                    if isinstance(name, str) and name.strip():
+                        recommendation_names.append(name.strip())
+
+                condensed_names = self._natural_join(recommendation_names[:3])
+                if condensed_names:
+                    response_text = self._pick_response_template(
+                        [
+                            f"I found {count} recommendation(s). Top picks include {condensed_names}.",
+                            f"I pulled {count} recommendation(s) for you, including {condensed_names}.",
+                            f"Your recommendations are ready. A few examples are {condensed_names}.",
+                        ],
+                        f"I found {count} recommendation(s). Top picks include {condensed_names}.",
+                    )
+                else:
+                    response_text = self._pick_response_template(
+                        [
+                            f"I pulled {count} recommendation(s) based on your request.",
+                            f"I found {count} recommendation(s) for your request.",
+                            f"Your recommendations are ready, with {count} result(s) returned.",
+                        ],
+                        f"I pulled {count} recommendation(s) based on your request.",
+                    )
                 return self._sanitize_user_response(response_text)
-            response_text = "I tried pulling recommendations, but couldn't retrieve results."
+            response_text = self._pick_response_template(
+                [
+                    "I tried pulling recommendations, but couldn't retrieve results.",
+                    "I wasn't able to retrieve recommendations this time.",
+                    "Recommendation retrieval didn't return results for that request.",
+                ],
+                "I tried pulling recommendations, but couldn't retrieve results.",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "web_search":
             answer = self._extract_search_result(result)
             if isinstance(answer, str) and answer.strip():
-                response_text = answer.strip()
+                response_text = self._pick_response_template(
+                    [
+                        f"Here's what I found: {answer.strip()}",
+                        f"I looked that up for you: {answer.strip()}",
+                        f"Quick summary from the search: {answer.strip()}",
+                    ],
+                    answer.strip(),
+                )
                 return self._sanitize_user_response(response_text)
-            response_text = "I finished the web search."
+            response_text = self._pick_response_template(
+                [
+                    "I finished the web search.",
+                    "I completed the web search, but no summary text came back.",
+                    "Web search is done.",
+                ],
+                "I finished the web search.",
+            )
             return self._sanitize_user_response(response_text)
 
         if isinstance(result, str) and result.strip():
