@@ -27,9 +27,9 @@ class AgentSynthesizerClass:
     THINKING_STEP = "Thinking..."
     ANALYZING_FILES_STEP = "Analysing files..."
     DONE_STEP = "Done!"
-    USER_ERROR_MESSAGE = "I'm sorry, but i'm having trouble completing your request right now. Please try again later."
+    USER_ERROR_MESSAGE = "I ran into an issue while working on that request. Please try again in a moment."
     OUT_OF_SCOPE_MESSAGE = (
-        "Sorry, but I'm only able to help with interior design related questions and tasks. If you need help, feel free to ask!"
+        "I can only help with interior design tasks and questions, but I'm happy to help with anything in that space."
     )
     TOOL_CURRENT_STEPS = {
         "generate_image": "Generating Image...",
@@ -45,7 +45,11 @@ class AgentSynthesizerClass:
         "design questions, and tasks related to rooms, furniture, floor plans, layouts, decor, "
         "styles, and color palettes. If a user asks for anything outside interior design, refuse "
         "briefly and redirect to interior-design help. Never call tools for out-of-scope tasks. "
-        "When image tools require file types, use only files that match the tool requirement."
+        "When image tools require file types, use only files that match the tool requirement. "
+        "If files were uploaded in this request/session, do not ask the user to upload again; "
+        "use the appropriate tool with the available uploaded file. "
+        "Use a warm, natural, conversational tone instead of robotic phrasing. Keep responses concise, "
+        "clear, and helpful."
     )
 
     OUTPUT_BRANCHES = {
@@ -399,6 +403,8 @@ class AgentSynthesizerClass:
                     current_request_file_ids.append(file_id.strip())
             if current_request_file_ids:
                 current_request_file_ids = list(dict.fromkeys(current_request_file_ids))
+                refreshed_agent_data = self._get_agent_record(user_id)
+                history_steps = refreshed_agent_data.get("steps", [])[-self.HISTORY_LIMIT:]
 
         self._update_session_status(
             user_id=user_id,
@@ -1662,7 +1668,7 @@ class AgentSynthesizerClass:
                 )
 
             source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-            response_text = f"I analysed `{source_name}` and detected the style as **{style}**."
+            response_text = f"I took a look at `{source_name}`. The style reads as **{style}**."
             return self._sanitize_user_response(response_text)
 
         if tool_name == "detect_furniture":
@@ -1679,11 +1685,11 @@ class AgentSynthesizerClass:
                 detected_names = ", ".join(item.get("name", "") for item in detected_furniture if item.get("name"))
                 if detected_names:
                     response_text = (
-                        f"I used `{source_name}` and detected {total_items} furniture item(s): {detected_names}."
+                        f"I checked `{source_name}` and spotted {total_items} furniture item(s): {detected_names}."
                     )
                     return self._sanitize_user_response(response_text)
             response_text = (
-                f"I used `{source_name}` and detected {total_items} furniture item(s)."
+                f"I checked `{source_name}` and detected {total_items} furniture item(s)."
             )
             return self._sanitize_user_response(response_text)
 
@@ -1699,9 +1705,9 @@ class AgentSynthesizerClass:
             source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
             if colors:
                 color_text = ", ".join(colors[:5])
-                response_text = f"I extracted colors from `{source_name}`: {color_text}."
+                response_text = f"I pulled a color palette from `{source_name}`: {color_text}."
                 return self._sanitize_user_response(response_text)
-            response_text = f"I used `{source_name}` and completed color extraction."
+            response_text = f"I finished color extraction for `{source_name}`."
             return self._sanitize_user_response(response_text)
 
         if tool_name == "generate_floor_plan":
@@ -1712,34 +1718,34 @@ class AgentSynthesizerClass:
                     source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
                     if furniture_text:
                         response_text = (
-                            f"I used `{source_name}` and generated an updated floor plan with {furniture_text}. "
+                            f"I used `{source_name}` and created an updated floor plan with {furniture_text}. "
                             "The result is saved in your generated floor plan outputs."
                         )
                         return self._sanitize_user_response(response_text)
                     response_text = (
-                        f"I used `{source_name}` and generated the updated floor plan. "
+                        f"I used `{source_name}` and created the updated floor plan. "
                         "The result is saved in your generated floor plan outputs."
                     )
                     return self._sanitize_user_response(response_text)
 
-            response_text = "I ran the floor plan generation, but I couldn't produce a valid output."
+            response_text = "I tried generating the floor plan, but couldn't produce a valid output."
             return self._sanitize_user_response(response_text)
 
         if tool_name == "generate_image":
             if isinstance(result, dict):
                 image_url = result.get("url")
                 if isinstance(image_url, str) and image_url.strip():
-                    response_text = "I generated the image and saved it in your generated image outputs."
+                    response_text = "Your generated image is ready and saved in your generated image outputs."
                     return self._sanitize_user_response(response_text)
-            response_text = "I ran image generation, but couldn't produce a valid image output."
+            response_text = "I tried generating the image, but couldn't produce a valid output."
             return self._sanitize_user_response(response_text)
 
         if tool_name == "get_recommendations":
             if isinstance(result, dict) and isinstance(result.get("recommendations"), list):
                 count = len(result.get("recommendations", []))
-                response_text = f"I found {count} recommendation(s) based on your request."
+                response_text = f"I pulled {count} recommendation(s) based on your request."
                 return self._sanitize_user_response(response_text)
-            response_text = "I ran the recommendation search, but couldn't retrieve recommendations."
+            response_text = "I tried pulling recommendations, but couldn't retrieve results."
             return self._sanitize_user_response(response_text)
 
         if tool_name == "web_search":
@@ -1747,7 +1753,7 @@ class AgentSynthesizerClass:
             if isinstance(answer, str) and answer.strip():
                 response_text = answer.strip()
                 return self._sanitize_user_response(response_text)
-            response_text = "I completed the web search."
+            response_text = "I finished the web search."
             return self._sanitize_user_response(response_text)
 
         if isinstance(result, str) and result.strip():
