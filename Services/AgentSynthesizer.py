@@ -1632,6 +1632,21 @@ class AgentSynthesizerClass:
         cleaned = re.sub(r"(?:https?://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
         return cleaned
 
+    def _strip_tool_markup_from_text(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        cleaned = text
+        patterns = [
+            r"<\s*function\s*=\s*[a-zA-Z_][\w\-]*\s*>\s*\{.*?\}\s*</\s*function\s*>",
+            r"<\s*[a-zA-Z_][\w\-]*\s*>\s*\{.*?\}\s*</\s*function\s*>",
+            r"<\s*function_call\s+name\s*=\s*[\"']?[a-zA-Z_][\w\-]*[\"']?\s*>\s*\{.*?\}\s*</\s*function_call\s*>",
+            r"^\s*[a-zA-Z_][\w\-]*\s*\(\s*\{.*\}\s*\)\s*$",
+        ]
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        return cleaned
+
     def _strip_confidence_from_text(self, text: str) -> str:
         if not isinstance(text, str):
             return ""
@@ -1669,7 +1684,8 @@ class AgentSynthesizerClass:
 
     def _sanitize_user_response(self, text: Any) -> str:
         value = str(text or "")
-        without_links = self._strip_links_from_text(value)
+        without_markup = self._strip_tool_markup_from_text(value)
+        without_links = self._strip_links_from_text(without_markup)
         without_confidence = self._strip_confidence_from_text(without_links)
         compact = self._strip_dangling_link_phrases(without_confidence)
         compact = re.sub(r"\s{2,}", " ", compact).strip()

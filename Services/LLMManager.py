@@ -7,6 +7,7 @@ import re
 import time
 import httpx
 import json
+import ast
 import base64
 from datetime import datetime, timedelta
 from Services import Logger
@@ -421,12 +422,26 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
 
             try:
                 if provider == "groq":
-                    response = self._call_groq_with_tools(
+                    raw_response = self._call_groq_with_tools(
                         model_name, messages, tools, temperature, max_tokens
                     )
                 else:
-                    response = self._call_gemini_with_tools(
+                    raw_response = self._call_gemini_with_tools(
                         model_name, messages, tools, temperature, max_tokens
+                    )
+
+                response = self._normalize_tool_response_payload(
+                    response=raw_response,
+                    tools=tools,
+                )
+                if (
+                    isinstance(raw_response, dict)
+                    and not raw_response.get("tool_calls")
+                    and isinstance(response, dict)
+                    and response.get("tool_calls")
+                ):
+                    Logger.log(
+                        f"[LLM MANAGER] - WARNING: Parsed textual tool-call fallback for {provider}/{model_name}."
                     )
 
                 self._log_success(model_name, provider)
@@ -478,6 +493,147 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
 
         self._log_all_models_exhausted(is_agent=True)
         raise Exception("All agent models are rate-limited. Please try again later.")
+
+    def _normalize_tool_response_payload(
+        self,
+        response: Any,
+        tools: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not isinstance(response, dict):
+            return {
+                "content": str(response or ""),
+                "tool_calls": [],
+                "finish_reason": "stop",
+            }
+
+        normalized: Dict[str, Any] = {
+            "content": response.get("content"),
+            "tool_calls": response.get("tool_calls") if isinstance(response.get("tool_calls"), list) else [],
+            "finish_reason": response.get("finish_reason", "stop"),
+        }
+
+        if normalized["tool_calls"]:
+            return normalized
+
+        textual_calls = self._extract_textual_tool_calls(
+            content=normalized.get("content"),
+            tools=tools,
+        )
+        if textual_calls:
+            normalized["tool_calls"] = textual_calls
+            normalized["content"] = None
+            normalized["finish_reason"] = "tool_calls"
+
+        return normalized
+
+    def _extract_textual_tool_calls(
+        self,
+        content: Any,
+        tools: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(content, str):
+            return []
+
+        text = content.strip()
+        if not text:
+            return []
+
+        allowed_name_map: Dict[str, str] = {}
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("type") != "function":
+                continue
+            function_payload = tool.get("function")
+            if not isinstance(function_payload, dict):
+                continue
+            tool_name = function_payload.get("name")
+            if not isinstance(tool_name, str) or not tool_name.strip():
+                continue
+            allowed_name_map[tool_name.strip().lower()] = tool_name.strip()
+
+        if not allowed_name_map:
+            return []
+
+        calls: List[Dict[str, Any]] = []
+
+        def _append_call(candidate_name: str, candidate_args: str) -> None:
+            lower_name = str(candidate_name or "").strip().lower()
+            normalized_name = allowed_name_map.get(lower_name)
+            if not normalized_name:
+                return
+
+            normalized_args = self._normalize_tool_call_arguments(candidate_args)
+            if not normalized_args:
+                return
+
+            call_id = f"text_call_{normalized_name}_{len(calls) + 1}"
+            calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": normalized_name,
+                        "arguments": normalized_args,
+                    },
+                }
+            )
+
+        markup_patterns = [
+            r"<\s*function\s*=\s*([a-zA-Z_][\w\-]*)\s*>\s*(\{.*?\})\s*</\s*function\s*>",
+            r"<\s*([a-zA-Z_][\w\-]*)\s*>\s*(\{.*?\})\s*</\s*function\s*>",
+            r"<\s*function_call\s+name\s*=\s*[\"']?([a-zA-Z_][\w\-]*)[\"']?\s*>\s*(\{.*?\})\s*</\s*function_call\s*>",
+        ]
+        for pattern in markup_patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.DOTALL):
+                _append_call(match.group(1), match.group(2))
+
+        if calls:
+            return calls
+
+        for lower_name, original_name in allowed_name_map.items():
+            call_pattern = re.compile(
+                rf"^\s*{re.escape(lower_name)}\s*\(\s*(\{{.*\}})\s*\)\s*$",
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            match = call_pattern.match(text)
+            if not match:
+                continue
+            _append_call(original_name, match.group(1))
+            if calls:
+                return calls
+
+        return calls
+
+    def _normalize_tool_call_arguments(self, raw_arguments: Any) -> Optional[str]:
+        text = str(raw_arguments or "").strip()
+        if not text:
+            return None
+
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+
+        candidates = [text]
+        start_index = text.find("{")
+        end_index = text.rfind("}")
+        if start_index >= 0 and end_index > start_index:
+            candidates.append(text[start_index : end_index + 1])
+
+        for candidate in candidates:
+            parsed = None
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                try:
+                    parsed = ast.literal_eval(candidate)
+                except Exception:
+                    parsed = None
+
+            if isinstance(parsed, dict):
+                return json.dumps(parsed, ensure_ascii=False)
+
+        return None
 
     def chat_with_vision(
         self,
