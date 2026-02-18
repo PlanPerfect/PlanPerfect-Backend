@@ -70,6 +70,22 @@ class AgentSynthesizerClass:
         "looking for",
     )
 
+    RECOMMENDATION_STYLE_REFERENCE_KEYWORDS = (
+        "my room style",
+        "my room s style",
+        "room style",
+        "room s style",
+        "based on my room style",
+        "based on my room s style",
+        "based on my style",
+        "based on the style",
+        "based on that style",
+        "based on this style",
+        "same style",
+        "that style",
+        "this style",
+    )
+
     STYLE_ALIASES = {
         "boho": "bohemian",
         "bohemian": "bohemian",
@@ -748,6 +764,32 @@ class AgentSynthesizerClass:
                     tool_call_id = tool_call["id"]
 
                     if function_name == "get_recommendations":
+                        parsed_recommendation = self._extract_recommendation_args_from_query(
+                            query=effective_query,
+                            user_id=user_id,
+                        ) or {}
+                        parsed_furniture = str(parsed_recommendation.get("furniture_name") or "").strip()
+                        parsed_style = self._normalize_style_name(parsed_recommendation.get("style"))
+                        if parsed_furniture and not parsed_style:
+                            style_prompt = self._sanitize_user_response(self.RECOMMENDATION_STYLE_PROMPT)
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="response",
+                                content=style_prompt,
+                            )
+                            self._update_session_status(
+                                user_id=user_id,
+                                status="completed",
+                                current_step=self.DONE_STEP,
+                            )
+                            DM.save()
+                            return {
+                                "session_id": current_session_id,
+                                "status": "completed",
+                                "response": style_prompt,
+                                "iterations": iteration,
+                            }
+
                         function_args = self._resolve_recommendation_args(
                             user_id=user_id,
                             query=effective_query,
@@ -1076,6 +1118,19 @@ class AgentSynthesizerClass:
         except Exception:
             return {}
 
+    def _normalize_recommendation_query_text(self, query: str) -> str:
+        normalized_query = re.sub(r"[^\w\s-]", " ", str(query or "").lower())
+        normalized_query = re.sub(r"\s{2,}", " ", normalized_query).strip()
+        return normalized_query
+
+    def _query_references_prior_style(self, normalized_query: str) -> bool:
+        if not isinstance(normalized_query, str) or not normalized_query.strip():
+            return False
+        return any(
+            keyword in normalized_query
+            for keyword in self.RECOMMENDATION_STYLE_REFERENCE_KEYWORDS
+        )
+
     def _normalize_style_name(self, style: Any) -> Optional[str]:
         normalized_style = re.sub(r"\s{2,}", " ", str(style or "").strip().lower())
         if not normalized_style or normalized_style in {"unknown", "n/a", "none", "null"}:
@@ -1114,8 +1169,7 @@ class AgentSynthesizerClass:
         query: str,
         user_id: Optional[str] = None,
     ) -> Optional[Dict[str, str]]:
-        normalized_query = re.sub(r"[^\w\s-]", " ", str(query or "").lower())
-        normalized_query = re.sub(r"\s{2,}", " ", normalized_query).strip()
+        normalized_query = self._normalize_recommendation_query_text(query)
         if not normalized_query:
             return None
 
@@ -1128,7 +1182,7 @@ class AgentSynthesizerClass:
             if re.search(rf"\b{re.escape(alias)}\b", normalized_query):
                 style = self.STYLE_ALIASES[alias]
                 break
-        if not style:
+        if not style and self._query_references_prior_style(normalized_query):
             style = self._latest_classified_style(user_id=user_id)
 
         furniture_name = None
