@@ -30,6 +30,7 @@ class AgentSynthesizerClass:
     SUMMARIZING_STEP = "Summarising..."
     DONE_STEP = "Done!"
     USER_ERROR_MESSAGE = "I ran into an issue while working on that request. Please try again in a moment."
+    RECOMMENDATION_STYLE_PROMPT = "Sure! I can help you with that. What style would you prefer?"
     OUT_OF_SCOPE_MESSAGE = (
         "I can only help with interior design tasks and questions, but I'm happy to help with anything in that space."
     )
@@ -50,10 +51,87 @@ class AgentSynthesizerClass:
         "When image tools require file types, use only files that match the tool requirement. "
         "If files were uploaded in this request/session, do not ask the user to upload again; "
         "use the appropriate tool with the available uploaded file. "
+        "When a user asks for furniture recommendations by style and furniture type, call the "
+        "`get_recommendations` tool instead of answering directly from general knowledge. "
         "Never include URLs/links or confidence percentages/scores in user-facing responses. "
         "Use a warm, natural, conversational tone instead of robotic phrasing. Keep responses concise, "
         "clear, and helpful."
     )
+
+    RECOMMENDATION_INTENT_KEYWORDS = (
+        "recommend",
+        "recommendation",
+        "suggest",
+        "suggestion",
+        "options",
+        "ideas",
+        "find me",
+        "show me",
+        "looking for",
+    )
+
+    STYLE_ALIASES = {
+        "boho": "bohemian",
+        "bohemian": "bohemian",
+        "modern": "modern",
+        "minimalist": "minimalist",
+        "scandinavian": "scandinavian",
+        "industrial": "industrial",
+        "rustic": "rustic",
+        "traditional": "traditional",
+        "contemporary": "contemporary",
+        "coastal": "coastal",
+        "farmhouse": "farmhouse",
+        "mid century modern": "mid century modern",
+        "mid-century modern": "mid century modern",
+        "japandi": "japandi",
+        "wabi sabi": "wabi sabi",
+    }
+
+    FURNITURE_ALIASES = {
+        "table": "table",
+        "tables": "table",
+        "dining table": "dining table",
+        "dining tables": "dining table",
+        "coffee table": "coffee table",
+        "coffee tables": "coffee table",
+        "side table": "side table",
+        "side tables": "side table",
+        "end table": "end table",
+        "end tables": "end table",
+        "console table": "console table",
+        "console tables": "console table",
+        "sofa": "sofa",
+        "sofas": "sofa",
+        "sectional": "sectional",
+        "sectionals": "sectional",
+        "chair": "chair",
+        "chairs": "chair",
+        "armchair": "armchair",
+        "armchairs": "armchair",
+        "bed": "bed",
+        "beds": "bed",
+        "desk": "desk",
+        "desks": "desk",
+        "bookshelf": "bookshelf",
+        "bookshelves": "bookshelf",
+        "cabinet": "cabinet",
+        "cabinets": "cabinet",
+        "dresser": "dresser",
+        "dressers": "dresser",
+        "nightstand": "nightstand",
+        "nightstands": "nightstand",
+        "ottoman": "ottoman",
+        "ottomans": "ottoman",
+        "bench": "bench",
+        "benches": "bench",
+        "stool": "stool",
+        "stools": "stool",
+        "bar stool": "bar stool",
+        "bar stools": "bar stool",
+        "tv stand": "tv stand",
+        "tv stands": "tv stand",
+    }
 
     OUTPUT_BRANCHES = {
         "generate_image": "Generated Images",
@@ -578,6 +656,41 @@ class AgentSynthesizerClass:
                 tool_calls = response.get("tool_calls", [])
                 text_response = response.get("content")
 
+                if not tool_calls and not completed_tool_runs:
+                    parsed_recommendation = self._extract_recommendation_args_from_query(
+                        query=effective_query,
+                        user_id=user_id,
+                    )
+                    if parsed_recommendation and parsed_recommendation.get("furniture_name"):
+                        if not parsed_recommendation.get("style"):
+                            style_prompt = self._sanitize_user_response(self.RECOMMENDATION_STYLE_PROMPT)
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="response",
+                                content=style_prompt,
+                            )
+                            self._update_session_status(
+                                user_id=user_id,
+                                status="completed",
+                                current_step=self.DONE_STEP,
+                            )
+                            DM.save()
+                            return {
+                                "session_id": current_session_id,
+                                "status": "completed",
+                                "response": style_prompt,
+                                "iterations": iteration,
+                            }
+
+                        forced_tool_call = self._build_forced_recommendation_tool_call(
+                            user_id=user_id,
+                            query=effective_query,
+                            iteration=iteration,
+                        )
+                        if forced_tool_call:
+                            tool_calls = [forced_tool_call]
+                            text_response = None
+
                 if not tool_calls:
                     if completed_tool_runs:
                         if len(completed_tool_runs) > 1:
@@ -633,6 +746,35 @@ class AgentSynthesizerClass:
                         tool_call["function"].get("arguments", "{}")
                     )
                     tool_call_id = tool_call["id"]
+
+                    if function_name == "get_recommendations":
+                        function_args = self._resolve_recommendation_args(
+                            user_id=user_id,
+                            query=effective_query,
+                            existing_args=function_args,
+                        )
+
+                        style_value = self._normalize_style_name(function_args.get("style"))
+                        if not style_value:
+                            style_prompt = self._sanitize_user_response(self.RECOMMENDATION_STYLE_PROMPT)
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="response",
+                                content=style_prompt,
+                            )
+                            self._update_session_status(
+                                user_id=user_id,
+                                status="completed",
+                                current_step=self.DONE_STEP,
+                            )
+                            DM.save()
+                            return {
+                                "session_id": current_session_id,
+                                "status": "completed",
+                                "response": style_prompt,
+                                "iterations": iteration,
+                            }
+                        function_args["style"] = style_value
 
                     file_resolution = await self._resolve_tool_file_requirements(
                         user_id=user_id,
@@ -933,6 +1075,123 @@ class AgentSynthesizerClass:
             return parsed if isinstance(parsed, dict) else {}
         except Exception:
             return {}
+
+    def _normalize_style_name(self, style: Any) -> Optional[str]:
+        normalized_style = re.sub(r"\s{2,}", " ", str(style or "").strip().lower())
+        if not normalized_style or normalized_style in {"unknown", "n/a", "none", "null"}:
+            return None
+        return self.STYLE_ALIASES.get(normalized_style, normalized_style)
+
+    def _latest_classified_style(self, user_id: Optional[str]) -> Optional[str]:
+        if not isinstance(user_id, str) or not user_id.strip():
+            return None
+
+        agent_data = self._get_agent_record(user_id)
+        outputs = self._normalize_outputs(agent_data.get("Outputs"))
+        style_entries = outputs.get("Classified Style", [])
+        if not isinstance(style_entries, list):
+            return None
+
+        for entry in reversed(style_entries):
+            style_candidate = None
+            if isinstance(entry, dict):
+                style_candidate = (
+                    entry.get("style")
+                    or entry.get("detected_style")
+                    or entry.get("classified_style")
+                )
+            elif isinstance(entry, str):
+                style_candidate = entry
+
+            normalized_style = self._normalize_style_name(style_candidate)
+            if normalized_style:
+                return normalized_style
+
+        return None
+
+    def _extract_recommendation_args_from_query(
+        self,
+        query: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, str]]:
+        normalized_query = re.sub(r"[^\w\s-]", " ", str(query or "").lower())
+        normalized_query = re.sub(r"\s{2,}", " ", normalized_query).strip()
+        if not normalized_query:
+            return None
+
+        has_intent = any(keyword in normalized_query for keyword in self.RECOMMENDATION_INTENT_KEYWORDS)
+        if not has_intent:
+            return None
+
+        style = None
+        for alias in sorted(self.STYLE_ALIASES.keys(), key=len, reverse=True):
+            if re.search(rf"\b{re.escape(alias)}\b", normalized_query):
+                style = self.STYLE_ALIASES[alias]
+                break
+        if not style:
+            style = self._latest_classified_style(user_id=user_id)
+
+        furniture_name = None
+        for alias in sorted(self.FURNITURE_ALIASES.keys(), key=len, reverse=True):
+            if re.search(rf"\b{re.escape(alias)}\b", normalized_query):
+                furniture_name = self.FURNITURE_ALIASES[alias]
+                break
+
+        if not furniture_name:
+            return None
+
+        parsed_args: Dict[str, str] = {"furniture_name": furniture_name}
+        normalized_style = self._normalize_style_name(style)
+        if normalized_style:
+            parsed_args["style"] = normalized_style
+
+        return parsed_args
+
+    def _resolve_recommendation_args(
+        self,
+        user_id: Optional[str],
+        query: str,
+        existing_args: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        resolved_args = dict(existing_args or {})
+        parsed_args = self._extract_recommendation_args_from_query(
+            query=query,
+            user_id=user_id,
+        ) or {}
+
+        if not isinstance(resolved_args.get("furniture_name"), str) or not resolved_args.get("furniture_name", "").strip():
+            furniture_name = parsed_args.get("furniture_name")
+            if isinstance(furniture_name, str) and furniture_name.strip():
+                resolved_args["furniture_name"] = furniture_name.strip()
+
+        normalized_style = self._normalize_style_name(resolved_args.get("style"))
+        if normalized_style:
+            resolved_args["style"] = normalized_style
+        else:
+            style_from_context = self._normalize_style_name(parsed_args.get("style"))
+            if style_from_context:
+                resolved_args["style"] = style_from_context
+
+        return resolved_args
+
+    def _build_forced_recommendation_tool_call(
+        self,
+        user_id: str,
+        query: str,
+        iteration: int,
+    ) -> Optional[Dict[str, Any]]:
+        args = self._extract_recommendation_args_from_query(query=query, user_id=user_id)
+        if not args or not isinstance(args.get("style"), str) or not args.get("style", "").strip():
+            return None
+
+        return {
+            "id": f"forced_get_recommendations_{iteration}",
+            "type": "function",
+            "function": {
+                "name": "get_recommendations",
+                "arguments": json.dumps(args),
+            },
+        }
 
     def _normalize_steps(self, steps: Any) -> List[Dict[str, Any]]:
         if not isinstance(steps, list):
@@ -3008,9 +3267,21 @@ class AgentSynthesizerClass:
             return await SO.detect_furniture(file=file_obj)
 
         if tool_name in {"get_recommendations"}:
+            style = self._normalize_style_name(args.get("style"))
+            if not style:
+                return {
+                    "error": "missing_style",
+                    "message": self.RECOMMENDATION_STYLE_PROMPT,
+                }
+            furniture_name = str(args.get("furniture_name") or "").strip()
+            if not furniture_name:
+                return {
+                    "error": "missing_furniture_name",
+                    "message": "Sure! I can help you with that. Which furniture would you like recommendations for?",
+                }
             return await SO.get_recommendations(
-                style=args["style"],
-                furniture_name=args["furniture_name"],
+                style=style,
+                furniture_name=furniture_name,
             )
 
         if tool_name == "web_search":
