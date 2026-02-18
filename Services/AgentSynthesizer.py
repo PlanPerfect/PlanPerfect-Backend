@@ -454,9 +454,13 @@ class AgentSynthesizerClass:
                     }
 
                 if pending_status == "needs_file_upload":
+                    fallback_upload_message = self._image_requirement_message(
+                        tool_name=pending_action.get("tool_name") if isinstance(pending_action, dict) else None,
+                        reason="required",
+                    )
                     upload_message = pending_resolution.get(
                         "response",
-                        "Sure. Please upload the file you'd like me to use instead.",
+                        fallback_upload_message,
                     )
                     upload_message = self._sanitize_user_response(upload_message)
                     self._add_step(
@@ -642,9 +646,9 @@ class AgentSynthesizerClass:
                     if resolution_status in {"ask_confirmation", "needs_file_upload"}:
                         response_message = file_resolution.get("response")
                         if not isinstance(response_message, str) or not response_message.strip():
-                            response_message = (
-                                "I need a file before I can continue. "
-                                "Please upload one and let me know when you're ready."
+                            response_message = self._image_requirement_message(
+                                tool_name=function_name,
+                                reason="required",
                             )
                         response_message = self._sanitize_user_response(response_message)
 
@@ -1138,6 +1142,16 @@ class AgentSynthesizerClass:
     def _required_file_description(self, tool_name: str) -> str:
         return self.FILE_REQUIREMENTS.get(tool_name, "a valid input file")
 
+    def _image_requirement_message(self, tool_name: Optional[str], reason: str = "required") -> str:
+        normalized_tool_name = str(tool_name).strip() if isinstance(tool_name, str) else ""
+        if normalized_tool_name == "generate_floor_plan":
+            return self._sanitize_user_response(
+                "Sure! I can help you with that. I'd need you to upload a clear image of your floor plan."
+            )
+        return self._sanitize_user_response(
+            "Sure! I can help you with that. I'd need you to upload a clear image of your room."
+        )
+
     def _scope_context(self, user_id: str, limit: int = 8) -> List[Dict[str, Any]]:
         agent_data = self._get_agent_record(user_id)
         steps = agent_data.get("steps", [])
@@ -1314,19 +1328,17 @@ class AgentSynthesizerClass:
 
         file_id = args.get("file_id")
         if not isinstance(file_id, str) or not file_id.strip():
-            needed = self._required_file_description(tool_name)
             return {
                 "error": "missing_file",
-                "message": f"I need {needed} before I can continue.",
+                "message": self._image_requirement_message(tool_name=tool_name, reason="required"),
             }
 
         cleaned_file_id = file_id.strip()
         file_obj = self._file_registry.get(cleaned_file_id)
         if not file_obj:
-            needed = self._required_file_description(tool_name)
             return {
                 "error": "file_not_found",
-                "message": f"I can't access that file in this session. Please upload {needed}.",
+                "message": self._image_requirement_message(tool_name=tool_name, reason="not_found"),
             }
 
         if tool_name in {"classify_style", "detect_furniture", "generate_floor_plan", "extract_colors"}:
@@ -1338,15 +1350,9 @@ class AgentSynthesizerClass:
             )
 
             if not analysis.get("suitable"):
-                filename = str(analysis.get("filename") or self._file_label(cleaned_file_id, user_id=user_id))
-                needed = self._required_file_description(tool_name)
-
                 return {
                     "error": "invalid_file_type",
-                    "message": (
-                        f"I can't use `{filename}` for this step. "
-                        f"Please upload {needed}."
-                    ),
+                    "message": self._image_requirement_message(tool_name=tool_name, reason="unsuitable"),
                 }
 
         return None
@@ -1580,12 +1586,11 @@ class AgentSynthesizerClass:
             self._clear_pending_file_action(user_id=user_id)
             DM.save()
 
-            needed = pending_action.get("required_file_description") or "the required file"
             return {
                 "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    "Sure! Please upload the file you'd like me to use instead. "
-                    f"I need {needed} before I can continue."
+                "response": self._image_requirement_message(
+                    tool_name=str(pending_action.get("tool_name") or ""),
+                    reason="replace",
                 ),
             }
 
@@ -2116,10 +2121,9 @@ class AgentSynthesizerClass:
         if self._tool_requires_file(tool_name):
             file_id_value = tool_args.get("file_id")
             if not isinstance(file_id_value, str) or file_id_value not in self._file_registry:
-                needed = self._required_file_description(tool_name)
-                upload_message = (
-                    "Sure! Please upload the file you'd like me to use instead. "
-                    f"I need {needed} before I can continue."
+                upload_message = self._image_requirement_message(
+                    tool_name=tool_name,
+                    reason="not_found",
                 )
                 upload_message = self._sanitize_user_response(upload_message)
                 self._add_step(user_id=user_id, step_type="response", content=upload_message)
@@ -2252,11 +2256,11 @@ class AgentSynthesizerClass:
         # Tools requiring files can only use files uploaded with the current prompt.
         # If no files were uploaded alongside this message, request an upload.
         if not current_request_file_id_set:
-            needed = self._required_file_description(tool_name)
             return {
                 "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    f"To use this tool, please upload {needed} together with your message."
+                "response": self._image_requirement_message(
+                    tool_name=tool_name,
+                    reason="required",
                 ),
             }
 
@@ -2279,12 +2283,11 @@ class AgentSynthesizerClass:
             candidates.append(file_info)
 
         if not candidates:
-            needed = self._required_file_description(tool_name)
             return {
                 "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    f"I couldn't locate the uploaded file in this session. "
-                    f"Please upload {needed} and try again."
+                "response": self._image_requirement_message(
+                    tool_name=tool_name,
+                    reason="not_found",
                 ),
             }
 
@@ -2356,12 +2359,11 @@ class AgentSynthesizerClass:
             selected = suitable_files[0]
 
         if not selected:
-            needed = self._required_file_description(tool_name)
             return {
                 "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    "The image you uploaded doesn't look suitable for this task. "
-                    f"Please upload {needed} and try again."
+                "response": self._image_requirement_message(
+                    tool_name=tool_name,
+                    reason="unsuitable",
                 ),
             }
 
@@ -2386,11 +2388,11 @@ class AgentSynthesizerClass:
                 "tool_args": merged_args,
             }
 
-        needed = self._required_file_description(tool_name)
         return {
             "status": "needs_file_upload",
-            "response": self._sanitize_user_response(
-                f"Something went wrong selecting the file. Please upload {needed} and try again."
+            "response": self._image_requirement_message(
+                tool_name=tool_name,
+                reason="selection_error",
             ),
         }
 
