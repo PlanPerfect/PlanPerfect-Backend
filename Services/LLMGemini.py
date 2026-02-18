@@ -6,7 +6,6 @@ import io
 import traceback
 from Services import Logger
 
-# Gemini model setup
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 image_gen_model = "gemini-3-pro-image-preview"
@@ -16,30 +15,13 @@ def generate_interior_design(
     init_image: Image.Image,
     styles: str,
     user_modifications: str = None,
-    furniture_images: list = None  # list of PIL Images to use as references
+    furniture_images: list = None,
+    furniture_descriptions: list = None
 ) -> Image.Image:
-    """
-    Generate interior design transformation using Gemini Imagen 3.
-
-    Imagen 3 is powerful enough to handle both initial generation and regeneration
-    directly without needing any vision model analysis.
-
-    Args:
-        init_image:         Original room image
-        styles:             Base style string (e.g., "Modern, Minimalist")
-        user_modifications: Optional user-specific changes (e.g., "Make walls darker, add plants")
-        furniture_images:   Optional list of PIL Images to use as reference items
-                            (e.g., selected product recommendations from the user)
-
-    Returns:
-        PIL Image object of the generated design
-    """
     try:
-        # Calculate aspect ratio from input image - use original dimensions
         width, height = init_image.size
         aspect_ratio = width / height
 
-        # Use the original image aspect ratio by selecting closest match
         if aspect_ratio >= 1.6:
             aspect_ratio_str = "16:9"
         elif aspect_ratio >= 1.25:
@@ -51,58 +33,114 @@ def generate_interior_design(
         else:
             aspect_ratio_str = "9:16"
 
-        # Validate and truncate user modifications if too long
         if user_modifications and len(user_modifications) > 200:
             user_modifications = user_modifications[:200]
 
         has_furniture = furniture_images and len(furniture_images) > 0
+        has_descriptions = furniture_descriptions and len(furniture_descriptions) > 0
+
+        base_prompt = f"""
+            The FIRST image is the original room.
+
+            Apply {styles} styling to this EXACT room.
+
+            CRITICAL INSTRUCTION:
+            This is a RESTYLING task, NOT a redesign.
+
+            You must preserve the room exactly as it is.
+
+            NON-NEGOTIABLE STRUCTURE RULES:
+            - DO NOT change room dimensions
+            - DO NOT move walls, windows, or doors
+            - DO NOT change ceiling structure
+            - DO NOT change camera angle or perspective
+            - DO NOT zoom in or out
+            - DO NOT crop the image differently
+
+            LAYOUT RULES:
+            - Keep ALL furniture in the EXACT same positions
+            - Keep the same number of furniture pieces
+            - Do NOT remove any furniture
+            - Do NOT add new large furniture pieces
+            - Do NOT replace furniture with different types
+            - Preserve sofa shapes, cabinet layout, island placement, etc.
+
+            WHAT YOU ARE ALLOWED TO CHANGE:
+            - Wall colours and finishes
+            - Flooring materials (keep layout identical)
+            - Furniture upholstery and surface materials
+            - Decorative styling (art, cushions, small decor)
+            - Lighting fixture style (keep exact positions)
+            - Textures and materials to reflect {styles} aesthetic
+
+            The final result must look like:
+            "The SAME room, photographed from the SAME angle,
+            with the SAME layout and furniture placement,
+            but professionally restyled in {styles} aesthetic."
+
+            Photorealistic. Natural lighting. Realistic materials.
+        """
 
         if user_modifications and user_modifications.strip():
-            transformation_prompt = f"""
-            The FIRST image is the room to redesign. Redesign it in {styles} style.
+            base_prompt += f"""
+
+            USER REQUESTED ADDITIONAL CHANGES:
             {user_modifications.strip()}
 
-            Keep the same room layout and furniture positions. Create a photorealistic interior design.
+            These requests must follow ALL structural and layout preservation rules above.
             """
+                    
+            transformation_prompt = base_prompt
+
         else:
             transformation_prompt = f"""
-            The FIRST image is the room to redesign. Transform it to {styles} style.
+                The FIRST image is the room to redesign. Transform it to {styles} style.
 
-            REQUIREMENTS:
-            1. Preserve the exact room layout and furniture positions
-            2. Maintain the same room structure (dimensions, windows, doors)
-            3. Keep the same number of furniture pieces in their current locations
-            4. Update only the styling elements:
-            - Wall colors and textures for {styles} aesthetic
-            - Flooring materials and colors
-            - Furniture upholstery and finishes
-            - Decorative elements (artwork, plants, accessories)
-            - Lighting fixture styles (keep positions)
-            - Window treatments in {styles} style
+                REQUIREMENTS:
+                1. Preserve the EXACT room layout and furniture positions
+                2. Maintain the same room structure (dimensions, windows, doors)
+                3. Keep the same number of furniture pieces in their current locations
+                4. Update only the styling elements:
+                - Wall colors and textures for {styles} aesthetic
+                - Flooring materials and colors
+                - Furniture upholstery and finishes
+                - Decorative elements (artwork, plants, accessories)
+                - Lighting fixture styles (keep positions)
+                - Window treatments in {styles} style
 
-            Generate a photorealistic transformation that looks like the SAME ROOM professionally redesigned in {styles} style.
+                Generate a photorealistic transformation that looks like the SAME ROOM professionally redesigned in {styles} style.
             """
 
-        # Append furniture reference instructions to prompt if applicable
-        if has_furniture:
+        if has_descriptions:
+            desc_text = "\n".join(f"- {d}" for d in furniture_descriptions if d)
             transformation_prompt += f"""
-            REFERENCE ITEMS: The {len(furniture_images)} image(s) that follow after the room image are PRODUCT REFERENCE PHOTOS only.
-            - DO NOT redesign or output these reference images
-            - DO NOT treat them as rooms or spaces
-            - USE them only to understand the style, color, shape, and form of specific furniture or decor items
-            - Incorporate items visually similar to these references naturally into the redesigned room
+                MANDATORY FURNITURE REQUIREMENTS — YOU MUST FOLLOW THESE EXACTLY:
+                The user has specifically selected the following items. These are NON-NEGOTIABLE.
+                Every single item listed below MUST appear visibly and clearly in the final image:
+                {desc_text}
+
+                STRICT RULES:
+                - Do NOT substitute any of these items with alternatives
+                - Do NOT omit any of these items
+                - Each item must be clearly recognizable in the final room
+                - Place them naturally within the room layout
+                - Style them to match the {styles} aesthetic but preserve their core form and identity
             """
 
-        # prompt first, then room image, then furniture references
         contents = [transformation_prompt, init_image]
 
         if has_furniture:
+            contents.append(
+                f"The following {len(furniture_images)} image(s) are supplementary visual references only. "
+                "DO NOT redesign these images. They are provided for additional visual context of the selected items above."
+            )
             for img in furniture_images:
                 contents.append(img)
 
         Logger.log(
             f"[LLM GEMINI] - Generating design | styles={styles} | "
             f"furniture_refs={len(furniture_images) if has_furniture else 0} | "
+            f"descriptions={len(furniture_descriptions) if has_descriptions else 0} | "
             f"aspect_ratio={aspect_ratio_str}"
         )
 
@@ -118,7 +156,6 @@ def generate_interior_design(
             )
         )
 
-        # Extract the generated image
         for part in response.parts:
             if part.inline_data is not None:
                 image_data = part.inline_data.data

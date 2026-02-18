@@ -1,15 +1,3 @@
-"""
-Image Generation API - Using Gemini Imagen 3
-
-Workflow:
-1. Receives input image, style preferences, optional furniture URLs, and optional user prompt
-2. Downloads room image + selected furniture images from Cloudinary/Firebase URLs
-3. Uses Gemini Imagen 3 to transform the room design, referencing the furniture pieces
-4. Uploads generated image to Cloudinary
-5. Saves generated image data to Firebase (overwriting previous generations)
-6. Returns the Cloudinary URL in the response
-"""
-
 from fastapi import APIRouter, Form, Request, Depends
 from fastapi.responses import JSONResponse
 from PIL import Image
@@ -31,16 +19,12 @@ from google.genai import types
 
 
 class UploadFileAdapter:
-    """Adapter to make image bytes compatible with FileManager's expected UploadFile interface"""
     def __init__(self, file_content: bytes, filename: str):
         self.file = io.BytesIO(file_content)
         self.filename = filename
 
 
 def extract_keywords(user_prompt: str) -> list:
-    """
-    Convert user prompt into structured designer notes using Gemini LLM.
-    """
     if not user_prompt or not user_prompt.strip():
         return []
 
@@ -82,7 +66,6 @@ def extract_keywords(user_prompt: str) -> list:
 
 
 def _simple_keyword_extraction(user_prompt: str) -> list:
-    """Fallback simple keyword extraction if LLM fails."""
     if not user_prompt or not user_prompt.strip():
         return []
 
@@ -111,10 +94,6 @@ def _simple_keyword_extraction(user_prompt: str) -> list:
 
 
 def download_image_as_pil(url: str) -> Image.Image | None:
-    """
-    Download an image from a URL and return a PIL Image in RGB mode.
-    Returns None if the download fails.
-    """
     try:
         response = requests.get(url, timeout=15)
         response.raise_for_status()
@@ -132,22 +111,10 @@ router = APIRouter(prefix="/image", tags=["Image Generation"], dependencies=[Dep
 async def generate_image(
     styles: str = Form(...),
     user_prompt: str = Form(None),
-    furniture_urls: str = Form(None),  # JSON-encoded list of furniture image URLs
+    furniture_urls: str = Form(None),
+    furniture_descriptions: str = Form(None),
     request: Request = None
 ):
-    """
-    Generate a new room design using Gemini Imagen 3.
-
-    Args:
-        styles:         Comma-separated string of selected interior design styles
-        user_prompt:    Optional user-provided instructions for customization
-        furniture_urls: Optional JSON array of furniture image URLs to reference
-                        e.g. '["https://...", "https://..."]'
-        request:        FastAPI request object to extract user information
-
-    Returns:
-        JSON with generated image URL, file_id, and filename
-    """
     tmp_file_path = None
     try:
         user_id = None
@@ -205,28 +172,31 @@ async def generate_image(
                             img = download_image_as_pil(url.strip())
                             if img is not None:
                                 furniture_images.append(img)
-                    Logger.log(
-                        f"[IMAGE GENERATION] - Downloaded {len(furniture_images)}/{len(urls_list)} furniture images"
-                    )
+                    Logger.log(f"[IMAGE GENERATION] - Downloaded {len(furniture_images)}/{len(urls_list)} furniture images")
             except json.JSONDecodeError:
-                Logger.log(f"[IMAGE GENERATION] - Invalid furniture_urls JSON, skipping furniture: {furniture_urls}")
+                Logger.log(f"[IMAGE GENERATION] - Invalid furniture_urls JSON, skipping: {furniture_urls}")
+
+        furniture_descs = []
+        if furniture_descriptions:
+            try:
+                furniture_descs = json.loads(furniture_descriptions)
+            except json.JSONDecodeError:
+                Logger.log(f"[IMAGE GENERATION] - Invalid furniture_descriptions JSON, skipping: {furniture_descriptions}")
 
         try:
             result_image = generate_interior_design(
                 init_image=init_image,
                 styles=styles,
                 user_modifications=user_prompt,
-                furniture_images=furniture_images if furniture_images else None
+                furniture_images=furniture_images if furniture_images else None,
+                furniture_descriptions=furniture_descs if furniture_descs else None
             )
         except Exception as e:
             Logger.log(
                 f"[IMAGE GENERATION] - ERROR in generate_interior_design: {str(e)}. "
                 f"Type: {type(e).__name__}. Traceback: {traceback.format_exc()}"
             )
-            return JSONResponse(
-                status_code=500,
-                content={"error": str(e)}
-            )
+            return JSONResponse(status_code=500, content={"error": str(e)})
 
         img_byte_arr = io.BytesIO()
         result_image.save(img_byte_arr, format='PNG', quality=95)
@@ -275,7 +245,8 @@ async def generate_image(
 
         Logger.log(f"[IMAGE GENERATION] - Error in generate_image: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
-    
+
+
 @router.get("/getFurniture")
 async def get_furniture(request: Request):
     try:
@@ -286,7 +257,6 @@ async def get_furniture(request: Request):
         if not user_id:
             return JSONResponse(status_code=400, content={"error": "UERROR: Not authenticated."})
 
-        # Force reload from Firebase to get latest data
         DM.load()
 
         furniture_path = ["Users", user_id, "Existing Homeowner", "Saved Recommendations", "recommendations"]
@@ -302,7 +272,7 @@ async def get_furniture(request: Request):
                     "id": item_id,
                     "name": item_data.get("name", "Unknown"),
                     "image_url": item_data["image"],
-                    "description": item_data.get("description", ""),  # ADD THIS
+                    "description": item_data.get("description", ""),
                     "type": item_data.get("description", "")
                 })
 
