@@ -149,16 +149,12 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
 
     AGENT_MODELS = [
         {"name": "llama-3.3-70b-versatile", "provider": "groq"},                                # 30 RPM, 1K RPD, 12K TPM, 100K TPD
-        {"name": "llama-3.1-8b-instant", "provider": "groq"},                                   # 30 RPM, 14.4K RPD, 6K TPM, 500K TPD
-        {"name": "meta-llama/llama-4-maverick-17b-128e-instruct", "provider": "groq"},          # 30 RPM, 1K RPD, 6K TPM, 500K TPD
-        {"name": "meta-llama/llama-4-scout-17b-16e-instruct", "provider": "groq"},              # 30 RPM, 1K RPD, 30K TPM, 500K TPD
-        {"name": "openai/gpt-oss-20b", "provider": "groq"},                                     # 30 RPM, 1K RPD, 8K TPM, 200K TPD
-        {"name": "openai/gpt-oss-120b", "provider": "groq"},                                    # 30 RPM, 1K RPD, 8K TPM, 200K TPD
-        {"name": "qwen/qwen3-32b", "provider": "groq"},                                         # 60 RPM, 1K RPD, 6K TPM, 500K TPD
-        {"name": "gemini-3-pro-preview", "provider": "gemini"},                                 # 25 RPM, 250 RPD, 1M TPM
         {"name": "gemini-3-flash-preview", "provider": "gemini"},                               # 1K RPM, 10K RPD, 1M TPM
-        {"name": "gemini-2.5-pro", "provider": "gemini"},                                       # 150 RPM, 1K RPD, 2M TPM
         {"name": "gemini-2.5-flash", "provider": "gemini"},                                     # 1K RPM, 10K RPD, 1M TPM
+        {"name": "gemini-3-pro-preview", "provider": "gemini"},                                 # 25 RPM, 250 RPD, 1M TPM
+        {"name": "gemini-2.5-pro", "provider": "gemini"},                                       # 150 RPM, 1K RPD, 2M TPM
+        {"name": "openai/gpt-oss-120b", "provider": "groq"},                                    # 30 RPM, 1K RPD, 8K TPM, 200K TPD
+        {"name": "openai/gpt-oss-20b", "provider": "groq"},                                     # 30 RPM, 1K RPD, 8K TPM, 200K TPD
     ]
 
     VISION_MODELS = [
@@ -875,31 +871,142 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         max_tokens: int
     ) -> Dict[str, Any]:
         """Call Gemini with tool support (fallback)"""
-        # Convert OpenAI-style messages to Gemini format
-        # Convert OpenAI-style tools to Gemini FunctionDeclarations
-        # This is a simplified version - you may need to expand based on your needs
-
         # Convert tools to Gemini format
         function_declarations = []
         for tool in tools:
-            if tool["type"] == "function":
+            if tool.get("type") == "function":
                 func = tool["function"]
+                parameters_schema = func.get("parameters", {})
                 function_declarations.append(
                     types.FunctionDeclaration(
                         name=func["name"],
-                        description=func["description"],
-                        parameters=func["parameters"]
+                        description=func.get("description"),
+                        # Use JSON Schema directly to avoid SDK schema key rewriting
+                        # (e.g. additionalProperties -> additional_properties).
+                        parameters_json_schema=parameters_schema,
                     )
                 )
 
-        # Convert messages to Gemini format
-        gemini_messages = []
+        # Convert OpenAI-style messages (including tool calls/results) to Gemini content.
+        gemini_messages: List[types.Content] = []
+        tool_call_context: Dict[str, Dict[str, Any]] = {}
+
         for msg in messages:
-            role = "user" if msg["role"] == "user" else "model"
-            gemini_messages.append({
-                "role": role,
-                "parts": [{"text": msg["content"]}]
-            })
+            if not isinstance(msg, dict):
+                continue
+
+            original_role = str(msg.get("role") or "").strip().lower()
+            parts: List[types.Part] = []
+            has_structured_tool_response = False
+
+            if original_role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    text_fallback_tool_calls: List[str] = []
+                    for tool_call in tool_calls:
+                        if not isinstance(tool_call, dict):
+                            continue
+                        function_payload = tool_call.get("function")
+                        if not isinstance(function_payload, dict):
+                            continue
+                        function_name = str(function_payload.get("name") or "").strip()
+                        if not function_name:
+                            continue
+
+                        parsed_args = self._safe_parse_tool_args_object(
+                            function_payload.get("arguments")
+                        )
+                        tool_call_id = str(tool_call.get("id") or "").strip()
+                        thought_signature_bytes = self._decode_gemini_thought_signature(
+                            tool_call.get("gemini_thought_signature")
+                        )
+                        has_thought_signature = bool(thought_signature_bytes)
+
+                        if has_thought_signature:
+                            function_call_payload = types.FunctionCall(
+                                name=function_name,
+                                args=parsed_args,
+                                id=tool_call_id or None,
+                            )
+                            part_kwargs: Dict[str, Any] = {
+                                "function_call": function_call_payload,
+                                "thought_signature": thought_signature_bytes,
+                            }
+                            thought_flag = tool_call.get("gemini_thought")
+                            if isinstance(thought_flag, bool):
+                                part_kwargs["thought"] = thought_flag
+                            parts.append(types.Part(**part_kwargs))
+                        else:
+                            text_fallback_tool_calls.append(
+                                json.dumps(
+                                    {
+                                        "name": function_name,
+                                        "arguments": parsed_args,
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
+
+                        if tool_call_id:
+                            tool_call_context[tool_call_id] = {
+                                "name": function_name,
+                                "has_thought_signature": has_thought_signature,
+                            }
+
+                    if text_fallback_tool_calls:
+                        parts.append(
+                            types.Part.from_text(
+                                text=(
+                                    "Assistant tool calls (no Gemini thought signature available):\n"
+                                    + "\n".join(text_fallback_tool_calls)
+                                )
+                            )
+                        )
+
+            if original_role == "tool":
+                tool_call_id = str(msg.get("tool_call_id") or "").strip()
+                function_name = str(msg.get("name") or "").strip()
+                has_thought_signature = False
+                if tool_call_id:
+                    call_context = tool_call_context.get(tool_call_id) or {}
+                    has_thought_signature = bool(call_context.get("has_thought_signature"))
+                    if not function_name:
+                        function_name = str(call_context.get("name") or "").strip()
+
+                structured_response = self._safe_parse_tool_args_object(msg.get("content"))
+                if not structured_response:
+                    tool_text = self._coerce_openai_message_content_to_text(msg.get("content")).strip()
+                    if tool_text:
+                        structured_response = {"content": tool_text}
+
+                if function_name and structured_response and has_thought_signature:
+                    parts.append(
+                        types.Part.from_function_response(
+                            name=function_name,
+                            response=structured_response,
+                        )
+                    )
+                    has_structured_tool_response = True
+                else:
+                    tool_text = self._coerce_openai_message_content_to_text(msg.get("content")).strip()
+                    if tool_text:
+                        label = function_name or tool_call_id or "unknown_tool"
+                        parts.append(
+                            types.Part.from_text(
+                                text=f"Tool result ({label}): {tool_text}"
+                            )
+                        )
+                        has_structured_tool_response = True
+
+            text_content = self._coerce_openai_message_content_to_text(msg.get("content")).strip()
+            if text_content and not has_structured_tool_response:
+                parts.append(types.Part.from_text(text=text_content))
+
+            if not parts:
+                continue
+
+            gemini_role = "model" if original_role == "assistant" else "user"
+            gemini_messages.append(types.Content(role=gemini_role, parts=parts))
 
         response = self._gemini_client.models.generate_content(
             model=model_name,
@@ -918,20 +1025,126 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             "finish_reason": "stop"
         }
 
+        text_chunks: List[str] = []
         for part in response.candidates[0].content.parts:
             if hasattr(part, 'text') and part.text:
-                result["content"] = part.text
+                text_chunks.append(part.text)
             elif hasattr(part, 'function_call') and part.function_call:
+                raw_args = part.function_call.args or {}
+                if hasattr(raw_args, "items"):
+                    args_payload = dict(raw_args)
+                else:
+                    args_payload = {}
+
+                call_id = str(getattr(part.function_call, "id", "") or "").strip()
+                if not call_id:
+                    call_id = f"call_{part.function_call.name}_{len(result['tool_calls']) + 1}"
+
                 result["tool_calls"].append({
-                    "id": f"call_{part.function_call.name}",
+                    "id": call_id,
                     "type": "function",
                     "function": {
                         "name": part.function_call.name,
-                        "arguments": json.dumps(dict(part.function_call.args))
+                        "arguments": json.dumps(args_payload)
                     }
                 })
+                thought_signature_b64 = self._encode_gemini_thought_signature(
+                    getattr(part, "thought_signature", None)
+                )
+                if thought_signature_b64:
+                    result["tool_calls"][-1]["gemini_thought_signature"] = thought_signature_b64
+                thought_flag = getattr(part, "thought", None)
+                if isinstance(thought_flag, bool):
+                    result["tool_calls"][-1]["gemini_thought"] = thought_flag
+
+        if text_chunks:
+            result["content"] = "\n".join(text_chunks).strip()
+        if result["tool_calls"]:
+            result["finish_reason"] = "tool_calls"
 
         return result
+
+    def _coerce_openai_message_content_to_text(self, content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (int, float, bool)):
+            return str(content)
+        if isinstance(content, dict):
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except Exception:
+                return str(content)
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text_value = item.get("text")
+                    if isinstance(text_value, str) and text_value.strip():
+                        chunks.append(text_value)
+                        continue
+                    try:
+                        chunks.append(json.dumps(item, ensure_ascii=False))
+                    except Exception:
+                        chunks.append(str(item))
+                elif item is not None:
+                    chunks.append(str(item))
+            return "\n".join([chunk for chunk in chunks if chunk.strip()])
+        return str(content)
+
+    def _safe_parse_tool_args_object(self, raw_args: Any) -> Dict[str, Any]:
+        if isinstance(raw_args, dict):
+            return raw_args
+
+        text = str(raw_args or "").strip()
+        if not text:
+            return {}
+
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        return {}
+
+    def _encode_gemini_thought_signature(self, signature: Any) -> Optional[str]:
+        if signature is None:
+            return None
+        try:
+            if isinstance(signature, bytes):
+                raw = signature
+            elif isinstance(signature, str):
+                raw = signature.encode("utf-8")
+            else:
+                raw = bytes(signature)
+            if not raw:
+                return None
+            return base64.b64encode(raw).decode("ascii")
+        except Exception:
+            return None
+
+    def _decode_gemini_thought_signature(self, signature: Any) -> Optional[bytes]:
+        if not signature:
+            return None
+        if isinstance(signature, bytes):
+            return signature
+        text = str(signature).strip()
+        if not text:
+            return None
+        try:
+            return base64.b64decode(text.encode("ascii"))
+        except Exception:
+            return None
 
     def _log_success(self, model_name: str, provider: str): # logging call
         if provider != "groq":
