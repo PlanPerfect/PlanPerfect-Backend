@@ -81,7 +81,7 @@ class AgentSynthesizerClass:
     FILE_REQUIREMENTS = {
         "classify_style": "an interior room photo where the design style is clearly visible",
         "detect_furniture": "a clear room photo with visible furniture",
-        "extract_colors": "an image with visible colors (photo, artwork, or palette)",
+        "extract_colors": "a clear interior room photo with visible colors",
         "generate_floor_plan": "a top-down floor plan or architectural layout image",
     }
 
@@ -202,13 +202,13 @@ class AgentSynthesizerClass:
             "type": "function",
             "function": {
                 "name": "extract_colors",
-                "description": "Extract the dominant color palette from an image. Returns 5 dominant colors with RGB and hex values. Use when user wants to know the color scheme of an image.",
+                "description": "Extract the dominant color palette from an interior room image. Returns 5 dominant colors with RGB and hex values.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "The file ID of the image to extract colors from",
+                            "description": "The file ID of the room image to extract colors from",
                         }
                     },
                     "required": ["file_id"],
@@ -419,6 +419,10 @@ class AgentSynthesizerClass:
 
         try:
             pending_action = self._get_pending_file_action(user_id=user_id)
+            # Strict prompt-file pairing: never carry pending file actions across prompts.
+            if pending_action:
+                self._clear_pending_file_action(user_id=user_id)
+                pending_action = None
             forced_file_context: Optional[Dict[str, Any]] = None
             effective_query = query
 
@@ -643,7 +647,7 @@ class AgentSynthesizerClass:
                     if file_resolution.get("applied_forced_context"):
                         forced_file_context = None
 
-                    if resolution_status in {"ask_confirmation", "needs_file_upload"}:
+                    if resolution_status in {"ask_confirmation", "needs_file_upload", "unsuitable_file"}:
                         response_message = file_resolution.get("response")
                         if not isinstance(response_message, str) or not response_message.strip():
                             response_message = self._image_requirement_message(
@@ -658,11 +662,12 @@ class AgentSynthesizerClass:
                             content=response_message,
                         )
 
-                        status_value = (
-                            "awaiting_user_confirmation"
-                            if resolution_status == "ask_confirmation"
-                            else "waiting_for_file_upload"
-                        )
+                        if resolution_status == "ask_confirmation":
+                            status_value = "awaiting_user_confirmation"
+                        elif resolution_status == "unsuitable_file":
+                            status_value = "completed"
+                        else:
+                            status_value = "waiting_for_file_upload"
                         self._update_session_status(
                             user_id=user_id,
                             status=status_value,
@@ -696,6 +701,7 @@ class AgentSynthesizerClass:
                             function_name,
                             function_args,
                             user_id=user_id,
+                            allowed_file_ids=current_request_file_ids,
                         )
 
                         output_summary = self._store_tool_output(
@@ -1144,6 +1150,15 @@ class AgentSynthesizerClass:
 
     def _image_requirement_message(self, tool_name: Optional[str], reason: str = "required") -> str:
         normalized_tool_name = str(tool_name).strip() if isinstance(tool_name, str) else ""
+        if reason == "unsuitable":
+            if normalized_tool_name == "generate_floor_plan":
+                return self._sanitize_user_response(
+                    "I'm sorry, but the image you provided does not seem to be an image of a floor-plan."
+                )
+            return self._sanitize_user_response(
+                "I'm sorry, but the image you provided does not seem to be an image of a room."
+            )
+
         if normalized_tool_name == "generate_floor_plan":
             return self._sanitize_user_response(
                 "Sure! I can help you with that. I'd need you to upload a clear image of your floor plan."
@@ -1322,6 +1337,7 @@ class AgentSynthesizerClass:
         user_id: Optional[str],
         tool_name: str,
         args: Dict[str, Any],
+        allowed_file_ids: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         if not self._tool_requires_file(tool_name):
             return None
@@ -1334,6 +1350,24 @@ class AgentSynthesizerClass:
             }
 
         cleaned_file_id = file_id.strip()
+        allowed_file_id_set: Optional[set] = None
+        if isinstance(allowed_file_ids, list):
+            allowed_file_id_set = {
+                item.strip()
+                for item in allowed_file_ids
+                if isinstance(item, str) and item.strip()
+            }
+            if not allowed_file_id_set:
+                return {
+                    "error": "missing_file",
+                    "message": self._image_requirement_message(tool_name=tool_name, reason="required"),
+                }
+            if cleaned_file_id not in allowed_file_id_set:
+                return {
+                    "error": "file_not_found",
+                    "message": self._image_requirement_message(tool_name=tool_name, reason="required"),
+                }
+
         file_obj = self._file_registry.get(cleaned_file_id)
         if not file_obj:
             return {
@@ -1348,7 +1382,6 @@ class AgentSynthesizerClass:
                 file_info=file_info,
                 file_obj=file_obj,
             )
-
             if not analysis.get("suitable"):
                 return {
                     "error": "invalid_file_type",
@@ -2156,6 +2189,7 @@ class AgentSynthesizerClass:
                 tool_name,
                 tool_args,
                 user_id=user_id,
+                allowed_file_ids=[],
             )
 
             output_summary = self._store_tool_output(
@@ -2243,14 +2277,18 @@ class AgentSynthesizerClass:
             and forced_file_context.get("tool_name") == tool_name
             and isinstance(forced_file_context.get("file_id"), str)
         ):
+            forced_file_id = str(forced_file_context.get("file_id") or "").strip()
+            if forced_file_id not in current_request_file_id_set:
+                forced_file_id = ""
             merged_args = dict(forced_file_context.get("tool_args") or {})
             merged_args.update(args)
-            merged_args["file_id"] = forced_file_context["file_id"]
-            return {
-                "status": "ready",
-                "tool_args": merged_args,
-                "applied_forced_context": True,
-            }
+            if forced_file_id:
+                merged_args["file_id"] = forced_file_id
+                return {
+                    "status": "ready",
+                    "tool_args": merged_args,
+                    "applied_forced_context": True,
+                }
 
         # Change 2: Strict prompt-file pairing.
         # Tools requiring files can only use files uploaded with the current prompt.
@@ -2343,24 +2381,32 @@ class AgentSynthesizerClass:
         )
         DM.save()
 
-        suitable_files = [
-            item for item in analysis_results if item.get("suitable") and item.get("file_id")
-        ]
+        suitable_files = [item for item in analysis_results if item.get("suitable") and item.get("file_id")]
         suitable_files.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
 
         # Select from current-request files only.
         selected: Optional[Dict[str, Any]] = None
+        selection_reason = "auto-selected suitable file from current prompt uploads"
+
         if cleaned_provided_file_id:
             selected = next(
-                (item for item in suitable_files if item.get("file_id") == cleaned_provided_file_id),
+                (
+                    item
+                    for item in suitable_files
+                    if str(item.get("file_id") or "").strip() == cleaned_provided_file_id
+                ),
                 None,
             )
+            if selected:
+                selection_reason = "tool-specified uploaded file from current prompt"
+
         if not selected and suitable_files:
             selected = suitable_files[0]
+            selection_reason = "auto-selected best suitable file from current prompt uploads"
 
         if not selected:
             return {
-                "status": "needs_file_upload",
+                "status": "unsuitable_file",
                 "response": self._image_requirement_message(
                     tool_name=tool_name,
                     reason="unsuitable",
@@ -2377,9 +2423,11 @@ class AgentSynthesizerClass:
                 content={
                     "tool": tool_name,
                     "file_id": selected_file_id,
-                    "reason": "auto-selected from files uploaded with current prompt",
+                    "reason": selection_reason,
                     "filename": str(selected.get("filename") or ""),
                     "description": str(selected.get("description") or ""),
+                    "suitable": bool(selected.get("suitable")),
+                    "score": selected.get("score"),
                 },
             )
             DM.save()
@@ -2423,27 +2471,31 @@ class AgentSynthesizerClass:
                 raise ValueError("Empty file content")
 
             required_description = self._required_file_description(tool_name)
+            expects_floor_plan = tool_name == "generate_floor_plan"
+            expected_scene = (
+                "a top-down view of a floor plan"
+                if expects_floor_plan
+                else "an interior room"
+            )
             analysis_prompt = (
-                "You are validating uploaded images for an interior-design assistant tool.\n"
-                "Analyze the provided image and determine if it is suitable for the specified tool.\n\n"
+                "You are validating an uploaded image for an interior-design assistant.\n"
+                "Decide if the image matches the required scene.\n\n"
                 f"Tool name: {tool_name}\n"
-                f"Required file description: {required_description}\n\n"
+                f"Required scene: {expected_scene}\n\n"
                 "Return JSON only with exactly these keys:\n"
                 "{\n"
-                '  "predicted_type": "floor_plan|room_photo|palette_or_graphic|unclear",\n'
+                '  "predicted_type": "floor_plan|room_photo|other|unclear",\n'
                 '  "suitable": true,\n'
                 '  "score": 0.0,\n'
                 '  "description": "short plain-English description"\n'
                 "}\n\n"
-                "Guidelines:\n"
-                "- generate_floor_plan: suitable only for top-down floor plan / architectural layout images.\n"
-                "- classify_style and detect_furniture: suitable only for clear interior room photos.\n"
-                "- extract_colors: suitable for images with visible colors (photos, palettes, graphics).\n"
+                "Rules:\n"
+                "- If tool is generate_floor_plan: suitable=true only when the image clearly shows a top-down floor-plan layout.\n"
+                "- For all other image tools: suitable=true only when the image clearly shows an interior room scene.\n"
+                "- If uncertain, set suitable=false.\n"
                 "- score must be between 0.0 and 1.0.\n"
-                "- description should describe what is visually present (objects, layout, colors, style cues).\n"
-                "- do not copy/rephrase the required file description.\n"
-                "- avoid generic requirement language like 'clear interior room photo with visible furniture'.\n"
-                "- description should be concise and should not include links."
+                "- description should mention what is visible.\n"
+                "- no links."
             )
             raw_analysis = LLMManager.chat_with_vision(
                 prompt=analysis_prompt,
@@ -2453,15 +2505,28 @@ class AgentSynthesizerClass:
                 max_tokens=300,
             )
             parsed_analysis = self._parse_json_object(raw_analysis)
+            fallback_text = str(raw_analysis or "").strip().lower()
             if not parsed_analysis:
-                raise ValueError("Vision model did not return valid JSON.")
+                yes_no_match = re.search(r"\b(yes|no)\b", fallback_text)
+                if yes_no_match:
+                    parsed_analysis = {
+                        "predicted_type": "floor_plan" if (expects_floor_plan and yes_no_match.group(1) == "yes") else (
+                            "room_photo" if (not expects_floor_plan and yes_no_match.group(1) == "yes") else "unclear"
+                        ),
+                        "suitable": yes_no_match.group(1) == "yes",
+                        "score": 0.75 if yes_no_match.group(1) == "yes" else 0.2,
+                        "description": str(raw_analysis or "").strip() or "an image with unclear structure",
+                    }
+                else:
+                    raise ValueError("Vision model did not return valid JSON.")
 
             predicted_type = str(parsed_analysis.get("predicted_type") or "unclear").strip().lower()
-            if predicted_type not in {"floor_plan", "room_photo", "palette_or_graphic", "unclear"}:
+            if predicted_type not in {"floor_plan", "room_photo", "other", "unclear"}:
+                predicted_type = "unclear"
+            if predicted_type == "other":
                 predicted_type = "unclear"
 
             suitable_raw = parsed_analysis.get("suitable")
-            suitable: bool
             if isinstance(suitable_raw, bool):
                 suitable = suitable_raw
             else:
@@ -2478,10 +2543,26 @@ class AgentSynthesizerClass:
             if isinstance(description_raw, str) and description_raw.strip():
                 description = description_raw.strip()
             else:
-                description = "an image with unclear structure"
+                if suitable:
+                    description = (
+                        "a top-down floor-plan layout with walls and room boundaries"
+                        if expects_floor_plan
+                        else "an interior room scene with visible layout and furnishings"
+                    )
+                else:
+                    description = (
+                        "the image does not appear to show a top-down floor-plan layout"
+                        if expects_floor_plan
+                        else "the image does not appear to show an interior room"
+                    )
 
-            if not suitable and score > 0.7:
-                score = 0.7
+            if suitable and expects_floor_plan and predicted_type == "room_photo":
+                suitable = False
+            if suitable and not expects_floor_plan and predicted_type == "floor_plan":
+                suitable = False
+
+            if not suitable and score > 0.49:
+                score = 0.49
             if suitable and score < 0.5:
                 score = 0.5
 
@@ -2575,7 +2656,7 @@ class AgentSynthesizerClass:
             "classify_style": "a room scene with visible decor, furnishings, and style cues",
             "detect_furniture": "a room scene with visible furniture pieces and layout",
             "generate_floor_plan": "a top-down plan showing walls, room boundaries, and layout lines",
-            "extract_colors": "a colorful image with distinct tones and color regions",
+            "extract_colors": "a room scene with visible colors across walls, furniture, and decor",
         }
         fallback_by_type = {
             "room_photo": "a room scene with visible furnishings and decor",
@@ -2900,11 +2981,13 @@ class AgentSynthesizerClass:
         tool_name: str,
         args: Dict[str, Any],
         user_id: Optional[str] = None,
+        allowed_file_ids: Optional[List[str]] = None,
     ) -> Any:
         validation_error = await self._validate_tool_file_input(
             user_id=user_id,
             tool_name=tool_name,
             args=args,
+            allowed_file_ids=allowed_file_ids,
         )
         if validation_error:
             return validation_error
