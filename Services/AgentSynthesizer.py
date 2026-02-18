@@ -2313,11 +2313,11 @@ class AgentSynthesizerClass:
             if _has_generated_asset(result):
                 response_text = self._pick_response_template(
                     [
-                        "I've successfully generated your updated floor plan and saved it to the Agent Ensemble. Let me know if you'd like further assistance!",
-                        "Your new floor plan is ready and stored in the Agent Ensemble. Let me know if you'd like further assistance!",
-                        "Floor plan generation is complete, and the result is saved in the Agent Ensemble. Let me know if you'd like further assistance!",
+                        "I've successfully generated your updated floor plan and saved it to the **Agent Ensemble**. Let me know if you'd like further assistance!",
+                        "Your new floor plan is ready and stored in the **Agent Ensemble**. Let me know if you'd like further assistance!",
+                        "Floor plan generation is complete, and the result is saved in the **Agent Ensemble**. Let me know if you'd like further assistance!",
                     ],
-                    "I've successfully generated your updated floor plan and saved it to the Agent Ensemble. Let me know if you'd like further assistance!",
+                    "I've successfully generated your updated floor plan and saved it to the **Agent Ensemble**. Let me know if you'd like further assistance!",
                 )
                 return self._sanitize_user_response(response_text)
 
@@ -2335,11 +2335,11 @@ class AgentSynthesizerClass:
             if _has_generated_asset(result):
                 response_text = self._pick_response_template(
                     [
-                        "Your generated image is ready and saved to the Agent Ensemble.",
-                        "Done. I generated the image and saved it to the Agent Ensemble.",
-                        "Image generation is complete, and it's now saved to the Agent Ensemble.",
+                        "Your generated image is ready and saved to the **Agent Ensemble**.",
+                        "Done. I generated the image and saved it to the **Agent Ensemble**.",
+                        "Image generation is complete, and it's now saved to the **Agent Ensemble**.",
                     ],
-                    "Your generated image is ready and saved to the Agent Ensemble.",
+                    "Your generated image is ready and saved to the **Agent Ensemble**.",
                 )
                 return self._sanitize_user_response(response_text)
 
