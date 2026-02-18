@@ -1,25 +1,13 @@
 """
 Image Generation API - Using Gemini Imagen 3
 
-This file handles image generation using Gemini's native image generation (Imagen 3).
-This replaces the Stable Diffusion pipeline for faster, higher-quality results.
-
 Workflow:
-1. Receives input image, style preferences, and optional user prompt from frontend
-2. Downloads image from Cloudinary
-3. Uses Gemini Imagen 3 to transform the room design
-4. If user_prompt is provided, incorporates it into the generation
-5. Uploads generated image to Cloudinary
-6. Saves generated image data to Firebase database (overwriting previous generations)
-7. Returns the Cloudinary URL in the response
-
-Benefits over Stable Diffusion:
-- Much faster generation (no GPU required)
-- Higher quality, sharper images
-- Better at preserving room layout
-- No blur or artifacts
-- Simpler pipeline (no model loading, VRAM management, etc.)
-- Can incorporate user-specific instructions dynamically
+1. Receives input image, style preferences, optional furniture URLs, and optional user prompt
+2. Downloads room image + selected furniture images from Cloudinary/Firebase URLs
+3. Uses Gemini Imagen 3 to transform the room design, referencing the furniture pieces
+4. Uploads generated image to Cloudinary
+5. Saves generated image data to Firebase (overwriting previous generations)
+6. Returns the Cloudinary URL in the response
 """
 
 from fastapi import APIRouter, Form, Request, Depends
@@ -27,6 +15,7 @@ from fastapi.responses import JSONResponse
 from PIL import Image
 import uuid
 import io
+import json
 import tempfile
 import os
 import re
@@ -51,12 +40,6 @@ class UploadFileAdapter:
 def extract_keywords(user_prompt: str) -> list:
     """
     Convert user prompt into structured designer notes using Gemini LLM.
-
-    Args:
-        user_prompt: Raw user input (e.g., "Make the walls brighter, add more lights and decorations")
-
-    Returns:
-        List of actionable designer notes (e.g., ["Lighten wall colour to a warm off-white", "Add ambient lighting fixtures"])
     """
     if not user_prompt or not user_prompt.strip():
         return []
@@ -64,7 +47,6 @@ def extract_keywords(user_prompt: str) -> list:
     try:
         client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-        # Use Gemini 2.5 Flash Lite for fast, designer note generation
         extraction_prompt = f"""You are a professional interior design consultant summarizing a client's request into concise notes for the design team.
 
         Convert the client's raw input into clear, actionable designer notes.
@@ -84,45 +66,28 @@ def extract_keywords(user_prompt: str) -> list:
             model="gemini-2.5-flash-lite",
             contents=extraction_prompt,
             config=types.GenerateContentConfig(
-                temperature=0.1,  # Low temperature for consistency
+                temperature=0.1,
                 max_output_tokens=50
             )
         )
 
-        # Parse the response - split bullet points into a list
         notes_text = response.text.strip()
-
-        # Split by newline and clean up bullet formatting
         notes = [line.strip().lstrip('-').strip() for line in notes_text.splitlines()]
-
-        # Filter out empty lines
         notes = [n for n in notes if n and len(n) > 3][:6]
-
         return notes
 
     except Exception as e:
         Logger.log(f"[IMAGE GENERATION] - Error generating designer notes with LLM: {str(e)}")
-        # Fallback to simple extraction if LLM fails
         return _simple_keyword_extraction(user_prompt)
 
 
 def _simple_keyword_extraction(user_prompt: str) -> list:
-    """
-    Fallback simple keyword extraction if LLM fails.
-
-    Args:
-        user_prompt: Raw user input
-
-    Returns:
-        List of basic extracted keywords
-    """
+    """Fallback simple keyword extraction if LLM fails."""
     if not user_prompt or not user_prompt.strip():
         return []
 
-    # Convert to lowercase
     text = user_prompt.lower()
 
-    # Remove common stop words
     stop_words = {
         'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
         'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
@@ -132,13 +97,9 @@ def _simple_keyword_extraction(user_prompt: str) -> list:
         'look', 'less', 'get', 'want', 'need'
     }
 
-    # Extract words (alphanumeric only)
     words = re.findall(r'\b[a-z]+\b', text)
-
-    # Filter out stop words and keep meaningful keywords
     keywords = [word for word in words if word not in stop_words and len(word) > 2]
 
-    # Remove duplicates while preserving order
     seen = set()
     unique_keywords = []
     for keyword in keywords:
@@ -146,33 +107,49 @@ def _simple_keyword_extraction(user_prompt: str) -> list:
             seen.add(keyword)
             unique_keywords.append(keyword)
 
-    # Limit to top 10 keywords
     return unique_keywords[:10]
+
+
+def download_image_as_pil(url: str) -> Image.Image | None:
+    """
+    Download an image from a URL and return a PIL Image in RGB mode.
+    Returns None if the download fails.
+    """
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        img = Image.open(io.BytesIO(response.content)).convert("RGB")
+        return img
+    except Exception as e:
+        Logger.log(f"[IMAGE GENERATION] - Failed to download image from {url}: {str(e)}")
+        return None
 
 
 router = APIRouter(prefix="/image", tags=["Image Generation"], dependencies=[Depends(_verify_api_key)])
 
+
 @router.post("/generate")
 async def generate_image(
     styles: str = Form(...),
-    user_prompt: str = Form(None),  # NEW: Optional user customization prompt
+    user_prompt: str = Form(None),
+    furniture_urls: str = Form(None),  # JSON-encoded list of furniture image URLs
     request: Request = None
 ):
     """
     Generate a new room design using Gemini Imagen 3.
 
     Args:
-        styles: Comma-separated string of selected interior design styles
-        user_prompt: Optional user-provided instructions for customization
-                    (e.g., "Make the walls darker blue, add more plants")
-        request: FastAPI request object to extract user information
+        styles:         Comma-separated string of selected interior design styles
+        user_prompt:    Optional user-provided instructions for customization
+        furniture_urls: Optional JSON array of furniture image URLs to reference
+                        e.g. '["https://...", "https://..."]'
+        request:        FastAPI request object to extract user information
 
     Returns:
         JSON with generated image URL, file_id, and filename
     """
     tmp_file_path = None
     try:
-        # Extract user ID from request
         user_id = None
         if request:
             user_id = getattr(request.state, 'user_id', None)
@@ -182,38 +159,32 @@ async def generate_image(
         if not user_id:
             return JSONResponse(
                 status_code=400,
-                content={
-                    "error": "UERROR: One or more required fields are invalid / missing."
-                }
+                content={"error": "UERROR: One or more required fields are invalid / missing."}
             )
 
         user = DM.peek(["Users", user_id])
         if user is None:
             return JSONResponse(
                 status_code=404,
-                content={
-                    "error": "UERROR: Please login again."
-                }
+                content={"error": "UERROR: Please login again."}
             )
 
-        # Fetch image info from Style Analysis node
         analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
         analysis_data = DM.peek(analysis_path)
 
         if not analysis_data:
-            raise JSONResponse(
+            return JSONResponse(
                 status_code=404,
                 content={"error": "UERROR: Please complete style analysis first."}
             )
 
         image_url = analysis_data.get('image_url')
         if not image_url:
-            raise JSONResponse(
+            return JSONResponse(
                 status_code=404,
-                content={ "error": "UERROR: Please complete style analysis first." }
+                content={"error": "UERROR: Please complete style analysis first."}
             )
 
-        # Download image from Cloudinary
         response = requests.get(image_url)
         response.raise_for_status()
 
@@ -224,21 +195,39 @@ async def generate_image(
 
         init_image = Image.open(tmp_file_path).convert("RGB")
 
-        # Generate new design with Imagen 3
+        furniture_images: list[Image.Image] = []
+        if furniture_urls:
+            try:
+                urls_list = json.loads(furniture_urls)
+                if isinstance(urls_list, list):
+                    for url in urls_list:
+                        if isinstance(url, str) and url.strip():
+                            img = download_image_as_pil(url.strip())
+                            if img is not None:
+                                furniture_images.append(img)
+                    Logger.log(
+                        f"[IMAGE GENERATION] - Downloaded {len(furniture_images)}/{len(urls_list)} furniture images"
+                    )
+            except json.JSONDecodeError:
+                Logger.log(f"[IMAGE GENERATION] - Invalid furniture_urls JSON, skipping furniture: {furniture_urls}")
+
         try:
             result_image = generate_interior_design(
                 init_image=init_image,
                 styles=styles,
-                user_modifications=user_prompt
+                user_modifications=user_prompt,
+                furniture_images=furniture_images if furniture_images else None
             )
         except Exception as e:
-            Logger.log(f"[IMAGE GENERATION] - ERROR in generate_interior_design: {str(e)}. Error type: {type(e).__name__}. Traceback: {traceback.format_exc()}")
-            raise JSONResponse(
+            Logger.log(
+                f"[IMAGE GENERATION] - ERROR in generate_interior_design: {str(e)}. "
+                f"Type: {type(e).__name__}. Traceback: {traceback.format_exc()}"
+            )
+            return JSONResponse(
                 status_code=500,
-                content={ "error": str(e) }
+                content={"error": str(e)}
             )
 
-        # Upload to Cloudinary
         img_byte_arr = io.BytesIO()
         result_image.save(img_byte_arr, format='PNG', quality=95)
         img_byte_arr.seek(0)
@@ -253,12 +242,9 @@ async def generate_image(
             subfolder="Generated Designs"
         )
 
-        # Clean up temporary file
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
 
-        # Save generated image to database
-        # Extract designer notes from user prompt for better storage
         designer_notes = extract_keywords(user_prompt) if user_prompt else []
 
         generation_data = {
@@ -267,14 +253,13 @@ async def generate_image(
             "filename": cloudinary_result["filename"],
             "styles": styles,
             "designer_notes": designer_notes,
+            "furniture_count": len(furniture_images),
         }
 
         DM.data["Users"][user_id]["Existing Homeowner"]["Image Generation"] = generation_data
         DM.data["Users"][user_id]["Existing Homeowner"]["Preferences"]["selected_styles"] = styles.split(", ")
-
         DM.save()
 
-        # Return Cloudinary URL and file_id
         return {
             "url": cloudinary_result["url"],
             "file_id": cloudinary_result["file_id"],
@@ -282,7 +267,6 @@ async def generate_image(
         }
 
     except Exception as e:
-        # Error handling and cleanup
         if tmp_file_path and os.path.exists(tmp_file_path):
             try:
                 os.unlink(tmp_file_path)
@@ -290,4 +274,43 @@ async def generate_image(
                 pass
 
         Logger.log(f"[IMAGE GENERATION] - Error in generate_image: {str(e)}")
-        raise JSONResponse(status_code=500, content={ "error": str(e) })
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@router.get("/getFurniture")
+async def get_furniture(request: Request):
+    try:
+        user_id = getattr(request.state, 'user_id', None)
+        if not user_id:
+            user_id = request.headers.get('X-User-ID')
+
+        if not user_id:
+            return JSONResponse(status_code=400, content={"error": "UERROR: Not authenticated."})
+
+        # Force reload from Firebase to get latest data
+        DM.load()
+
+        furniture_path = ["Users", user_id, "Existing Homeowner", "Saved Recommendations", "recommendations"]
+        furniture_data = DM.peek(furniture_path)
+
+        if not furniture_data:
+            return JSONResponse(status_code=404, content={"error": "UERROR: No saved recommendations found."})
+
+        furniture_list = []
+        for item_id, item_data in furniture_data.items():
+            if isinstance(item_data, dict) and item_data.get("image"):
+                furniture_list.append({
+                    "id": item_id,
+                    "name": item_data.get("name", "Unknown"),
+                    "image_url": item_data["image"],
+                    "description": item_data.get("description", ""),  # ADD THIS
+                    "type": item_data.get("description", "")
+                })
+
+        return {
+            "success": True,
+            "furniture": furniture_list
+        }
+
+    except Exception as e:
+        Logger.log(f"[GET FURNITURE] - Error: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
