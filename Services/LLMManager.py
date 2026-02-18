@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_ALT_API_KEY = os.getenv("GROQ_ALT_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 """
@@ -163,15 +164,30 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
         {"name": "gemini-2.5-flash", "provider": "gemini"},
     ]
 
-    def __init__(self, use_agent_models: bool = False, use_vision_models: bool = False):
+    def __init__(
+        self,
+        use_agent_models: bool = False,
+        use_vision_models: bool = False,
+        provider_filter: Optional[List[str]] = None,
+    ):
         self.use_agent_models = use_agent_models
         self.use_vision_models = use_vision_models
         if use_vision_models:
-            self.models = self.VISION_MODELS
+            selected_models = self.VISION_MODELS
         elif use_agent_models:
-            self.models = self.AGENT_MODELS
+            selected_models = self.AGENT_MODELS
         else:
-            self.models = self.CHAT_MODELS
+            selected_models = self.CHAT_MODELS
+
+        if provider_filter:
+            allowed = {str(provider).strip().lower() for provider in provider_filter if str(provider).strip()}
+            selected_models = [
+                model
+                for model in selected_models
+                if str(model.get("provider") or "").strip().lower() in allowed
+            ]
+
+        self.models = list(selected_models)
         self.current_model_index = 0
         self.model_rate_limits: Dict[str, _RateLimitManager] = {
             model["name"]: _RateLimitManager() for model in self.models
@@ -179,6 +195,9 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
         self.rate_limit_cooldowns: Dict[str, datetime] = {}
 
     def get_current_model(self) -> Dict: # get the current available model, switch if rate-limited
+        if not self.models:
+            raise RuntimeError("No models configured for this manager.")
+
         original_index = self.current_model_index
         attempts = 0
 
@@ -228,6 +247,9 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
             self.model_rate_limits[model_name].update_headers(headers)
 
     def mark_rate_limited(self, model_name: str, retry_after: Optional[str] = None): # mark model as rate-limited and set cooldown
+        if not self.models:
+            return
+
         now = datetime.now()
 
         cooldown_time = None
@@ -253,10 +275,15 @@ class _ModelManager: # manages available models and their rate-limit status. Bac
         Mark a model as unavailable (decommissioned/unsupported) and skip it for a long cooldown.
         Reuses cooldown storage so model selection can avoid it.
         """
+        if not self.models:
+            return
+
         self.rate_limit_cooldowns[model_name] = datetime.now() + timedelta(seconds=cooldown_seconds)
         self.current_model_index = (self.current_model_index + 1) % len(self.models)
 
     def all_models_rate_limited(self) -> bool: # DANGER: all models rate-limited
+        if not self.models:
+            return True
         return len(self.rate_limit_cooldowns) >= len(self.models)
 
 class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and model-switching
@@ -269,22 +296,113 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             cls._instance._http_client = RateLimitCapturingClient()
             cls._instance._initialized = False
             cls._instance._groq_client = None
+            cls._instance._groq_alt_client = None
             cls._instance._gemini_client = None
             cls._instance._model_manager = None
             cls._instance._agent_model_manager = None  # Separate manager for agent models
             cls._instance._vision_model_manager = None  # Separate manager for vision analysis
+            cls._instance._chat_gemini_model_manager = None
+            cls._instance._agent_gemini_model_manager = None
+            cls._instance._groq_client_pool = []
+            cls._instance._active_chat_groq_client_index = 0
+            cls._instance._active_agent_groq_client_index = 0
         return cls._instance
 
     def initialize(self):
         if self._initialized:
             return
 
-        self._groq_client = Groq(api_key=GROQ_API_KEY, http_client=self._http_client)
+        self._groq_client_pool = []
+
+        if GROQ_API_KEY:
+            primary_client = Groq(api_key=GROQ_API_KEY, http_client=self._http_client)
+            self._groq_client_pool.append(
+                {
+                    "label": "primary",
+                    "client": primary_client,
+                    "http_client": self._http_client,
+                    "chat_manager": _ModelManager(
+                        use_agent_models=False,
+                        provider_filter=["groq"],
+                    ),
+                    "agent_manager": _ModelManager(
+                        use_agent_models=True,
+                        provider_filter=["groq"],
+                    ),
+                }
+            )
+            self._groq_client = primary_client
+
+        if GROQ_ALT_API_KEY:
+            alt_http_client = RateLimitCapturingClient()
+            alt_client = Groq(api_key=GROQ_ALT_API_KEY, http_client=alt_http_client)
+            self._groq_client_pool.append(
+                {
+                    "label": "alt",
+                    "client": alt_client,
+                    "http_client": alt_http_client,
+                    "chat_manager": _ModelManager(
+                        use_agent_models=False,
+                        provider_filter=["groq"],
+                    ),
+                    "agent_manager": _ModelManager(
+                        use_agent_models=True,
+                        provider_filter=["groq"],
+                    ),
+                }
+            )
+            self._groq_alt_client = alt_client
+
+        if self._groq_client is None and self._groq_client_pool:
+            self._groq_client = self._groq_client_pool[0]["client"]
+
         self._gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-        self._model_manager = _ModelManager(use_agent_models=False)  # For regular chat
-        self._agent_model_manager = _ModelManager(use_agent_models=True)  # For agent chat with tools
+        self._model_manager = _ModelManager(use_agent_models=False, provider_filter=["groq"])  # For regular chat
+        self._agent_model_manager = _ModelManager(use_agent_models=True, provider_filter=["groq"])  # For agent chat with tools
+        self._chat_gemini_model_manager = _ModelManager(use_agent_models=False, provider_filter=["gemini"])
+        self._agent_gemini_model_manager = _ModelManager(use_agent_models=True, provider_filter=["gemini"])
         self._vision_model_manager = _ModelManager(use_vision_models=True)  # For image analysis
+        self._active_chat_groq_client_index = 0
+        self._active_agent_groq_client_index = 0
         self._initialized = True
+
+    def _get_active_groq_runtime(self, is_agent: bool = False) -> Optional[Dict[str, Any]]:
+        if not self._groq_client_pool:
+            return None
+
+        index = self._active_agent_groq_client_index if is_agent else self._active_chat_groq_client_index
+        if index < 0 or index >= len(self._groq_client_pool):
+            index = 0
+            if is_agent:
+                self._active_agent_groq_client_index = index
+            else:
+                self._active_chat_groq_client_index = index
+
+        return self._groq_client_pool[index]
+
+    def _set_active_groq_runtime_index(self, index: int, is_agent: bool = False) -> None:
+        if index < 0 or index >= len(self._groq_client_pool):
+            return
+        if is_agent:
+            self._active_agent_groq_client_index = index
+        else:
+            self._active_chat_groq_client_index = index
+
+    def _activate_available_groq_runtime(self, is_agent: bool = False, start_offset: int = 0) -> bool:
+        if not self._groq_client_pool:
+            return False
+
+        current_index = self._active_agent_groq_client_index if is_agent else self._active_chat_groq_client_index
+        manager_key = "agent_manager" if is_agent else "chat_manager"
+
+        for offset in range(start_offset, len(self._groq_client_pool) + start_offset):
+            idx = (current_index + offset) % len(self._groq_client_pool)
+            manager = self._groq_client_pool[idx].get(manager_key)
+            if manager and manager.models and not manager.all_models_rate_limited():
+                self._set_active_groq_runtime_index(idx, is_agent=is_agent)
+                return True
+
+        return False
 
     @staticmethod
     def _is_rate_limit_error(error_str: str) -> bool:
@@ -339,24 +457,85 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         attempts = 0
 
         while attempts < max_retries:
-            if self._model_manager.all_models_rate_limited():
+            if self._activate_available_groq_runtime(is_agent=False, start_offset=0):
+                groq_runtime = self._get_active_groq_runtime(is_agent=False)
+                if groq_runtime:
+                    groq_manager = groq_runtime.get("chat_manager")
+                    model = groq_manager.get_current_model()
+                    model_name = model["name"]
+                    provider = "groq"
+                    groq_key_label = str(groq_runtime.get("label") or "primary")
+
+                    try:
+                        assistant_response = self._call_groq(
+                            model_name=model_name,
+                            prompt=prompt,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            groq_client=groq_runtime.get("client"),
+                            rate_limit_manager=groq_manager,
+                            http_client=groq_runtime.get("http_client"),
+                        )
+
+                        self._log_success(
+                            model_name=model_name,
+                            provider=provider,
+                            manager=groq_manager,
+                            groq_key_label=groq_key_label,
+                        )
+                        return assistant_response
+
+                    except Exception as e:
+                        error_str = str(e).lower()
+
+                        if self._is_rate_limit_error(error_str):
+                            retry_after = None
+                            if hasattr(e, 'response') and hasattr(e.response, 'headers'):
+                                retry_after = e.response.headers.get('retry-after')
+
+                            groq_manager.mark_rate_limited(model_name, retry_after)
+                            self._log_rate_limit_hit(
+                                model_name=model_name,
+                                provider=provider,
+                                error_message=str(e),
+                                groq_key_label=groq_key_label,
+                            )
+
+                            attempts += 1
+
+                            if groq_manager.all_models_rate_limited():
+                                self._activate_available_groq_runtime(is_agent=False, start_offset=1)
+
+                            if attempts < max_retries:
+                                time.sleep(0.5)
+                                continue
+                            self._log_all_models_exhausted()
+                            return self.FALLBACK_MESSAGE
+
+                        if self._is_model_unavailable_error(error_str):
+                            groq_manager.mark_model_unavailable(model_name)
+                            attempts += 1
+                            if attempts < max_retries:
+                                continue
+                            self._log_all_models_exhausted()
+                            return self.FALLBACK_MESSAGE
+
+                        Logger.log(f"[LLM MANAGER] - Error with {provider}/{model_name}: {str(e)}")
+                        raise
+
+            gemini_manager = self._chat_gemini_model_manager
+            if not gemini_manager or not gemini_manager.models or gemini_manager.all_models_rate_limited():
                 self._log_all_models_exhausted()
                 return self.FALLBACK_MESSAGE
 
-            current_model = self._model_manager.get_current_model()
-            model_name = current_model["name"]
-            provider = current_model["provider"]
+            gemini_model = gemini_manager.get_current_model()
+            model_name = gemini_model["name"]
+            provider = "gemini"
 
             try:
-                if provider == "groq":
-                    assistant_response = self._call_groq(model_name, prompt, temperature, max_tokens)
-                else:
-                    assistant_response = self._call_gemini(model_name, prompt, temperature, max_tokens)
-
-                self._log_success(model_name, provider)
-
+                assistant_response = self._call_gemini(model_name, prompt, temperature, max_tokens)
+                self._log_success(model_name, provider, manager=gemini_manager)
                 return assistant_response
-
             except Exception as e:
                 error_str = str(e).lower()
 
@@ -365,26 +544,24 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
                     if hasattr(e, 'response') and hasattr(e.response, 'headers'):
                         retry_after = e.response.headers.get('retry-after')
 
-                    self._model_manager.mark_rate_limited(model_name, retry_after)
+                    gemini_manager.mark_rate_limited(model_name, retry_after)
                     self._log_rate_limit_hit(model_name, provider, str(e))
-
                     attempts += 1
 
                     if attempts < max_retries:
                         time.sleep(0.5)
                         continue
-                    else:
-                        self._log_all_models_exhausted()
-                        return self.FALLBACK_MESSAGE
-                elif self._is_model_unavailable_error(error_str):
-                    self._model_manager.mark_model_unavailable(model_name)
+                    self._log_all_models_exhausted()
+                    return self.FALLBACK_MESSAGE
+                if self._is_model_unavailable_error(error_str):
+                    gemini_manager.mark_model_unavailable(model_name)
                     attempts += 1
                     if attempts < max_retries:
                         continue
+                    self._log_all_models_exhausted()
                     return self.FALLBACK_MESSAGE
-                else:
-                    Logger.log(f"[LLM MANAGER] - Error with {provider}/{model_name}: {str(e)}")
-                    raise
+                Logger.log(f"[LLM MANAGER] - Error with {provider}/{model_name}: {str(e)}")
+                raise
 
         self._log_all_models_exhausted()
         return self.FALLBACK_MESSAGE
@@ -416,84 +593,161 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         attempts = 0
 
         while attempts < max_retries:
-            if self._agent_model_manager.all_models_rate_limited():
-                self._log_all_models_exhausted(is_agent=True)
-                raise Exception("All agent models are rate-limited. Please try again later.")
+            used_provider = None
+            used_model_name = None
+            used_manager = None
+            groq_key_label = None
 
-            current_model = self._agent_model_manager.get_current_model()
-            model_name = current_model["name"]
-            provider = current_model["provider"]
+            if self._activate_available_groq_runtime(is_agent=True, start_offset=0):
+                groq_runtime = self._get_active_groq_runtime(is_agent=True)
+                if groq_runtime:
+                    used_provider = "groq"
+                    used_manager = groq_runtime.get("agent_manager")
+                    used_model_name = used_manager.get_current_model()["name"]
+                    groq_key_label = str(groq_runtime.get("label") or "primary")
+                    try:
+                        raw_response = self._call_groq_with_tools(
+                            model_name=used_model_name,
+                            messages=messages,
+                            tools=tools,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            groq_client=groq_runtime.get("client"),
+                            rate_limit_manager=used_manager,
+                            http_client=groq_runtime.get("http_client"),
+                        )
+                    except Exception as e:
+                        error_str = str(e).lower()
 
-            try:
-                if provider == "groq":
-                    raw_response = self._call_groq_with_tools(
-                        model_name, messages, tools, temperature, max_tokens
-                    )
+                        if self._is_rate_limit_error(error_str):
+                            retry_after = None
+                            if hasattr(e, 'response') and hasattr(e.response, 'headers'):
+                                retry_after = e.response.headers.get('retry-after')
+
+                            used_manager.mark_rate_limited(used_model_name, retry_after)
+                            self._log_rate_limit_hit(
+                                model_name=used_model_name,
+                                provider=used_provider,
+                                error_message=str(e),
+                                groq_key_label=groq_key_label,
+                            )
+                            attempts += 1
+
+                            if used_manager.all_models_rate_limited():
+                                self._activate_available_groq_runtime(is_agent=True, start_offset=1)
+
+                            if attempts < max_retries:
+                                time.sleep(0.5)
+                                continue
+                            self._log_all_models_exhausted(is_agent=True)
+                            raise Exception("All agent models are rate-limited. Please try again later.")
+
+                        if self._is_model_unavailable_error(error_str):
+                            used_manager.mark_model_unavailable(used_model_name)
+                            attempts += 1
+                            if attempts < max_retries:
+                                continue
+                            raise Exception("All configured agent models are unavailable. Please update model list.")
+
+                        if self._is_tool_use_failed_error(error_str):
+                            attempts += 1
+                            if used_manager.models:
+                                used_manager.current_model_index = (
+                                    used_manager.current_model_index + 1
+                                ) % len(used_manager.models)
+                            if attempts < max_retries:
+                                time.sleep(0.25)
+                                continue
+                            raise Exception(
+                                "Tool calling failed across available agent models. "
+                                "Please retry your request."
+                            )
+
+                        Logger.log(f"[LLM MANAGER] - Error with agent {used_provider}/{used_model_name}: {str(e)}")
+                        raise
                 else:
+                    raw_response = None
+            else:
+                raw_response = None
+
+            if raw_response is None:
+                gemini_manager = self._agent_gemini_model_manager
+                if not gemini_manager or not gemini_manager.models or gemini_manager.all_models_rate_limited():
+                    self._log_all_models_exhausted(is_agent=True)
+                    raise Exception("All agent models are rate-limited. Please try again later.")
+
+                used_provider = "gemini"
+                used_manager = gemini_manager
+                used_model_name = gemini_manager.get_current_model()["name"]
+                try:
                     raw_response = self._call_gemini_with_tools(
-                        model_name, messages, tools, temperature, max_tokens
+                        used_model_name, messages, tools, temperature, max_tokens
                     )
+                except Exception as e:
+                    error_str = str(e).lower()
 
-                response = self._normalize_tool_response_payload(
-                    response=raw_response,
-                    tools=tools,
-                )
-                if (
-                    isinstance(raw_response, dict)
-                    and not raw_response.get("tool_calls")
-                    and isinstance(response, dict)
-                    and response.get("tool_calls")
-                ):
-                    Logger.log(
-                        f"[LLM MANAGER] - WARNING: Parsed textual tool-call fallback for {provider}/{model_name}."
-                    )
+                    if self._is_rate_limit_error(error_str):
+                        retry_after = None
+                        if hasattr(e, 'response') and hasattr(e.response, 'headers'):
+                            retry_after = e.response.headers.get('retry-after')
 
-                self._log_success(model_name, provider)
+                        used_manager.mark_rate_limited(used_model_name, retry_after)
+                        self._log_rate_limit_hit(used_model_name, used_provider, str(e))
 
-                return response
-
-            except Exception as e:
-                error_str = str(e).lower()
-
-                if self._is_rate_limit_error(error_str):
-                    retry_after = None
-                    if hasattr(e, 'response') and hasattr(e.response, 'headers'):
-                        retry_after = e.response.headers.get('retry-after')
-
-                    self._agent_model_manager.mark_rate_limited(model_name, retry_after)
-                    self._log_rate_limit_hit(model_name, provider, str(e))
-
-                    attempts += 1
-
-                    if attempts < max_retries:
-                        time.sleep(0.5)
-                        continue
-                    else:
+                        attempts += 1
+                        if attempts < max_retries:
+                            time.sleep(0.5)
+                            continue
                         self._log_all_models_exhausted(is_agent=True)
                         raise Exception("All agent models are rate-limited. Please try again later.")
-                elif self._is_model_unavailable_error(error_str):
-                    self._agent_model_manager.mark_model_unavailable(model_name)
-                    attempts += 1
-                    if attempts < max_retries:
-                        continue
-                    raise Exception("All configured agent models are unavailable. Please update model list.")
-                elif self._is_tool_use_failed_error(error_str):
-                    attempts += 1
-                    self._agent_model_manager.current_model_index = (
-                        self._agent_model_manager.current_model_index + 1
-                    ) % len(self._agent_model_manager.models)
 
-                    if attempts < max_retries:
-                        time.sleep(0.25)
-                        continue
-                    else:
+                    if self._is_model_unavailable_error(error_str):
+                        used_manager.mark_model_unavailable(used_model_name)
+                        attempts += 1
+                        if attempts < max_retries:
+                            continue
+                        raise Exception("All configured agent models are unavailable. Please update model list.")
+
+                    if self._is_tool_use_failed_error(error_str):
+                        attempts += 1
+                        if used_manager.models:
+                            used_manager.current_model_index = (
+                                used_manager.current_model_index + 1
+                            ) % len(used_manager.models)
+
+                        if attempts < max_retries:
+                            time.sleep(0.25)
+                            continue
                         raise Exception(
                             "Tool calling failed across available agent models. "
                             "Please retry your request."
                         )
-                else:
-                    Logger.log(f"[LLM MANAGER] - Error with agent {provider}/{model_name}: {str(e)}")
+
+                    Logger.log(f"[LLM MANAGER] - Error with agent {used_provider}/{used_model_name}: {str(e)}")
                     raise
+
+            response = self._normalize_tool_response_payload(
+                response=raw_response,
+                tools=tools,
+            )
+            if (
+                isinstance(raw_response, dict)
+                and not raw_response.get("tool_calls")
+                and isinstance(response, dict)
+                and response.get("tool_calls")
+            ):
+                Logger.log(
+                    f"[LLM MANAGER] - WARNING: Parsed textual tool-call fallback for {used_provider}/{used_model_name}."
+                )
+
+            self._log_success(
+                model_name=used_model_name,
+                provider=used_provider,
+                manager=used_manager,
+                groq_key_label=groq_key_label,
+            )
+
+            return response
 
         self._log_all_models_exhausted(is_agent=True)
         raise Exception("All agent models are rate-limited. Please try again later.")
@@ -722,16 +976,32 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         self._log_models_exhausted(vision_manager, "VISION MODELS")
         raise Exception("All vision models are rate-limited. Please try again later.")
 
-    def _call_groq(self, model_name: str, prompt: str, temperature: float, max_tokens: int) -> str:
-        response = self._groq_client.chat.completions.create(
+    def _call_groq(
+        self,
+        model_name: str,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        groq_client: Optional[Groq] = None,
+        rate_limit_manager: Optional[_ModelManager] = None,
+        http_client: Optional[RateLimitCapturingClient] = None,
+    ) -> str:
+        client = groq_client or self._groq_client
+        if client is None:
+            raise RuntimeError("No Groq client configured.")
+
+        response = client.chat.completions.create(
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
             max_tokens=max_tokens
         )
 
-        headers = self._http_client.last_response_headers
-        self._model_manager.update_rate_limit_info(model_name, headers)
+        capture_client = http_client or self._http_client
+        headers = capture_client.last_response_headers if capture_client else {}
+        target_manager = rate_limit_manager or self._model_manager
+        if target_manager:
+            target_manager.update_rate_limit_info(model_name, headers)
 
         return response.choices[0].message.content
 
@@ -824,10 +1094,17 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         temperature: float,
-        max_tokens: int
+        max_tokens: int,
+        groq_client: Optional[Groq] = None,
+        rate_limit_manager: Optional[_ModelManager] = None,
+        http_client: Optional[RateLimitCapturingClient] = None,
     ) -> Dict[str, Any]:
         """Call Groq with tool support"""
-        response = self._groq_client.chat.completions.create(
+        client = groq_client or self._groq_client
+        if client is None:
+            raise RuntimeError("No Groq client configured.")
+
+        response = client.chat.completions.create(
             model=model_name,
             messages=messages,
             tools=tools,
@@ -836,8 +1113,11 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             tool_choice="auto"
         )
 
-        headers = self._http_client.last_response_headers
-        self._agent_model_manager.update_rate_limit_info(model_name, headers)
+        capture_client = http_client or self._http_client
+        headers = capture_client.last_response_headers if capture_client else {}
+        target_manager = rate_limit_manager or self._agent_model_manager
+        if target_manager:
+            target_manager.update_rate_limit_info(model_name, headers)
 
         # Parse response
         choice = response.choices[0]
@@ -1146,7 +1426,13 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         except Exception:
             return None
 
-    def _log_success(self, model_name: str, provider: str): # logging call
+    def _log_success(
+        self,
+        model_name: str,
+        provider: str,
+        manager: Optional[_ModelManager] = None,
+        groq_key_label: Optional[str] = None,
+    ): # logging call
         if provider != "groq":
             return
 
@@ -1156,13 +1442,18 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         tokens_reset = "N/A"
 
         rate_limit_mgr = None
-
-        if self._model_manager and model_name in self._model_manager.model_rate_limits:
+        if manager and model_name in manager.model_rate_limits:
+            rate_limit_mgr = manager.model_rate_limits.get(model_name)
+        elif self._model_manager and model_name in self._model_manager.model_rate_limits:
             rate_limit_mgr = self._model_manager.model_rate_limits.get(model_name)
         elif self._agent_model_manager and model_name in self._agent_model_manager.model_rate_limits:
             rate_limit_mgr = self._agent_model_manager.model_rate_limits.get(model_name)
         elif self._vision_model_manager and model_name in self._vision_model_manager.model_rate_limits:
             rate_limit_mgr = self._vision_model_manager.model_rate_limits.get(model_name)
+        elif self._chat_gemini_model_manager and model_name in self._chat_gemini_model_manager.model_rate_limits:
+            rate_limit_mgr = self._chat_gemini_model_manager.model_rate_limits.get(model_name)
+        elif self._agent_gemini_model_manager and model_name in self._agent_gemini_model_manager.model_rate_limits:
+            rate_limit_mgr = self._agent_gemini_model_manager.model_rate_limits.get(model_name)
 
         if rate_limit_mgr:
             remaining_requests = (
@@ -1191,6 +1482,8 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             log_file.write(f"------------------SUCCESS------------------\n")
             log_file.write(f"Provider: {provider}\n")
+            if groq_key_label:
+                log_file.write(f"Groq Key: {groq_key_label}\n")
             log_file.write(f"Model: {model_name}\n")
             log_file.write(f"Remaining Requests (RPM): {remaining_requests}\n")
             log_file.write(f"Requests resetting in: {requests_reset}\n")
@@ -1199,10 +1492,18 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             log_file.write(f"------------------------------------------\n\n")
 
-    def _log_rate_limit_hit(self, model_name: str, provider: str, error_message: str): # logging call
+    def _log_rate_limit_hit(
+        self,
+        model_name: str,
+        provider: str,
+        error_message: str,
+        groq_key_label: Optional[str] = None,
+    ): # logging call
         with open("rate_limit.log", "a", encoding="utf-8") as log_file:
             log_file.write(f"--------------RATE LIMIT HIT--------------\n")
             log_file.write(f"Provider: {provider}\n")
+            if groq_key_label:
+                log_file.write(f"Groq Key: {groq_key_label}\n")
             log_file.write(f"Model: {model_name}\n")
 
             if provider == "groq":
@@ -1229,9 +1530,25 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             log_file.write(f"------------------------------------------\n\n")
 
     def _log_all_models_exhausted(self, is_agent: bool = False): # logging call
-        manager = self._agent_model_manager if is_agent else self._model_manager
-        model_type = "AGENT MODELS" if is_agent else "CHAT MODELS"
-        self._log_models_exhausted(manager, model_type)
+        manager_key = "agent_manager" if is_agent else "chat_manager"
+        model_type = "AGENT" if is_agent else "CHAT"
+
+        if self._groq_client_pool:
+            for runtime in self._groq_client_pool:
+                runtime_label = str(runtime.get("label") or "primary").upper()
+                self._log_models_exhausted(
+                    runtime.get(manager_key),
+                    f"{model_type} GROQ MODELS ({runtime_label} KEY)",
+                )
+
+        gemini_manager = self._agent_gemini_model_manager if is_agent else self._chat_gemini_model_manager
+        if gemini_manager:
+            self._log_models_exhausted(gemini_manager, f"{model_type} GEMINI MODELS")
+
+        if not self._groq_client_pool and not gemini_manager:
+            manager = self._agent_model_manager if is_agent else self._model_manager
+            fallback_model_type = "AGENT MODELS" if is_agent else "CHAT MODELS"
+            self._log_models_exhausted(manager, fallback_model_type)
 
     def _log_models_exhausted(self, manager: Optional[_ModelManager], model_type: str): # logging call
         if manager is None:
@@ -1275,12 +1592,32 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
         if not self._initialized:
             raise RuntimeError("LLMManager not initialized. Call initialize() first.")
 
+        if self._activate_available_groq_runtime(is_agent=False, start_offset=0):
+            runtime = self._get_active_groq_runtime(is_agent=False)
+            if runtime and runtime.get("chat_manager"):
+                model = runtime["chat_manager"].get_current_model()
+                return f"groq/{model['name']}"
+
+        if self._chat_gemini_model_manager and self._chat_gemini_model_manager.models:
+            model = self._chat_gemini_model_manager.get_current_model()
+            return f"gemini/{model['name']}"
+
         model = self._model_manager.get_current_model()
         return f"{model['provider']}/{model['name']}"
 
     def get_current_agent_model(self) -> str:
         if not self._initialized:
             raise RuntimeError("LLMManager not initialized. Call initialize() first.")
+
+        if self._activate_available_groq_runtime(is_agent=True, start_offset=0):
+            runtime = self._get_active_groq_runtime(is_agent=True)
+            if runtime and runtime.get("agent_manager"):
+                model = runtime["agent_manager"].get_current_model()
+                return f"groq/{model['name']}"
+
+        if self._agent_gemini_model_manager and self._agent_gemini_model_manager.models:
+            model = self._agent_gemini_model_manager.get_current_model()
+            return f"gemini/{model['name']}"
 
         model = self._agent_model_manager.get_current_model()
         return f"{model['provider']}/{model['name']}"
