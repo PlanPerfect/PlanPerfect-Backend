@@ -31,12 +31,12 @@ def extract_keywords(user_prompt: str) -> list:
         client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
         extraction_prompt = f"""
-You are a professional interior design consultant summarizing a client's request into concise notes for the design team.
+            You are a professional interior design consultant summarizing a client's request into concise notes for the design team.
 
-Client request: "{user_prompt}"
+            Client request: "{user_prompt}"
 
-Return ONLY 2-4 short bullet points using "-" as bullet.
-"""
+            Return ONLY 2-4 short bullet points using "-" as bullet.
+        """
 
         response = client.models.generate_content(
             model="gemini-2.5-flash-lite",
@@ -160,7 +160,6 @@ async def generate_image(
             "styles": styles,
             "designer_notes": designer_notes,
             "furniture_count": len(furniture_images),
-            "created_at": datetime.utcnow().isoformat()
         }
 
         user_home = DM.data["Users"][user_id]["Existing Homeowner"]
