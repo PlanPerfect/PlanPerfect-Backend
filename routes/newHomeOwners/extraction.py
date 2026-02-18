@@ -389,8 +389,8 @@ def process_floorplan_image(img_path):
     # Define patterns for key information
     rooms_pattern = re.compile(r'^\d+\-(BEDROOM|ROOM)\b', re.IGNORECASE)
     reject_room_pattern_words = re.compile(r'\s+FLOOR PLAN$', re.IGNORECASE)
-    unit_type_pattern = re.compile(r'\(TYPE\s+\d+\)|Type\s+\w+', re.IGNORECASE)
-    unit_size_pattern = re.compile(r'(\d+)\s*(sq\s*m|sq\s*ft)', re.IGNORECASE)
+    unit_type_pattern = re.compile(r'\bType\s*[:\-]?\s*('r'\([A-Za-z0-9]+\)'r'|'r'[A-Za-z0-9]+\([A-Za-z0-9]+\)'r'|'r'[A-Za-z0-9]+'r')\b',re.IGNORECASE)
+    unit_size_pattern = re.compile(r'\b(\d+)\s*sq\s*m\s*/\s*(\d+)\s*sq\s*ft\b',re.IGNORECASE)
 
     # Ignore lines if they include these words
     ignore_patterns = [
@@ -398,23 +398,41 @@ def process_floorplan_image(img_path):
         re.compile(r'.*ceiling.*', re.IGNORECASE),
         re.compile(r'.*strata void.*', re.IGNORECASE),
         re.compile(r'.*WITHSTRATA VOIDI.*', re.IGNORECASE),
+        re.compile(r'strata', re.IGNORECASE),
+        re.compile(r'VOIDOF', re.IGNORECASE), 
         re.compile(r'.*LIVING, DINING.*DRY KITCHEN.*', re.IGNORECASE)
     ]
 
     # Extract unit information from lines
     for line in detected_lines:
+        # Skip ignored lines
+        if any(pat.search(line) for pat in ignore_patterns):
+            continue
+
         if rooms_pattern.match(line):
             cleaned_line = reject_room_pattern_words.sub('', line).strip()
             unit_rooms = cleaned_line
 
         match_type = unit_type_pattern.search(line)
         if match_type:
-            unit_types.append(match_type.group(0))
+            raw = match_type.group(0)
+
+            # Remove "Type" prefix
+            cleaned = re.sub(r'Type\s*', '', raw, flags=re.IGNORECASE).strip()
+
+            # Case 1 — (B)
+            bracket_only = re.fullmatch(r'\(([A-Za-z0-9]+)\)', cleaned)
+            if bracket_only:
+                unit_types.append(bracket_only.group(1))
+
+            # Case 2 — B2 or B2(D)
+            else:
+                unit_types.append(cleaned)
 
         match_size = unit_size_pattern.search(line)
         if match_size:
-            num, unit = match_size.groups()
-            unit_sizes.append(f"{num} {unit}")
+            cleaned = re.sub(r'\s+', ' ', match_size.group(0)).strip()
+            unit_sizes.append(cleaned.lower())
 
     # Count room names
     room_keywords = ["WC", "BATH", "BALCONY", "BEDROOM", "KITCHEN", "LIVING", "LEDGE"]
@@ -432,6 +450,15 @@ def process_floorplan_image(img_path):
         for keyword in room_keywords:
             if keyword in line_upper:
                 room_counter[keyword] += 1
+
+    if not unit_rooms:
+        unit_rooms = "N/A"
+
+    if not unit_types:
+        unit_types = ["N/A"]
+
+    if not unit_sizes:
+        unit_sizes = ["N/A"]
 
     return {
         "img_path": img_path,
