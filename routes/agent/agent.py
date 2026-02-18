@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi.responses import JSONResponse
 from typing import Optional, List
 from pydantic import BaseModel
 import uuid
@@ -221,4 +222,13 @@ async def clear_files(request: AgentSessionRequest):
 
     except Exception as e:
         Logger.log(f"[AGENT ROUTES] - ERROR: Failed to clear files. Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"ERROR: {str(e)}")
+
+@router.get("/current-agent-model")
+async def get_current_agent_model():
+    try:
+        from Services import LLMManager as LLM
+        current_model = LLM.get_current_agent_model()
+        return JSONResponse(status_code=200, content={ "model": current_model })
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"ERROR: {str(e)}")

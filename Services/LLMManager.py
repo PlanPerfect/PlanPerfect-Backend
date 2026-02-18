@@ -1486,7 +1486,7 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
                 log_file.write(f"Groq Key: {groq_key_label}\n")
             log_file.write(f"Model: {model_name}\n")
             log_file.write(f"Remaining Requests (RPM): {remaining_requests}\n")
-            log_file.write(f"Requests resetting in: {requests_reset}\n")
+            log_file.write(f"{requests_reset}\n")
             log_file.write(f"Remaining Tokens (TPM): {remaining_tokens}\n")
             log_file.write(f"Tokens resetting in: {tokens_reset}\n")
             log_file.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
