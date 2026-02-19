@@ -13,8 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 # import routers
 from routes.existingHomeOwners.classification import router as style_classification_router
 from routes.newHomeOwners.extraction import router as newHomeOwners_extraction_router
+from routes.designDocument.existingHomeOwnerDocumentLlm import router as existingHomeOwnerDocument_Llm_router
+from routes.designDocument.newHomeOwnerDocumentLlm import router as newHomeOwnerDocument_Llm_router
+from routes.designDocument.checkFlow import router as checkFlow_router
 from routes.existingHomeOwners.imageGeneration import router as image_router
-from routes.newHomeOwners.documentLlm import router as document_llm_router
 from routes.chatbot.chatCompletions import router as chatbot_router
 from routes.stylematch.detection import router as stylematch_detection_router
 from routes.stylematch.recommendations import router as stylematch_recommendations_router
@@ -47,7 +49,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(style_classification_router)
 app.include_router(newHomeOwners_extraction_router)
 app.include_router(image_router)
-app.include_router(document_llm_router)
+app.include_router(existingHomeOwnerDocument_Llm_router)
+app.include_router(newHomeOwnerDocument_Llm_router)
+app.include_router(checkFlow_router)
 app.include_router(chatbot_router)
 app.include_router(stylematch_detection_router)
 app.include_router(stylematch_recommendations_router)

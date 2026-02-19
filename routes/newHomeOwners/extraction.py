@@ -223,7 +223,7 @@ async def save_user_input(
 
     except Exception as e:
         error_details = traceback.format_exc()
-        Logger.log(f"[EXTRACTION] - Error saving user input: {error_details}")
+        Logger.log(f"[EXTRACTION] - ERROR: Error saving user input: {error_details}")
 
         return JSONResponse(status_code=500, content={ "error": str(e) })
 

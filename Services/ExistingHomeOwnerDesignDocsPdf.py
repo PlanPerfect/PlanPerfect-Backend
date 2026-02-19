@@ -46,25 +46,29 @@ def normalize_display_list(values):
                 cleaned.append(text)
     return cleaned
 
-def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, preferences, budget, unit_info):
+def generate_pdf(design_data, room_photo_path, generated_design_path, preferences, budget, unit_info, saved_recommendations=None, detected_style=None):
     """
-    Generate a formatted PDF from the provided design data parameters.
-    All sections are optional - if data is missing, the section will be skipped.
-    This ensures the PDF can be generated even with incomplete LLM responses.
+    Generate a formatted PDF for an EXISTING home owner from the provided design data.
+
+    Key differences from new home owner PDF:
+    - room_photo_path       → Style Analysis image (existing room photo / initial)
+    - generated_design_path → Final Image Selection (user's final selected AI-generated redesign)
+    - saved_recommendations → Displayed as a reference section with furniture images
+    - detected_style        → Shown as the existing detected style
+    - Preferences shown: property_type, unit_type, selected_styles, budget_min/max
     """
-    # Create PDF document template
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
         pagesize=letter,
-        topMargin=0.75*inch,
-        bottomMargin=0.75*inch,
-        leftMargin=0.75*inch,
-        rightMargin=0.75*inch
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch
     )
 
-    # Define styles
     styles = getSampleStyleSheet()
+
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
@@ -143,70 +147,52 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         spaceAfter=12
     )
 
-    # Build PDF content
     story = []
     logo_added = False
 
     # ========== LOGO AND TITLE PAGE ==========
-    story.append(Spacer(1, 0.3*inch))
+    story.append(Spacer(1, 0.3 * inch))
 
-    # Add logo and text
     BASE_DIR = Path(__file__).resolve().parents[1]
     logo_svg_path = BASE_DIR / "static" / "Logo.svg"
     logo_text_path = BASE_DIR / "static" / "Logo-Text.png"
 
-    # Add SVG logo
     if os.path.exists(logo_svg_path):
         try:
-            # Convert SVG to ReportLab drawing
             drawing = svg2rlg(str(logo_svg_path))
-
-            # Calculate page center
             page_width = letter[0] - doc.leftMargin - doc.rightMargin
-
-            # Logo
             logo_width = 120
             scale_factor = logo_width / drawing.width
             drawing.width = logo_width
             drawing.height = drawing.height * scale_factor
             drawing.scale(scale_factor, scale_factor)
 
-            # Center the logo using a table
             logo_table = Table([[drawing]], colWidths=[page_width])
             logo_table.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
-
             story.append(logo_table)
-            story.append(Spacer(1, 0.15*inch))
+            story.append(Spacer(1, 0.15 * inch))
             logo_added = True
-
         except Exception as e:
-            Logger.log(f"[DESIGN DOCS] - Could not add SVG logo: {e}")
+            Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not add SVG logo: {e}")
 
-    # Add logo text png below the logo
     if os.path.exists(logo_text_path):
         try:
-            # Logo text image
-            logo_text_img = Image(str(logo_text_path), width=2.5*inch, height=0.6*inch, kind='proportional')
-
-            # Center the logo text using a table
+            logo_text_img = Image(str(logo_text_path), width=2.5 * inch, height=0.6 * inch, kind='proportional')
             page_width = letter[0] - doc.leftMargin - doc.rightMargin
             logo_text_table = Table([[logo_text_img]], colWidths=[page_width])
             logo_text_table.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
-
             story.append(logo_text_table)
-            story.append(Spacer(1, 0.3*inch))
+            story.append(Spacer(1, 0.3 * inch))
             logo_added = True
-
         except Exception as e:
-            Logger.log(f"[DESIGN DOCS] - Could not add logo text PNG: {e}")
+            Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not add logo text PNG: {e}")
 
-    # Fallback if no logos were added
     if not logo_added:
         company_style = ParagraphStyle(
             'CompanyName',
@@ -218,58 +204,100 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             spaceAfter=20
         )
         story.append(Paragraph("PlanPerfect", company_style))
-        story.append(Spacer(1, 0.2*inch))
+        story.append(Spacer(1, 0.2 * inch))
 
-    story.append(Paragraph("Interior Design Documentation", title_style))
-    story.append(Spacer(1, 0.2*inch))
+    story.append(Paragraph("Renovation Design Documentation", title_style))
 
-    # Property information - all optional
-    if unit_info:
-        unit_rooms = safe_get(unit_info, 'unit_rooms', default='Residential Unit')
-        unit_sizes = normalize_display_list(safe_get(unit_info, 'unit_sizes', default=[]))
-        unit_types = normalize_display_list(safe_get(unit_info, 'unit_types', default=[]))
+    subtitle_style = ParagraphStyle(
+        'Subtitle',
+        parent=styles['Normal'],
+        fontSize=12,
+        textColor=colors.HexColor('#888888'),
+        alignment=TA_CENTER,
+        fontName='Helvetica-Oblique',
+        spaceAfter=16
+    )
+    story.append(Paragraph("Existing Home Owner Renovation Plan", subtitle_style))
+    story.append(Spacer(1, 0.3 * inch))
 
-        property_info = f"<b>Unit Type:</b> {unit_rooms}"
-        story.append(Paragraph(property_info, styles['Normal']))
+    # ── Client Preferences Summary (cover page) ───────────────────────────────
+    # Extract from unit_info which now carries existing homeowner preference fields
+    prop_type   = safe_get(unit_info, 'property_type', default='')
+    unit_type   = safe_get(unit_info, 'unit_type',    default='')
+    sel_styles  = unit_info.get('selected_styles', []) if unit_info else []
+    budget_min  = unit_info.get('budget_min')  if unit_info else None
+    budget_max  = unit_info.get('budget_max')  if unit_info else None
 
-        if unit_types:
-            story.append(Paragraph(f"<b>Unit Models:</b> {', '.join(unit_types)}", styles['Normal']))
+    # Build a clean preference info block
+    pref_label_style = ParagraphStyle(
+        'PrefLabel',
+        parent=styles['Normal'],
+        fontSize=10,
+        fontName='Helvetica',
+        spaceAfter=5,
+        leading=14,
+    )
 
-        if unit_sizes:
-            story.append(Paragraph(f"<b>Unit Sizes:</b> {', '.join(unit_sizes)}", styles['Normal']))
+    def _pref_row(label, value):
+        return Paragraph(f"<b>{label}:</b>  {value}", pref_label_style)
 
-    if budget:
-        story.append(Paragraph(f"<b>Client's Budget:</b> {budget}", styles['Normal']))
+    pref_rows = []
+    if prop_type:
+        pref_rows.append(_pref_row("Property Type", prop_type))
+    if unit_type:
+        pref_rows.append(_pref_row("Unit Type", unit_type))
+    if detected_style:
+        pref_rows.append(_pref_row("Client's Room Detected Style", detected_style))
+    if sel_styles:
+        pref_rows.append(_pref_row("Desired Style", ", ".join(sel_styles)))
+    if budget_min is not None and budget_max is not None:
+        pref_rows.append(_pref_row(
+            "Renovation Budget",
+            f"S${int(budget_min):,}  \u2013  S${int(budget_max):,}"
+        ))
+    elif budget:
+        pref_rows.append(_pref_row("Renovation Budget", str(budget)))
 
-    story.append(Paragraph(f"<b>Generated On:</b> {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
-    story.append(Spacer(1, 0.5*inch))
+    pref_rows.append(Paragraph(
+        f"<b>Generated On:</b>  {datetime.now().strftime('%B %d, %Y')}",
+        pref_label_style
+    ))
 
-    # ========== QUOTATION RANGE SECTION (RIGHT AFTER BUDGET) ==========
+    if pref_rows:
+        pref_table_data = [[row] for row in pref_rows]
+        pref_table = Table(pref_table_data, colWidths=[6.5 * inch])
+        pref_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FAFAFA')),
+            ('BOX', (0, 0), (-1, -1), 1.5, colors.HexColor('#D4AF37')),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 18),
+            ('RIGHTPADDING',  (0, 0), (-1, -1), 18),
+            ('TOPPADDING',    (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        story.append(pref_table)
+
+    story.append(Spacer(1, 0.5 * inch))
+
+    # ========== QUOTATION RANGE SECTION ==========
     if design_data and design_data.get('quotation_range'):
         quotation_range = design_data['quotation_range']
 
-        # Quotation box heading
-        story.append(Paragraph("Quotation ", subheading_style))
+        story.append(Paragraph("Quotation", subheading_style))
 
-        # Create highlighted quotation box
         min_quote = safe_get(quotation_range, 'minimum_quote', default='TBD')
         max_quote = safe_get(quotation_range, 'maximum_quote', default='TBD')
         recommended_quote = safe_get(quotation_range, 'recommended_quote', default='TBD')
         quote_basis = safe_get(quotation_range, 'quote_basis', default='')
-        property_class = safe_get(quotation_range, 'property_classification', default='')
         scope_level = safe_get(quotation_range, 'scope_level', default='')
 
-        # Quotation range text
         quotation_content = f"""
-<b>Estimated Project Range:</b> {min_quote} - {max_quote}<br/>
+<b>Estimated Renovation Range:</b> {min_quote} - {max_quote}<br/>
 <b>Recommended Quotation:</b> {recommended_quote}<br/>
 <b>Scope Level:</b> {scope_level}<br/>
 <b>Basis:</b> {quote_basis}
 """
-
-        # Create table for quotation box with golden background
         quotation_para = Paragraph(quotation_content, highlight_box_style)
-        quotation_table = Table([[quotation_para]], colWidths=[6.5*inch])
+        quotation_table = Table([[quotation_para]], colWidths=[6.5 * inch])
         quotation_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF9E6')),
             ('BOX', (0, 0), (-1, -1), 2, colors.HexColor('#D4AF37')),
@@ -278,37 +306,27 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             ('TOPPADDING', (0, 0), (-1, -1), 12),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
         ]))
-
         story.append(quotation_table)
-        story.append(Spacer(1, 0.2*inch))
+        story.append(Spacer(1, 0.2 * inch))
 
-        # Cost factors
         cost_factors = safe_get(quotation_range, 'cost_factors', default=[])
         if cost_factors and len(cost_factors) > 0:
             story.append(Paragraph("<b>Key Cost Factors:</b>", body_style))
             for factor in cost_factors:
                 story.append(Paragraph(f"• {factor}", body_style))
 
-        story.append(Spacer(1, 0.3*inch))
-
+        story.append(Spacer(1, 0.3 * inch))
         story.append(PageBreak())
 
     # ========== QUOTATION BREAKDOWN SECTION ==========
     if design_data and design_data.get('quotation_breakdown'):
         quotation_breakdown = design_data['quotation_breakdown']
         story.append(Paragraph("Detailed Quotation Breakdown", heading_style))
-        story.append(Paragraph("This breakdown provides transparency on how your quotation is calculated based on Singapore 2026 market rates.", body_style))
-        story.append(Spacer(1, 0.2*inch))
+        story.append(Paragraph("This breakdown provides transparency on how your renovation quotation is calculated based on Singapore 2026 market rates.", body_style))
+        story.append(Spacer(1, 0.2 * inch))
 
-        # Create detailed breakdown table
-        cell_style = ParagraphStyle(
-            'CellStyle',
-            parent=styles['Normal'],
-            fontSize=9,
-            leading=11
-        )
+        cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)
 
-        # Table header
         breakdown_data = [[
             Paragraph('<b>Category</b>', cell_style),
             Paragraph('<b>Description</b>', cell_style),
@@ -317,7 +335,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             Paragraph('<b>Subtotal</b>', cell_style)
         ]]
 
-        # Define categories in order
         categories = [
             ('carpentry', 'Carpentry'),
             ('flooring', 'Flooring'),
@@ -330,7 +347,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             ('contingency', 'Contingency Buffer')
         ]
 
-        # Add each category to table
         for key, display_name in categories:
             if key in quotation_breakdown:
                 item = quotation_breakdown[key]
@@ -347,7 +363,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
                     Paragraph(f'<b>{subtotal}</b>', cell_style)
                 ])
 
-        # Add total row
         total_quotation = safe_get(quotation_breakdown, 'total_quotation', default='TBD')
         breakdown_data.append([
             Paragraph('<b>TOTAL QUOTATION</b>', cell_style),
@@ -357,103 +372,221 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             Paragraph(f'<b>{total_quotation}</b>', cell_style)
         ])
 
-        # Create and style the table
-        breakdown_table = Table(breakdown_data, colWidths=[1.2*inch, 2*inch, 1*inch, 1.1*inch, 1.2*inch])
+        breakdown_table = Table(breakdown_data, colWidths=[1.2 * inch, 2 * inch, 1 * inch, 1.1 * inch, 1.2 * inch])
         breakdown_table.setStyle(TableStyle([
-            # Header styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D4AF37')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 10),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('TOPPADDING', (0, 0), (-1, 0), 12),
-
-            # Data rows styling
             ('BACKGROUND', (0, 1), (-1, -2), colors.beige),
             ('TOPPADDING', (0, 1), (-1, -1), 8),
             ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-
-            # Total row styling
             ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#FFF9E6')),
             ('LINEABOVE', (0, -1), (-1, -1), 2, colors.HexColor('#D4AF37')),
             ('FONTSIZE', (0, -1), (-1, -1), 11),
-
-            # Grid
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('ALIGN', (3, 1), (4, -1), 'RIGHT'),
         ]))
 
         story.append(breakdown_table)
-        story.append(Spacer(1, 0.3*inch))
-
-        # Add disclaimer
-        disclaimer_style = ParagraphStyle(
-            'Disclaimer',
-            parent=styles['Normal'],
-            fontSize=8,
-            textColor=colors.HexColor('#666666'),
-            fontName='Helvetica-Oblique',
-            spaceAfter=12
-        )
-        story.append(Paragraph("<b>Note:</b> This quotation is based on standard specifications and Singapore 2026 market rates. Final costs may vary based on actual product selection, site conditions, and unforeseen circumstances. The contingency buffer covers unexpected costs and variations.", disclaimer_style))
-
+        story.append(Spacer(1, 0.3 * inch))
+        story.append(Paragraph(
+            "<b>Note:</b> This quotation is based on standard specifications and Singapore 2026 market rates. "
+            "Final costs may vary based on actual product selection, site conditions, and unforeseen circumstances. "
+            "For existing homes, hacking and demolition costs may apply and are included in the masonry category.",
+            disclaimer_style
+        ))
         story.append(PageBreak())
 
-    # Add raw floor plan image - optional
-    if raw_floor_plan_path and os.path.exists(raw_floor_plan_path):
-        try:
-            story.append(Paragraph("Original Floor Plan", subheading_style))
-            img = Image(raw_floor_plan_path, width=5*inch, height=3.5*inch, kind='proportional')
-            story.append(img)
-            story.append(Paragraph("Original uploaded floor plan showing the unit layout", caption_style))
-            story.append(Spacer(1, 0.3*inch))
-        except Exception as e:
-            Logger.log(f"[DESIGN DOCS] - Could not add raw floor plan image: {e}")
+    # ========== ROOM PHOTOS: INITIAL + FINAL SELECTED ==========
+    # Show both images side-by-side if both are available; else stacked individually.
+    has_initial  = room_photo_path and os.path.exists(room_photo_path)
+    has_final    = generated_design_path and os.path.exists(generated_design_path)
 
-    # Add segmented floor plan image - optional
-    if segmented_floor_plan_path and os.path.exists(segmented_floor_plan_path):
+    if has_initial or has_final:
+        story.append(Paragraph("Room Visualisation", heading_style))
+        story.append(Paragraph(
+            "The images below show your current room alongside the AI-generated redesign you selected.",
+            body_style
+        ))
+        story.append(Spacer(1, 0.15 * inch))
+
+    if has_initial and has_final:
+        # Side-by-side layout
         try:
-            story.append(Paragraph("AI-Segmented Floor Plan", subheading_style))
-            seg_img = Image(segmented_floor_plan_path, width=5*inch, height=3.5*inch, kind='proportional')
-            story.append(seg_img)
-            story.append(Paragraph("AI-processed floor plan with room segmentation and analysis", caption_style))
+            img_initial = Image(room_photo_path,       width=3.0 * inch, height=2.4 * inch, kind='proportional')
+            img_final   = Image(generated_design_path, width=3.0 * inch, height=2.4 * inch, kind='proportional')
+
+            cell_cap = ParagraphStyle('ImgCap', parent=styles['Normal'], fontSize=8,
+                                      textColor=colors.HexColor('#666666'),
+                                      alignment=TA_CENTER, fontName='Helvetica-Oblique')
+
+            img_table = Table(
+                [
+                    [img_initial, img_final],
+                    [Paragraph("Your Current Room<br/><i>(Style Analysis Photo)</i>", cell_cap),
+                     Paragraph("Your Selected Design<br/><i>(AI-Generated Redesign)</i>", cell_cap)],
+                ],
+                colWidths=[3.25 * inch, 3.25 * inch]
+            )
+            img_table.setStyle(TableStyle([
+                ('ALIGN',        (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING',   (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING',(0, 0), (-1, -1), 6),
+                ('LEFTPADDING',  (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ('BOX',          (0, 0), (0, 0), 1, colors.HexColor('#CCCCCC')),
+                ('BOX',          (1, 0), (1, 0), 1, colors.HexColor('#D4AF37')),
+            ]))
+            story.append(img_table)
+            story.append(Spacer(1, 0.3 * inch))
         except Exception as e:
-            Logger.log(f"[DESIGN DOCS] - Could not add segmented floor plan image: {e}")
+            Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not render side-by-side images: {e}")
+            has_initial = False
+            has_final   = False
+
+    else:
+        # Render whichever image is available individually
+        if has_initial:
+            try:
+                story.append(Paragraph("Your Current Room", subheading_style))
+                img = Image(room_photo_path, width=5 * inch, height=3.5 * inch, kind='proportional')
+                story.append(img)
+                story.append(Paragraph("Photo of your existing room used to detect your current interior style", caption_style))
+                story.append(Spacer(1, 0.3 * inch))
+            except Exception as e:
+                Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not add room photo: {e}")
+
+        if has_final:
+            try:
+                story.append(Paragraph("Your Selected Design", subheading_style))
+                gen_img = Image(generated_design_path, width=5 * inch, height=3.5 * inch, kind='proportional')
+                story.append(gen_img)
+                story.append(Paragraph("AI-generated redesign proposal you selected", caption_style))
+            except Exception as e:
+                Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not add generated design image: {e}")
 
     story.append(PageBreak())
 
-    # ========== CLIENT PREFERENCES - Optional ==========
+    # ========== CLIENT PREFERENCES SECTION ==========
     if preferences:
         story.append(Paragraph("Client Preferences", heading_style))
+        story.append(Paragraph(
+            "<i>Preferences sourced from your onboarding profile.</i>",
+            disclaimer_style
+        ))
 
-        pref_style = safe_get(preferences, 'style', default='Not specified')
-        if pref_style and pref_style not in ['Not specified', 'Not selected']:
-            story.append(Paragraph(f"<b>Selected Style:</b> {pref_style}", body_style))
+        pref_style_val = safe_get(preferences, 'style', default='Not specified')
+        if pref_style_val and pref_style_val not in ['Not specified', 'Not selected']:
+            story.append(Paragraph(f"<b>Desired Style:</b> {pref_style_val}", body_style))
         else:
-            story.append(Paragraph(f"<b>Design Style(s):</b> Open to recommendations", body_style))
+            story.append(Paragraph("<b>Design Style:</b> Open to recommendations", body_style))
 
         colors_list = safe_get(preferences, 'colors', default=[])
         if colors_list and len(colors_list) > 0:
             story.append(Paragraph(f"<b>Suggested Colors:</b> {', '.join(colors_list)}", body_style))
         else:
-            story.append(Paragraph(f"<b>Color Palette:</b> Open to designer recommendations", body_style))
+            story.append(Paragraph("<b>Color Palette:</b> Open to designer recommendations", body_style))
 
         materials_list = safe_get(preferences, 'materials', default=[])
         if materials_list and len(materials_list) > 0:
             story.append(Paragraph(f"<b>Suggested Materials:</b> {', '.join(materials_list)}", body_style))
         else:
-            story.append(Paragraph(f"<b>Key Materials:</b> Open to designer recommendations", body_style))
+            story.append(Paragraph("<b>Key Materials:</b> Open to designer recommendations", body_style))
 
         special_req = safe_get(preferences, 'special_requirements', default='')
         if special_req and special_req.strip():
             story.append(Paragraph(f"<b>Special Requirements:</b> {special_req}", body_style))
 
-        story.append(Spacer(1, 0.3*inch))
+        story.append(Spacer(1, 0.3 * inch))
 
-    # ========== EXECUTIVE SUMMARY - Optional ==========
+    # ========== CURATED FURNITURE RECOMMENDATIONS (with images) ==========
+    if saved_recommendations and len(saved_recommendations) > 0:
+        story.append(Paragraph("Curated Furniture Recommendations", heading_style))
+        story.append(Paragraph(
+            "The following furniture pieces have been curated to match your desired style. "
+            "They are incorporated into the room recommendations below.",
+            body_style
+        ))
+        story.append(Spacer(1, 0.1 * inch))
+
+        import tempfile
+        import requests as _requests
+
+        cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)
+        img_cell_style = ParagraphStyle('ImgCellStyle', parent=styles['Normal'], fontSize=8,
+                                        textColor=colors.HexColor('#555555'), alignment=TA_CENTER)
+
+        _tmp_rec_paths = []  # track for cleanup
+
+        for rec in saved_recommendations:
+            name        = rec.get("name", "Item")
+            description = rec.get("description", "")
+            match_score = rec.get("match", "")
+            image_url   = rec.get("image", "")
+
+            # Try to download the furniture image
+            rec_img_flowable = None
+            if image_url:
+                try:
+                    r = _requests.get(image_url, timeout=15)
+                    r.raise_for_status()
+                    suffix = ".jpg" if "jpeg" in r.headers.get("content-type", "") else ".png"
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(r.content)
+                        tmp_path = tmp.name
+                    _tmp_rec_paths.append(tmp_path)
+                    rec_img_flowable = Image(tmp_path, width=1.4 * inch, height=1.4 * inch, kind='proportional')
+                except Exception as img_err:
+                    Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not download furniture image for {name}: {img_err}")
+
+            match_label = f"<b>Match:</b> {match_score}%" if match_score else ""
+            text_content = (
+                f"<b>{name}</b><br/>"
+                f"{description}<br/>"
+                f"{match_label}"
+            )
+            text_para = Paragraph(text_content, cell_style)
+
+            if rec_img_flowable:
+                row_data = [[rec_img_flowable, text_para]]
+                col_widths = [1.6 * inch, 4.9 * inch]
+            else:
+                row_data = [[text_para]]
+                col_widths = [6.5 * inch]
+
+            rec_row_table = Table(row_data, colWidths=col_widths)
+            rec_row_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.beige),
+                ('GRID',       (0, 0), (-1, -1), 0.5, colors.HexColor('#CCCCCC')),
+                ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
+                ('ALIGN',      (0, 0), (0, -1),  'CENTER'),
+                ('LEFTPADDING',  (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING',   (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING',(0, 0), (-1, -1), 8),
+                ('LINEBELOW', (0, 0), (-1, -1), 1, colors.HexColor('#D4AF37')),
+            ]))
+
+            story.append(rec_row_table)
+            story.append(Spacer(1, 0.08 * inch))
+
+        story.append(Spacer(1, 0.3 * inch))
+
+        # Cleanup temp images after PDF is built — store paths in design_data for deferred cleanup
+        # (We can't delete here because ReportLab reads images lazily at build time.)
+        # The calling code should handle cleanup; we store paths on the buffer object as an attr.
+        if not hasattr(buffer, '_tmp_rec_paths'):
+            buffer._tmp_rec_paths = []
+        buffer._tmp_rec_paths.extend(_tmp_rec_paths)
+
+    # ========== EXECUTIVE SUMMARY ==========
     if design_data and design_data.get('executive_summary'):
         exec_summary = design_data['executive_summary']
         story.append(Paragraph("1. Executive Summary", heading_style))
@@ -464,7 +597,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         design_philosophy = safe_get(exec_summary, 'design_philosophy', default='')
         if design_philosophy:
-            story.append(Paragraph("<b>Design Philosophy:</b>", subheading_style))
+            story.append(Paragraph("<b>Renovation Philosophy:</b>", subheading_style))
             story.append(Paragraph(design_philosophy, body_style))
 
         key_recs = safe_get(exec_summary, 'key_recommendations', default=[])
@@ -473,30 +606,12 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             for rec in key_recs:
                 story.append(Paragraph(f"• {rec}", body_style))
 
-        story.append(Spacer(1, 0.3*inch))
+        story.append(Spacer(1, 0.3 * inch))
 
-    # ========== SPACE ANALYSIS - Optional ==========
-    if design_data and design_data.get('space_analysis'):
-        space_analysis = design_data['space_analysis']
-        story.append(Paragraph("2. Space Analysis", heading_style))
-
-        total_area = safe_get(space_analysis, 'total_area', default='N/A')
-        story.append(Paragraph(f"<b>Total Area:</b> {total_area}", body_style))
-
-        room_breakdown = safe_get(space_analysis, 'room_breakdown', default=[])
-        if room_breakdown and len(room_breakdown) > 0:
-            story.append(Paragraph("<b>Room Breakdown:</b>", subheading_style))
-            for room in room_breakdown:
-                room_name = safe_get(room, 'room_name', default='Unknown Room')
-                analysis = safe_get(room, 'analysis', default='No analysis available')
-                story.append(Paragraph(f"<b>{room_name}:</b> {analysis}", body_style))
-
-        story.append(Spacer(1, 0.3*inch))
-
-    # ========== DESIGN CONCEPT - Optional ==========
+    # ========== DESIGN CONCEPT ==========
     if design_data and design_data.get('design_concept'):
         design_concept = design_data['design_concept']
-        story.append(Paragraph("3. Design Concept", heading_style))
+        story.append(Paragraph("3. Renovation Design Concept", heading_style))
 
         style_direction = safe_get(design_concept, 'style_direction', default='')
         if style_direction:
@@ -520,11 +635,11 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         story.append(PageBreak())
 
-    # ========== ROOM RECOMMENDATIONS - Optional ==========
+    # ========== ROOM RECOMMENDATIONS (text-only; images already shown above) ==========
     if design_data and design_data.get('room_recommendations'):
         room_recs = design_data['room_recommendations']
         if room_recs and len(room_recs) > 0:
-            story.append(Paragraph("4. Room-Specific Recommendations", heading_style))
+            story.append(Paragraph("4. Room-Specific Renovation Recommendations", heading_style))
 
             for room in room_recs:
                 room_name = safe_get(room, 'room_name', default='Unknown Room')
@@ -534,52 +649,44 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
                 if design_approach:
                     story.append(Paragraph(design_approach, body_style))
 
-                # Furniture table with notes - optional
+                # Furniture items — text-only in this section
                 furniture_items = safe_get(room, 'furniture_items', default=[])
                 if furniture_items and len(furniture_items) > 0:
-                    # Create cell style
-                    cell_style = ParagraphStyle(
-                        'CellStyle',
-                        parent=styles['Normal'],
-                        fontSize=9,
-                        leading=11
-                    )
+                    cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)
 
-                    # Header row
                     furniture_data = [[
-                        Paragraph('<b>Item</b>', cell_style),
-                        Paragraph('<b>Cost</b>', cell_style),
+                        Paragraph('<b>Recommended Item</b>', cell_style),
+                        Paragraph('<b>Est. Cost</b>', cell_style),
                         Paragraph('<b>Notes</b>', cell_style)
                     ]]
 
-                    # Data rows
                     for item in furniture_items:
-                        item_name = safe_get(item, 'item', default='Item')
-                        item_cost = safe_get(item, 'estimated_cost', default='TBD')
-                        item_notes = safe_get(item, 'notes', default='')
+                        item_name  = safe_get(item, 'item',           default='Item')
+                        item_cost  = safe_get(item, 'estimated_cost', default='TBD')
+                        item_notes = safe_get(item, 'notes',          default='')
 
                         furniture_data.append([
-                            Paragraph(item_name, cell_style),
-                            Paragraph(item_cost, cell_style),
+                            Paragraph(item_name,  cell_style),
+                            Paragraph(item_cost,  cell_style),
                             Paragraph(item_notes, cell_style)
                         ])
 
-                    furniture_table = Table(furniture_data, colWidths=[2*inch, 1*inch, 3.5*inch])
+                    furniture_table = Table(furniture_data, colWidths=[2 * inch, 1 * inch, 3.5 * inch])
                     furniture_table.setStyle(TableStyle([
                         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D4AF37')),
-                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                        ('FONTSIZE', (0, 0), (-1, 0), 10),
+                        ('TEXTCOLOR',  (0, 0), (-1, 0), colors.whitesmoke),
+                        ('ALIGN',      (0, 0), (-1, -1), 'LEFT'),
+                        ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE',   (0, 0), (-1, 0), 10),
                         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                        ('TOPPADDING', (0, 1), (-1, -1), 8),
+                        ('TOPPADDING',    (0, 1), (-1, -1), 8),
                         ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
                         ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                        ('GRID',       (0, 0), (-1, -1), 1, colors.black),
+                        ('VALIGN',     (0, 0), (-1, -1), 'TOP'),
                     ]))
                     story.append(furniture_table)
-                    story.append(Spacer(1, 0.2*inch))
+                    story.append(Spacer(1, 0.2 * inch))
 
                 color_specs = safe_get(room, 'color_specs', default='')
                 if color_specs:
@@ -589,11 +696,11 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
                 if lighting:
                     story.append(Paragraph(f"<b>Lighting:</b> {lighting}", body_style))
 
-                story.append(Spacer(1, 0.2*inch))
+                story.append(Spacer(1, 0.2 * inch))
 
             story.append(PageBreak())
 
-    # ========== ESTIMATED BUDGET BREAKDOWN - Optional ==========
+    # ========== ESTIMATED BUDGET BREAKDOWN ==========
     if design_data and design_data.get('budget_breakdown'):
         budget_breakdown = design_data['budget_breakdown']
         story.append(Paragraph("5. Estimated Budget Breakdown", heading_style))
@@ -606,65 +713,54 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         by_room = safe_get(budget_breakdown, 'by_room', default=[])
         if by_room and len(by_room) > 0:
-            # Create cell style
-            cell_style = ParagraphStyle(
-                'CellStyle',
-                parent=styles['Normal'],
-                fontSize=9,
-                leading=11
-            )
+            cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)
 
-            # Header row
             budget_data = [[
                 Paragraph('<b>Room</b>', cell_style),
                 Paragraph('<b>Amount</b>', cell_style),
                 Paragraph('<b>Breakdown</b>', cell_style)
             ]]
 
-            # Data rows
             for item in by_room:
-                room_name = safe_get(item, 'room', default='Room')
-                amount = safe_get(item, 'amount', default='TBD')
-                breakdown = safe_get(item, 'breakdown', default='')
+                room_name  = safe_get(item, 'room',      default='Room')
+                amount     = safe_get(item, 'amount',    default='TBD')
+                breakdown  = safe_get(item, 'breakdown', default='')
 
                 budget_data.append([
                     Paragraph(room_name, cell_style),
-                    Paragraph(amount, cell_style),
+                    Paragraph(amount,    cell_style),
                     Paragraph(breakdown, cell_style)
                 ])
 
-            budget_table = Table(budget_data, colWidths=[1.5*inch, 1.2*inch, 3.8*inch])
+            budget_table = Table(budget_data, colWidths=[1.5 * inch, 1.2 * inch, 3.8 * inch])
             budget_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D4AF37')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('TEXTCOLOR',  (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN',      (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE',   (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('TOPPADDING', (0, 1), (-1, -1), 8),
+                ('TOPPADDING',    (0, 1), (-1, -1), 8),
                 ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('GRID',       (0, 0), (-1, -1), 1, colors.black),
+                ('VALIGN',     (0, 0), (-1, -1), 'TOP'),
             ]))
             story.append(budget_table)
-            story.append(Spacer(1, 0.2*inch))
+            story.append(Spacer(1, 0.2 * inch))
 
-        # Priority items - optional
         priority_items = safe_get(budget_breakdown, 'priority_items', default=[])
         if priority_items and len(priority_items) > 0:
             story.append(Paragraph("<b>Priority Items (Must-Have):</b>", subheading_style))
             for item in priority_items:
                 story.append(Paragraph(f"• {item}", body_style))
 
-        # Optional items - optional
         optional_items = safe_get(budget_breakdown, 'optional_items', default=[])
         if optional_items and len(optional_items) > 0:
             story.append(Paragraph("<b>Optional Items (Nice-to-Have):</b>", subheading_style))
             for item in optional_items:
                 story.append(Paragraph(f"• {item}", body_style))
 
-        # Cost-saving tips - optional
         cost_saving_tips = safe_get(budget_breakdown, 'cost_saving_tips', default=[])
         if cost_saving_tips and len(cost_saving_tips) > 0:
             story.append(Paragraph("<b>Cost-Saving Tips:</b>", subheading_style))
@@ -673,20 +769,20 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         story.append(PageBreak())
 
-    # ========== ESTIMATED IMPLEMENTATION TIMELINE - Optional ==========
+    # ========== IMPLEMENTATION TIMELINE ==========
     if design_data and design_data.get('timeline'):
         timeline = design_data['timeline']
-        story.append(Paragraph("6. Estimated Implementation Timeline", heading_style))
+        story.append(Paragraph("6. Estimated Renovation Timeline", heading_style))
 
         total_duration = safe_get(timeline, 'total_duration', default='')
         if total_duration:
-            story.append(Paragraph(f"<b>Estimate Total Project Duration:</b> {total_duration}", body_style))
+            story.append(Paragraph(f"<b>Estimated Total Duration:</b> {total_duration}", body_style))
 
         phases = safe_get(timeline, 'phases', default=[])
         if phases and len(phases) > 0:
             for phase in phases:
-                phase_name = safe_get(phase, 'phase', default='Phase')
-                duration = safe_get(phase, 'duration', default='TBD')
+                phase_name = safe_get(phase, 'phase',    default='Phase')
+                duration   = safe_get(phase, 'duration', default='TBD')
 
                 story.append(Paragraph(f"<b>{phase_name}</b> ({duration})", subheading_style))
 
@@ -700,9 +796,9 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
                     for task in tasks:
                         story.append(Paragraph(f"• {task}", body_style))
 
-                story.append(Spacer(1, 0.1*inch))
+                story.append(Spacer(1, 0.1 * inch))
 
-    # ========== NEXT STEPS - Optional ==========
+    # ========== NEXT STEPS ==========
     if design_data and design_data.get('next_steps'):
         next_steps = design_data['next_steps']
         if next_steps and len(next_steps) > 0:
@@ -710,19 +806,17 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             for step in next_steps:
                 story.append(Paragraph(f"• {step}", body_style))
 
-    # ========== MAINTENANCE GUIDE - Optional ==========
+    # ========== MAINTENANCE GUIDE ==========
     if design_data and design_data.get('maintenance_guide'):
         maint = design_data['maintenance_guide']
 
-        has_content = False
-        daily = safe_get(maint, 'daily', default=[])
+        daily   = safe_get(maint, 'daily',   default=[])
         monthly = safe_get(maint, 'monthly', default=[])
-        annual = safe_get(maint, 'annual', default=[])
+        annual  = safe_get(maint, 'annual',  default=[])
 
         if (daily and len(daily) > 0) or (monthly and len(monthly) > 0) or (annual and len(annual) > 0):
             story.append(PageBreak())
             story.append(Paragraph("8. Maintenance Guide", heading_style))
-            has_content = True
 
         if daily and len(daily) > 0:
             story.append(Paragraph("<b>Daily Maintenance:</b>", subheading_style))
@@ -739,78 +833,47 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             for item in annual:
                 story.append(Paragraph(f"• {item}", body_style))
 
-    # ========== CHATBOT CTA AT END ==========
-    story.append(Spacer(1, 0.5*inch))
+    # ========== CHATBOT CTA ==========
+    story.append(Spacer(1, 0.5 * inch))
 
-    # Add separator line
     story.append(HRFlowable(
-        width="80%",
-        thickness=1,
-        color=colors.HexColor('#D4AF37'),
-        spaceAfter=20,
-        spaceBefore=20,
-        hAlign='CENTER'
+        width="80%", thickness=1, color=colors.HexColor('#D4AF37'),
+        spaceAfter=20, spaceBefore=20, hAlign='CENTER'
     ))
 
-    # Chatbot CTA Information
-    story.append(Paragraph("Want a More Personalized Design Experience?", chatbot_cta_style))
+    story.append(Paragraph("Want a More Personalised Renovation Experience?", chatbot_cta_style))
 
     cta_text_style = ParagraphStyle(
-        'CTAText',
-        parent=styles['Normal'],
-        fontSize=10,
-        textColor=colors.HexColor('#555555'),
-        alignment=TA_CENTER,
-        spaceAfter=10
+        'CTAText', parent=styles['Normal'], fontSize=10,
+        textColor=colors.HexColor('#555555'), alignment=TA_CENTER, spaceAfter=10
     )
 
     story.append(Paragraph(
-        "Chat with our AI Design Assistant for tailored recommendations, instant answers to your design questions, and personalized style guidance!",
+        "Chat with our AI Design Assistant for tailored renovation recommendations, "
+        "instant answers to your design questions, and personalised style guidance!",
         cta_text_style
     ))
 
-    story.append(Paragraph(
-        '<b>Visit our chatbot at:</b> www.planperfect.com/chatbot',
-        cta_text_style
-    ))
+    story.append(Paragraph('<b>Visit our chatbot at:</b> www.planperfect.com/chatbot', cta_text_style))
 
-    # Add separator line
     story.append(HRFlowable(
-        width="80%",
-        thickness=1,
-        color=colors.HexColor('#D4AF37'),
-        spaceAfter=20,
-        spaceBefore=20,
-        hAlign='CENTER'
+        width="80%", thickness=1, color=colors.HexColor('#D4AF37'),
+        spaceAfter=20, spaceBefore=20, hAlign='CENTER'
     ))
 
     story.append(Paragraph(
-        "<b>Note:</b> This document is for informational purposes only and does not constitute a binding agreement. Final designs and quotations are subject to change based on further consultations and site assessments.",
+        "<b>Note:</b> This document is for informational purposes only and does not constitute a binding agreement. "
+        "Final designs and quotations are subject to change based on further consultations and site assessments.",
         cta_text_style
     ))
 
-    # Add separator line
     story.append(HRFlowable(
-        width="80%",
-        thickness=1,
-        color=colors.HexColor('#D4AF37'),
-        spaceAfter=20,
-        spaceBefore=20,
-        hAlign='CENTER'
+        width="80%", thickness=1, color=colors.HexColor('#D4AF37'),
+        spaceAfter=20, spaceBefore=20, hAlign='CENTER'
     ))
 
-    story.append(Paragraph(
-        "Thank you for choosing PlanPerfect for your interior design needs!",
-        cta_text_style
-    ))
+    story.append(Paragraph("Thank you for choosing PlanPerfect for your renovation needs!", cta_text_style))
+    story.append(Paragraph("© 2026 PlanPerfect. All rights reserved.", cta_text_style))
 
-    story.append(Paragraph(
-        "© 2026 PlanPerfect. All rights reserved.",
-        cta_text_style
-    ))
-
-
-    # Build PDF
     doc.build(story)
-
     return buffer
