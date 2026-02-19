@@ -353,30 +353,12 @@ class AgentSynthesizerClass:
             if not LLMManager._initialized:
                 raise RuntimeError("LLMManager must be initialized before AgentSynthesizer")
 
-            self._clear_all_pending_file_actions()
             self._clear_all_user_agents()
             self._initialized = True
             print(f"AGENT SYNTHESIZER INITIALIZED. Model: \033[94m{LLMManager.get_current_agent_model()}\033[0m\n")
         except Exception as e:
             Logger.log(f"[AGENT SYNTHESIZER] - ERROR: Failed to initialize. Error: {e}")
             raise
-
-    def _clear_all_pending_file_actions(self) -> None:
-        users = DM.data.get("Users")
-        if not isinstance(users, dict):
-            return
-
-        cleared_count = 0
-        for user_data in users.values():
-            if not isinstance(user_data, dict):
-                continue
-            agent_data = user_data.get("Agent")
-            if isinstance(agent_data, dict) and agent_data.get("Pending File Action"):
-                agent_data["Pending File Action"] = None
-                cleared_count += 1
-
-        if cleared_count > 0:
-            DM.save()
 
     def _clear_all_user_agents(self) -> None:
         users = DM.data.get("Users")
@@ -404,10 +386,6 @@ class AgentSynthesizerClass:
         self._file_registry[file_id] = file_obj
 
         if user_id:
-            self._clear_stale_pending_file_action_for_new_upload(
-                user_id=user_id,
-                new_file_id=file_id,
-            )
             self._upsert_session_file(
                 user_id=user_id,
                 file_id=file_id,
@@ -453,7 +431,6 @@ class AgentSynthesizerClass:
 
             agent_data = self._get_agent_record(user_id)
             agent_data["Uploaded Files"] = []
-            self._clear_pending_file_action(user_id=user_id)
             self._update_session_status(
                 user_id=user_id,
                 status="completed",
@@ -509,92 +486,13 @@ class AgentSynthesizerClass:
         DM.save()
 
         try:
-            pending_action = self._get_pending_file_action(user_id=user_id)
-            if pending_action:
-                self._clear_pending_file_action(user_id=user_id)
-                pending_action = None
-            forced_file_context: Optional[Dict[str, Any]] = None
             effective_query = query
 
-            if pending_action:
-                pending_resolution = self._resolve_pending_file_action(
-                    user_id=user_id,
-                    user_reply=query,
-                    pending_action=pending_action,
-                )
-
-                pending_status = pending_resolution.get("status")
-                if pending_status == "waiting_for_confirmation":
-                    waiting_message = pending_resolution.get(
-                        "response",
-                        "Please let me know if you'd like me to continue with that file, or use a different one.",
-                    )
-                    waiting_message = self._sanitize_user_response(waiting_message)
-                    self._add_step(
-                        user_id=user_id,
-                        step_type="response",
-                        content=waiting_message,
-                    )
-                    self._update_session_status(
-                        user_id=user_id,
-                        status="awaiting_user_confirmation",
-                        current_step=self.DONE_STEP,
-                    )
-                    DM.save()
-                    return {
-                        "session_id": current_session_id,
-                        "status": "awaiting_user_confirmation",
-                        "response": waiting_message,
-                    }
-
-                if pending_status == "needs_file_upload":
-                    fallback_upload_message = self._image_requirement_message(
-                        tool_name=pending_action.get("tool_name") if isinstance(pending_action, dict) else None,
-                        reason="required",
-                    )
-                    upload_message = pending_resolution.get(
-                        "response",
-                        fallback_upload_message,
-                    )
-                    upload_message = self._sanitize_user_response(upload_message)
-                    self._add_step(
-                        user_id=user_id,
-                        step_type="response",
-                        content=upload_message,
-                    )
-                    self._update_session_status(
-                        user_id=user_id,
-                        status="waiting_for_file_upload",
-                        current_step=self.DONE_STEP,
-                    )
-                    DM.save()
-                    return {
-                        "session_id": current_session_id,
-                        "status": "waiting_for_file_upload",
-                        "response": upload_message,
-                    }
-
-                if pending_status == "confirmed":
-                    confirmed_action = pending_resolution.get("confirmed_action")
-                    if isinstance(confirmed_action, dict):
-                        return await self._execute_confirmed_file_action(
-                            user_id=user_id,
-                            current_session_id=current_session_id,
-                            confirmed_action=confirmed_action,
-                        )
-
-                    forced_file_context = pending_resolution.get("forced_file_context")
-                    confirmed_query = pending_resolution.get("effective_query")
-                    if isinstance(confirmed_query, str) and confirmed_query.strip():
-                        effective_query = confirmed_query
-
-            scope_decision = None
-            if not forced_file_context:
-                scope_decision = self._evaluate_request_scope(
-                    effective_query,
-                    user_id=user_id,
-                    record_step=True,
-                )
+            scope_decision = self._evaluate_request_scope(
+                effective_query,
+                user_id=user_id,
+                record_step=True,
+            )
 
             if scope_decision and not scope_decision.get("allowed", True):
                 out_of_scope_response = self._sanitize_user_response(self.OUT_OF_SCOPE_MESSAGE)
@@ -816,18 +714,13 @@ class AgentSynthesizerClass:
 
                     file_resolution = await self._resolve_tool_file_requirements(
                         user_id=user_id,
-                        query=effective_query,
                         tool_name=function_name,
                         tool_args=function_args,
-                        forced_file_context=forced_file_context,
                         current_request_file_ids=current_request_file_ids,
                     )
                     resolution_status = file_resolution.get("status")
 
-                    if file_resolution.get("applied_forced_context"):
-                        forced_file_context = None
-
-                    if resolution_status in {"ask_confirmation", "needs_file_upload", "unsuitable_file"}:
+                    if resolution_status in {"needs_file_upload", "unsuitable_file"}:
                         response_message = file_resolution.get("response")
                         if not isinstance(response_message, str) or not response_message.strip():
                             response_message = self._image_requirement_message(
@@ -842,9 +735,7 @@ class AgentSynthesizerClass:
                             content=response_message,
                         )
 
-                        if resolution_status == "ask_confirmation":
-                            status_value = "awaiting_user_confirmation"
-                        elif resolution_status == "unsuitable_file":
+                        if resolution_status == "unsuitable_file":
                             status_value = "completed"
                         else:
                             status_value = "waiting_for_file_upload"
@@ -1009,7 +900,6 @@ class AgentSynthesizerClass:
             "steps": [],
             "Outputs": self._default_outputs(),
             "Uploaded Files": [],
-            "Pending File Action": None,
         }
 
     def _normalize_outputs(self, outputs: Any) -> Dict[str, List[Any]]:
@@ -1049,31 +939,6 @@ class AgentSynthesizerClass:
             )
 
         return normalized
-
-    def _normalize_pending_file_action(self, pending_action: Any) -> Optional[Dict[str, Any]]:
-        if not isinstance(pending_action, dict):
-            return None
-
-        tool_name = pending_action.get("tool_name")
-        file_id = pending_action.get("file_id")
-        if not isinstance(tool_name, str) or not isinstance(file_id, str):
-            return None
-        if not tool_name.strip() or not file_id.strip():
-            return None
-
-        tool_args = pending_action.get("tool_args")
-        if not isinstance(tool_args, dict):
-            tool_args = {}
-
-        return {
-            "tool_name": tool_name.strip(),
-            "tool_args": tool_args,
-            "file_id": file_id.strip(),
-            "file_description": str(pending_action.get("file_description") or "uploaded file"),
-            "required_file_description": str(pending_action.get("required_file_description") or ""),
-            "original_query": str(pending_action.get("original_query") or ""),
-            "created_at": str(pending_action.get("created_at") or datetime.now().isoformat()),
-        }
 
     def _build_messages(self, query: str, history_steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
@@ -1316,9 +1181,6 @@ class AgentSynthesizerClass:
             normalized["Uploaded Files"] = self._normalize_uploaded_files(
                 selected_session.get("Uploaded Files", raw_session_data.get("Uploaded Files", []))
             )
-            normalized["Pending File Action"] = self._normalize_pending_file_action(
-                selected_session.get("Pending File Action", raw_session_data.get("Pending File Action"))
-            )
             return normalized
 
         existing_session_id = raw_session_data.get("session_id")
@@ -1338,9 +1200,6 @@ class AgentSynthesizerClass:
         normalized["steps"] = self._normalize_steps(raw_session_data.get("steps", []))
         normalized["Outputs"] = self._normalize_outputs(raw_session_data.get("Outputs"))
         normalized["Uploaded Files"] = self._normalize_uploaded_files(raw_session_data.get("Uploaded Files", []))
-        normalized["Pending File Action"] = self._normalize_pending_file_action(
-            raw_session_data.get("Pending File Action")
-        )
         return normalized
 
     def _get_or_initialize_session(
@@ -1756,54 +1615,6 @@ class AgentSynthesizerClass:
         files = self._normalize_uploaded_files(agent_data.get("Uploaded Files"))
         agent_data["Uploaded Files"] = [item for item in files if item.get("file_id") != cleaned_file_id]
 
-        pending_action = self._normalize_pending_file_action(agent_data.get("Pending File Action"))
-        if pending_action and pending_action.get("file_id") == cleaned_file_id:
-            agent_data["Pending File Action"] = None
-
-    def _set_pending_file_action(
-        self,
-        user_id: str,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        file_id: str,
-        file_description: str,
-        required_file_description: str,
-        original_query: str,
-    ) -> None:
-        agent_data = self._get_agent_record(user_id)
-        agent_data["Pending File Action"] = {
-            "tool_name": tool_name,
-            "tool_args": tool_args if isinstance(tool_args, dict) else {},
-            "file_id": file_id,
-            "file_description": file_description,
-            "required_file_description": required_file_description,
-            "original_query": original_query,
-            "created_at": datetime.now().isoformat(),
-        }
-
-    def _clear_pending_file_action(self, user_id: str) -> None:
-        agent_data = self._get_agent_record(user_id)
-        agent_data["Pending File Action"] = None
-
-    def _get_pending_file_action(self, user_id: str) -> Optional[Dict[str, Any]]:
-        agent_data = self._get_agent_record(user_id)
-        normalized = self._normalize_pending_file_action(agent_data.get("Pending File Action"))
-        agent_data["Pending File Action"] = normalized
-        return normalized
-
-    def _clear_stale_pending_file_action_for_new_upload(self, user_id: str, new_file_id: str) -> None:
-        if not isinstance(new_file_id, str) or not new_file_id.strip():
-            return
-
-        pending_action = self._get_pending_file_action(user_id=user_id)
-        if not pending_action:
-            return
-
-        pending_file_id = str(pending_action.get("file_id") or "").strip()
-        cleaned_new_file_id = new_file_id.strip()
-        if pending_file_id and pending_file_id != cleaned_new_file_id:
-            self._clear_pending_file_action(user_id=user_id)
-
     def _ingest_uploaded_files(
         self,
         user_id: str,
@@ -1830,10 +1641,6 @@ class AgentSynthesizerClass:
                     source=source,
                 )
             else:
-                self._clear_stale_pending_file_action_for_new_upload(
-                    user_id=user_id,
-                    new_file_id=file_id.strip(),
-                )
                 self._upsert_session_file(
                     user_id=user_id,
                     file_id=file_id.strip(),
@@ -1842,129 +1649,6 @@ class AgentSynthesizerClass:
                 )
 
         DM.save()
-
-    def _resolve_pending_file_action(
-        self,
-        user_id: str,
-        user_reply: str,
-        pending_action: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        normalized_reply = str(user_reply or "").strip().lower()
-        affirmative_keywords = (
-            "yes",
-            "yeah",
-            "yep",
-            "sure",
-            "ok",
-            "okay",
-            "use it",
-            "use that",
-            "use this",
-            "go with it",
-            "go with this",
-            "continue",
-            "proceed",
-            "go ahead",
-            "please do",
-        )
-        negative_keywords = (
-            "no",
-            "nope",
-            "don't",
-            "do not",
-            "dont",
-            "not this",
-            "another",
-            "different",
-            "different one",
-            "different file",
-            "new file",
-            "upload another",
-            "use another",
-        )
-
-        is_affirmative = any(keyword in normalized_reply for keyword in affirmative_keywords)
-        is_negative = any(keyword in normalized_reply for keyword in negative_keywords)
-
-        if is_affirmative and not is_negative:
-            self._add_step(
-                user_id=user_id,
-                step_type="file_confirmation",
-                content={
-                    "decision": "accepted",
-                    "tool": pending_action.get("tool_name"),
-                    "file_id": pending_action.get("file_id"),
-                },
-            )
-            self._clear_pending_file_action(user_id=user_id)
-            DM.save()
-
-            return {
-                "status": "confirmed",
-                "effective_query": pending_action.get("original_query") or user_reply,
-                "confirmed_action": {
-                    "tool_name": pending_action.get("tool_name"),
-                    "file_id": pending_action.get("file_id"),
-                    "tool_args": pending_action.get("tool_args", {}),
-                    "original_query": pending_action.get("original_query") or user_reply,
-                },
-                "forced_file_context": {
-                    "tool_name": pending_action.get("tool_name"),
-                    "file_id": pending_action.get("file_id"),
-                    "tool_args": pending_action.get("tool_args", {}),
-                },
-            }
-
-        if is_negative and not is_affirmative:
-            self._add_step(
-                user_id=user_id,
-                step_type="file_confirmation",
-                content={
-                    "decision": "rejected",
-                    "tool": pending_action.get("tool_name"),
-                    "file_id": pending_action.get("file_id"),
-                },
-            )
-            self._clear_pending_file_action(user_id=user_id)
-            DM.save()
-
-            return {
-                "status": "needs_file_upload",
-                "response": self._image_requirement_message(
-                    tool_name=str(pending_action.get("tool_name") or ""),
-                    reason="replace",
-                ),
-            }
-
-        file_desc = pending_action.get("file_description") or "that uploaded file"
-        return {
-            "status": "waiting_for_confirmation",
-            "response": self._sanitize_user_response(
-                f"I can continue with {file_desc}. "
-                "Let me know if you'd like me to proceed with it, or if you want to use a different file."
-            ),
-        }
-
-    def _file_label(self, file_id: Any, user_id: Optional[str] = None) -> str:
-        if not isinstance(file_id, str) or not file_id.strip():
-            return "uploaded file"
-
-        cleaned_file_id = file_id.strip()
-
-        if user_id:
-            for item in self._get_session_files(user_id=user_id):
-                if item.get("file_id") != cleaned_file_id:
-                    continue
-                filename = str(item.get("filename") or "").strip()
-                if filename:
-                    return filename
-
-        file_obj = self._file_registry.get(cleaned_file_id)
-        filename = str(getattr(file_obj, "filename", "") or "").strip()
-        if filename:
-            return filename
-
-        return cleaned_file_id
 
     def _strip_links_from_text(self, text: str) -> str:
         if not isinstance(text, str):
@@ -2428,147 +2112,11 @@ class AgentSynthesizerClass:
 
         return self._sanitize_user_response(response_text)
 
-    async def _execute_confirmed_file_action(
-        self,
-        user_id: str,
-        current_session_id: str,
-        confirmed_action: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        tool_name = str(confirmed_action.get("tool_name") or "").strip()
-        tool_args = confirmed_action.get("tool_args")
-        if not isinstance(tool_args, dict):
-            tool_args = {}
-
-        file_id = confirmed_action.get("file_id")
-        if isinstance(file_id, str) and file_id.strip():
-            tool_args["file_id"] = file_id.strip()
-
-        if not tool_name:
-            fallback_response = self._sanitize_user_response(
-                "I couldn't determine which action to continue. Please resend your request."
-            )
-            self._add_step(user_id=user_id, step_type="response", content=fallback_response)
-            self._update_session_status(
-                user_id=user_id,
-                status="completed",
-                current_step=self.DONE_STEP,
-            )
-            DM.save()
-            return {
-                "session_id": current_session_id,
-                "status": "completed",
-                "response": fallback_response,
-            }
-
-        if self._tool_requires_file(tool_name):
-            file_id_value = tool_args.get("file_id")
-            if not isinstance(file_id_value, str) or file_id_value not in self._file_registry:
-                upload_message = self._image_requirement_message(
-                    tool_name=tool_name,
-                    reason="not_found",
-                )
-                upload_message = self._sanitize_user_response(upload_message)
-                self._add_step(user_id=user_id, step_type="response", content=upload_message)
-                self._update_session_status(
-                    user_id=user_id,
-                    status="waiting_for_file_upload",
-                    current_step=self.DONE_STEP,
-                )
-                DM.save()
-                return {
-                    "session_id": current_session_id,
-                    "status": "waiting_for_file_upload",
-                    "response": upload_message,
-                }
-
-        self._update_session_status(
-            user_id=user_id,
-            status="executing",
-            current_step=self._tool_current_step(tool_name),
-        )
-        self._add_step(
-            user_id=user_id,
-            step_type="tool_call",
-            content=tool_args,
-            tool_name=tool_name,
-        )
-
-        try:
-            result = await self._execute_tool(
-                tool_name,
-                tool_args,
-                user_id=user_id,
-                allowed_file_ids=[],
-            )
-
-            output_summary = self._store_tool_output(
-                user_id=user_id,
-                tool_name=tool_name,
-                args=tool_args,
-                result=result,
-            )
-            if output_summary:
-                self._add_step(
-                    user_id=user_id,
-                    step_type="tool_result",
-                    content=output_summary,
-                    tool_name=tool_name,
-                )
-
-            final_response = self._build_direct_tool_response(
-                user_id=user_id,
-                tool_name=tool_name,
-                tool_args=tool_args,
-                result=result,
-            )
-            final_response = self._sanitize_user_response(final_response)
-            self._add_step(
-                user_id=user_id,
-                step_type="response",
-                content=final_response,
-            )
-            self._update_session_status(
-                user_id=user_id,
-                status="completed",
-                current_step=self.DONE_STEP,
-            )
-            DM.save()
-
-            return {
-                "session_id": current_session_id,
-                "status": "completed",
-                "response": final_response,
-                "iterations": 1,
-            }
-        except Exception as e:
-            error_msg = f"Tool execution failed for {tool_name}: {str(e)}"
-            Logger.log(f"[AGENT SYNTHESIZER] - ERROR: {error_msg}")
-            self._add_step(
-                user_id=user_id,
-                step_type="error",
-                content={"error": str(e)},
-                tool_name=tool_name,
-            )
-            self._update_session_status(
-                user_id=user_id,
-                status="error",
-                current_step=self.THINKING_STEP,
-            )
-            DM.save()
-            return {
-                "session_id": current_session_id,
-                "status": "error",
-                "error": error_msg,
-                "response": self._sanitize_user_response(self.USER_ERROR_MESSAGE),
-            }
-
     async def _resolve_tool_file_requirements(
         self,
         user_id: str,
-        query: str,
         tool_name: str,
         tool_args: Dict[str, Any],
-        forced_file_context: Optional[Dict[str, Any]] = None,
         current_request_file_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         if not self._tool_requires_file(tool_name):
@@ -2580,24 +2128,6 @@ class AgentSynthesizerClass:
             for file_id in (current_request_file_ids or [])
             if isinstance(file_id, str) and file_id.strip()
         }
-
-        if (
-            isinstance(forced_file_context, dict)
-            and forced_file_context.get("tool_name") == tool_name
-            and isinstance(forced_file_context.get("file_id"), str)
-        ):
-            forced_file_id = str(forced_file_context.get("file_id") or "").strip()
-            if forced_file_id not in current_request_file_id_set:
-                forced_file_id = ""
-            merged_args = dict(forced_file_context.get("tool_args") or {})
-            merged_args.update(args)
-            if forced_file_id:
-                merged_args["file_id"] = forced_file_id
-                return {
-                    "status": "ready",
-                    "tool_args": merged_args,
-                    "applied_forced_context": True,
-                }
 
         if not current_request_file_id_set:
             return {
