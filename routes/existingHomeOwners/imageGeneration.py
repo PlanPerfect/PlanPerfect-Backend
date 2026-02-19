@@ -160,6 +160,7 @@ async def generate_image(
             "styles": styles,
             "designer_notes": designer_notes,
             "furniture_count": len(furniture_images),
+            "created_at": datetime.utcnow().isoformat(),
         }
 
         user_home = DM.data["Users"][user_id]["Existing Homeowner"]
@@ -187,7 +188,6 @@ async def generate_image(
         Logger.log(f"[IMAGE GENERATION] - Error: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-
 @router.get("/history")
 async def get_generation_history(request: Request):
     try:
@@ -208,6 +208,8 @@ async def get_generation_history(request: Request):
         designs = []
 
         for gen_id, data in history.items():
+            if not isinstance(data, dict) or not data.get("image_url"):
+                continue
             designs.append({
                 "id": gen_id,
                 "url": data.get("image_url"),
@@ -215,11 +217,71 @@ async def get_generation_history(request: Request):
                 "created_at": data.get("created_at")
             })
 
-        designs.sort(key=lambda x: x["created_at"], reverse=True)
+        designs.sort(key=lambda x: x["created_at"] or "", reverse=True)
 
         return {"success": True, "designs": designs}
 
     except Exception as e:
+        Logger.log(f"[IMAGE HISTORY] - Error: {str(e)}")
+        import traceback
+        Logger.log(f"[IMAGE HISTORY] - Traceback: {traceback.format_exc()}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@router.post("/selectFinal")
+async def select_final_design(request: Request):
+    try:
+        user_id = getattr(request.state, 'user_id', None)
+        if not user_id:
+            user_id = request.headers.get('X-User-ID')
+
+        if not user_id:
+            return JSONResponse(status_code=400, content={"error": "Not authenticated."})
+
+        body = await request.json()
+        generation_id = body.get("generation_id")
+        image_url = body.get("image_url")
+
+        if not generation_id or not image_url:
+            return JSONResponse(status_code=400, content={"error": "generation_id and image_url are required."})
+
+        DM.load()
+        
+        # Check user exists
+        if user_id not in DM.data.get("Users", {}):
+            return JSONResponse(status_code=404, content={"error": "User not found."})
+        
+        user_home = DM.data["Users"][user_id]["Existing Homeowner"]
+
+        user_home["Final Image Selection"] = {
+            "generation_id": generation_id,
+            "image_url": image_url,
+        }
+
+        if "Image Generations" not in user_home:
+            user_home["Image Generations"] = {}
+
+        if generation_id in user_home["Image Generations"]:
+            user_home["Image Generations"][generation_id]["final_selection"] = {
+                "selected_at": datetime.utcnow().isoformat(),
+                "image_url": image_url
+            }
+        else:
+            user_home["Image Generations"][generation_id] = {
+                "image_url": image_url,
+                "final_selection": {
+                    "selected_at": datetime.utcnow().isoformat(),
+                    "image_url": image_url
+                }
+            }
+
+        DM.save()
+        Logger.log(f"[IMAGE GENERATION] - User {user_id} selected final design: {generation_id}")
+        return {"success": True}
+
+    except Exception as e:
+        Logger.log(f"[SELECT FINAL] - Error: {str(e)}")
+        import traceback
+        Logger.log(f"[SELECT FINAL] - Traceback: {traceback.format_exc()}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
