@@ -524,6 +524,7 @@ class AgentSynthesizerClass:
 
             messages = self._build_messages(query=effective_query, history_steps=history_steps)
             completed_tool_runs: List[Dict[str, Any]] = []
+            tool_result_cache: Dict[str, Any] = {}
 
             iteration = 0
             while iteration < max_iterations:
@@ -613,6 +614,14 @@ class AgentSynthesizerClass:
                                 user_id=user_id,
                                 step_type="thought",
                                 content=f"Iteration {iteration}: Summarising tool outputs...",
+                            )
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="summary",
+                                content={
+                                    "iteration": iteration,
+                                    "tool_runs": len(completed_tool_runs),
+                                },
                             )
 
                         final_response = self._build_tool_run_response(
@@ -768,26 +777,45 @@ class AgentSynthesizerClass:
                     )
 
                     try:
-                        result = await self._execute_tool(
-                            function_name,
-                            function_args,
-                            user_id=user_id,
-                            allowed_file_ids=current_request_file_ids,
-                        )
-
-                        output_summary = self._store_tool_output(
-                            user_id=user_id,
-                            tool_name=function_name,
-                            args=function_args,
-                            result=result,
-                        )
-
-                        if output_summary:
+                        call_cache_key = self._tool_call_cache_key(function_name, function_args)
+                        reused_cached_result = call_cache_key in tool_result_cache
+                        if reused_cached_result:
+                            result = tool_result_cache[call_cache_key]
                             self._add_step(
                                 user_id=user_id,
-                                step_type="tool_result",
-                                content=output_summary,
+                                step_type="thought",
+                                content=f"Iteration {iteration}: Reused cached result for `{function_name}`.",
+                            )
+                        else:
+                            result = await self._execute_tool(
+                                function_name,
+                                function_args,
+                                user_id=user_id,
+                                allowed_file_ids=current_request_file_ids,
+                            )
+                            tool_result_cache[call_cache_key] = result
+
+                            output_summary = self._store_tool_output(
+                                user_id=user_id,
                                 tool_name=function_name,
+                                args=function_args,
+                                result=result,
+                            )
+
+                            if output_summary:
+                                self._add_step(
+                                    user_id=user_id,
+                                    step_type="tool_result",
+                                    content=output_summary,
+                                    tool_name=function_name,
+                                )
+
+                            completed_tool_runs.append(
+                                {
+                                    "tool_name": function_name,
+                                    "tool_args": function_args,
+                                    "result": result,
+                                }
                             )
 
                         messages.append(
@@ -795,13 +823,6 @@ class AgentSynthesizerClass:
                                 "role": "tool",
                                 "tool_call_id": tool_call_id,
                                 "content": json.dumps(result),
-                            }
-                        )
-                        completed_tool_runs.append(
-                            {
-                                "tool_name": function_name,
-                                "tool_args": function_args,
-                                "result": result,
                             }
                         )
                         DM.save()
@@ -978,6 +999,34 @@ class AgentSynthesizerClass:
             return parsed if isinstance(parsed, dict) else {}
         except Exception:
             return {}
+
+    def _normalize_for_cache(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+
+        if isinstance(value, dict):
+            return {
+                str(key): self._normalize_for_cache(val)
+                for key, val in sorted(value.items(), key=lambda item: str(item[0]))
+            }
+
+        if isinstance(value, (list, tuple, set)):
+            return [self._normalize_for_cache(item) for item in value]
+
+        return str(value)
+
+    def _tool_call_cache_key(self, tool_name: str, tool_args: Dict[str, Any]) -> str:
+        normalized_args = self._normalize_for_cache(tool_args if isinstance(tool_args, dict) else {})
+        try:
+            args_text = json.dumps(
+                normalized_args,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except Exception:
+            args_text = str(normalized_args)
+        return f"{str(tool_name or '').strip()}::{args_text}"
 
     def _normalize_recommendation_query_text(self, query: str) -> str:
         normalized_query = re.sub(r"[^\w\s-]", " ", str(query or "").lower())
@@ -1778,12 +1827,17 @@ class AgentSynthesizerClass:
     ) -> str:
         snippets: List[str] = []
         seen = set()
+        seen_tool_calls = set()
 
         for item in completed_tool_runs:
             tool_name = str(item.get("tool_name") or "").strip()
             if not tool_name:
                 continue
             tool_args = item.get("tool_args") if isinstance(item.get("tool_args"), dict) else {}
+            tool_call_key = self._tool_call_cache_key(tool_name, tool_args)
+            if tool_call_key in seen_tool_calls:
+                continue
+            seen_tool_calls.add(tool_call_key)
             snippet = self._build_direct_tool_response(
                 user_id=user_id,
                 tool_name=tool_name,
