@@ -8,6 +8,7 @@ from Services import Logger
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
+# backup model: gemini-2.5-flash-image
 image_gen_model = "gemini-3-pro-image-preview"
 
 
