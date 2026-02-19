@@ -179,9 +179,6 @@ class AgentSynthesizerClass:
         "generate_floor_plan": "a top-down floor plan or architectural layout image",
     }
 
-    # Change 15: Relaxed scope classifier — prefers interior_design/small_talk,
-    # only blocks genuinely unrelated requests. Also handles conversational memory
-    # questions (e.g. "what's my name?") as small_talk, not out_of_scope.
     SCOPE_CLASSIFIER_INSTRUCTION = (
         "You are a scope classifier for an interior-design assistant. "
         "Classify the latest user query into exactly one category:\n"
@@ -513,7 +510,6 @@ class AgentSynthesizerClass:
 
         try:
             pending_action = self._get_pending_file_action(user_id=user_id)
-            # Strict prompt-file pairing: never carry pending file actions across prompts.
             if pending_action:
                 self._clear_pending_file_action(user_id=user_id)
                 pending_action = None
@@ -2603,9 +2599,6 @@ class AgentSynthesizerClass:
                     "applied_forced_context": True,
                 }
 
-        # Change 2: Strict prompt-file pairing.
-        # Tools requiring files can only use files uploaded with the current prompt.
-        # If no files were uploaded alongside this message, request an upload.
         if not current_request_file_id_set:
             return {
                 "status": "needs_file_upload",
@@ -2622,10 +2615,8 @@ class AgentSynthesizerClass:
             if cleaned_provided_file_id not in self._file_registry:
                 cleaned_provided_file_id = None
             elif cleaned_provided_file_id not in current_request_file_id_set:
-                # Stale reference from a previous prompt — ignore it.
                 cleaned_provided_file_id = None
 
-        # Build candidates exclusively from files uploaded with the current prompt.
         candidates: List[Dict[str, Any]] = []
         for fid in current_request_file_id_set:
             if fid not in self._file_registry:
@@ -2697,7 +2688,6 @@ class AgentSynthesizerClass:
         suitable_files = [item for item in analysis_results if item.get("suitable") and item.get("file_id")]
         suitable_files.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
 
-        # Select from current-request files only.
         selected: Optional[Dict[str, Any]] = None
         selection_reason = "auto-selected suitable file from current prompt uploads"
 
@@ -3345,8 +3335,6 @@ class AgentSynthesizerClass:
 
         if tool_name == "web_search":
             query = str(args.get("query") or "")
-            # Change 15: Only block explicitly out_of_scope queries.
-            # interior_design and small_talk classified queries are allowed.
             scope_decision = self._evaluate_request_scope(
                 query,
                 user_id=user_id,
