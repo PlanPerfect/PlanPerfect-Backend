@@ -1,5 +1,6 @@
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 from typing import Optional, Dict, List, Any
 import os
 import base64
@@ -28,6 +29,7 @@ load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 IMAGE_MODEL = "gemini-3-pro-image-preview"
+FALLBACK_IMAGE_MODEL = "gemini-2.5-flash-image"
 
 class ServiceOrchestraClass:
     _instance = None
@@ -108,6 +110,65 @@ class ServiceOrchestraClass:
 
         return data
 
+    def _is_model_unavailable_error(self, error: Exception) -> bool:
+        if isinstance(error, genai_errors.APIError):
+            code = error.code
+            status = str(error.status or "").upper()
+            message = str(error.message or "")
+        else:
+            code = getattr(error, "code", None)
+            status = str(getattr(error, "status", "") or "").upper()
+            message = str(getattr(error, "message", "") or "")
+        payload = f"{message} {str(error)}".lower()
+
+        if code == 503:
+            return True
+        if status == "UNAVAILABLE":
+            return True
+
+        indicators = ("503", "unavailable", "high demand", "currently experiencing high demand")
+        return any(token in payload for token in indicators)
+
+    def _generate_content_with_image_fallback(
+        self,
+        *,
+        contents: Any,
+        config: types.GenerateContentConfig,
+        operation_name: str,
+    ) -> Any:
+        try:
+            return self._client.models.generate_content(
+                model=IMAGE_MODEL,
+                contents=contents,
+                config=config,
+            )
+        except Exception as primary_error:
+            if not self._is_model_unavailable_error(primary_error):
+                raise
+
+            Logger.log(
+                f"[SERVICE ORCHESTRA] - WARNING: {operation_name} failed on {IMAGE_MODEL} due to temporary "
+                f"unavailability ({str(primary_error)}). Retrying with {FALLBACK_IMAGE_MODEL}."
+            )
+
+            try:
+                fallback_response = self._client.models.generate_content(
+                    model=FALLBACK_IMAGE_MODEL,
+                    contents=contents,
+                    config=config,
+                )
+                Logger.log(
+                    f"[SERVICE ORCHESTRA] - INFO: {operation_name} succeeded using fallback model "
+                    f"{FALLBACK_IMAGE_MODEL}."
+                )
+                return fallback_response
+            except Exception as fallback_error:
+                Logger.log(
+                    f"[SERVICE ORCHESTRA] - ERROR: {operation_name} fallback on {FALLBACK_IMAGE_MODEL} failed. "
+                    f"{str(fallback_error)}"
+                )
+                raise fallback_error
+
     def generate_image(
         self,
         prompt: str,
@@ -120,8 +181,8 @@ class ServiceOrchestraClass:
             return None
 
         try:
-            response = self._client.models.generate_content(
-                model=IMAGE_MODEL,
+            response = self._generate_content_with_image_fallback(
+                operation_name="Image generation",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_modalities=['TEXT', 'IMAGE'],
@@ -872,8 +933,8 @@ class ServiceOrchestraClass:
 
 Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid floor plan was detected" and nothing else."""
 
-            response = self._client.models.generate_content(
-                model=IMAGE_MODEL,
+            response = self._generate_content_with_image_fallback(
+                operation_name="Floor plan generation",
                 contents=[
                     prompt,
                     types.Part.from_bytes(
