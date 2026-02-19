@@ -4,6 +4,7 @@ from typing import Optional, Dict, List, Any
 import os
 import base64
 import inspect
+import json
 import tempfile
 from io import BytesIO
 from PIL import Image
@@ -472,25 +473,213 @@ class ServiceOrchestraClass:
             return None
 
     @staticmethod
-    async def web_search(query: str) -> Optional[Dict[str, any]]:
-        try:
-            client = LinkupClient(api_key=os.getenv("LINKUP_API_KEY"))
+    def _to_plain_dict(payload: Any) -> Dict[str, Any]:
+        if isinstance(payload, dict):
+            return payload
 
-            response = client.search(
-                query=query,
+        if hasattr(payload, "model_dump"):
+            try:
+                dumped = payload.model_dump()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:
+                pass
+
+        if hasattr(payload, "dict"):
+            try:
+                dumped = payload.dict()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:
+                pass
+
+        return {}
+
+    @staticmethod
+    def _extract_linkup_answer(payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload.strip()
+
+        data = ServiceOrchestraClass._to_plain_dict(payload)
+        if not data:
+            return ""
+
+        for key in ("answer", "result", "response", "message"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        nested_data = data.get("data")
+        if isinstance(nested_data, dict):
+            nested_answer = ServiceOrchestraClass._extract_linkup_answer(nested_data)
+            if nested_answer:
+                return nested_answer
+
+        results = data.get("results")
+        if isinstance(results, list):
+            snippets: List[str] = []
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                snippet = item.get("content") or item.get("snippet") or item.get("name")
+                if isinstance(snippet, str):
+                    cleaned = snippet.strip()
+                    if cleaned:
+                        snippets.append(cleaned)
+                if len(snippets) >= 3:
+                    break
+            if snippets:
+                return " ".join(snippets)
+
+        return ""
+
+    @staticmethod
+    async def _direct_linkup_search(query: str, api_key: str) -> Optional[Dict[str, Any]]:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "PlanPerfect-ServiceOrchestra/1.0",
+        }
+        payload = {
+            "q": query,
+            "depth": "deep",
+            "outputType": "sourcedAnswer",
+            "includeImages": False,
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                base_url="https://api.linkup.so/v1",
+                headers=headers,
+                timeout=httpx.Timeout(timeout=45.0, connect=10.0, read=35.0, write=10.0),
+            ) as client:
+                response = await client.post("/search", json=payload)
+        except httpx.HTTPError as e:
+            Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Web search HTTP fallback failed. {str(e)}")
+            return {
+                "error": "network_error",
+                "message": "Web search is temporarily unavailable. Please try again in a moment.",
+            }
+
+        response_text = response.text.strip()
+        if response.status_code != 200:
+            detail = ""
+            if response_text:
+                try:
+                    error_data = response.json()
+                    if isinstance(error_data, dict):
+                        error_obj = error_data.get("error")
+                        if isinstance(error_obj, dict):
+                            detail = str(error_obj.get("message") or "").strip()
+                        elif isinstance(error_data.get("message"), str):
+                            detail = error_data.get("message", "").strip()
+                except Exception:
+                    detail = response_text[:300]
+            Logger.log(
+                f"[SERVICE ORCHESTRA] - ERROR: Linkup returned status {response.status_code}. "
+                f"Details: {detail or 'No error payload'}"
+            )
+
+            if response.status_code in {401, 403}:
+                return {
+                    "error": "auth_error",
+                    "message": "Web search service credentials are invalid or expired.",
+                }
+            if response.status_code == 429:
+                return {
+                    "error": "rate_limited",
+                    "message": "Web search is rate-limited right now. Please try again later.",
+                }
+            return {
+                "error": "upstream_error",
+                "message": "Web search failed to return a valid result. Please try again.",
+            }
+
+        if not response_text:
+            Logger.log("[SERVICE ORCHESTRA] - ERROR: Linkup returned HTTP 200 with empty body.")
+            return {
+                "error": "empty_response",
+                "message": "Web search returned an empty response. Please try again.",
+            }
+
+        try:
+            data = response.json()
+        except ValueError:
+            Logger.log(
+                "[SERVICE ORCHESTRA] - ERROR: Linkup returned non-JSON response body. "
+                f"Body preview: {response_text[:300]}"
+            )
+            return {
+                "error": "invalid_response",
+                "message": "Web search returned an invalid response format. Please try again.",
+            }
+
+        answer = ServiceOrchestraClass._extract_linkup_answer(data)
+        if not answer:
+            return {
+                "error": "no_answer",
+                "message": "I couldn't extract a useful answer from web search results.",
+            }
+
+        result: Dict[str, Any] = {"answer": answer}
+        if isinstance(data, dict) and isinstance(data.get("sources"), list):
+            result["sources"] = data.get("sources", [])
+        return result
+
+    @staticmethod
+    async def web_search(query: str) -> Optional[Dict[str, any]]:
+        clean_query = str(query or "").strip()
+        if not clean_query:
+            return {
+                "error": "empty_query",
+                "message": "Please provide a search query.",
+            }
+
+        api_key = str(os.getenv("LINKUP_API_KEY") or "").strip()
+        if not api_key:
+            Logger.log("[SERVICE ORCHESTRA] - ERROR: LINKUP_API_KEY not found in environment.")
+            return {
+                "error": "missing_api_key",
+                "message": "Web search is not configured right now.",
+            }
+
+        try:
+            client = LinkupClient(api_key=api_key)
+            response = await client.async_search(
+                query=clean_query,
                 depth="deep",
                 output_type="sourcedAnswer",
                 include_images=False,
             )
 
-            data = response.dict()
+            payload = ServiceOrchestraClass._to_plain_dict(response)
+            answer = ServiceOrchestraClass._extract_linkup_answer(payload or response)
+            if answer:
+                result: Dict[str, Any] = {"answer": answer}
+                if isinstance(payload.get("sources"), list):
+                    result["sources"] = payload.get("sources", [])
+                return result
 
-            answer = data.get("answer", "")
-
-            return { "answer": answer }
+            Logger.log("[SERVICE ORCHESTRA] - WARNING: Linkup SDK returned no answer; trying HTTP fallback.")
+        except json.JSONDecodeError as e:
+            Logger.log(
+                "[SERVICE ORCHESTRA] - WARNING: Linkup SDK returned non-JSON/empty payload. "
+                f"Error: {str(e)}. Trying HTTP fallback."
+            )
         except Exception as e:
-            Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Web search failed. {str(e)}")
-            return None
+            Logger.log(f"[SERVICE ORCHESTRA] - WARNING: Linkup SDK search failed. {str(e)}. Trying HTTP fallback.")
+
+        fallback_result = await ServiceOrchestraClass._direct_linkup_search(
+            query=clean_query,
+            api_key=api_key,
+        )
+        if fallback_result is not None:
+            return fallback_result
+
+        return {
+            "error": "unknown_error",
+            "message": "Web search failed. Please try again in a moment.",
+        }
 
     async def extract_colors(
         self,

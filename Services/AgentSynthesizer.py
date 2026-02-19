@@ -2373,11 +2373,11 @@ class AgentSynthesizerClass:
                 if condensed_names:
                     response_text = self._pick_response_template(
                         [
-                            f"I found {count} recommendation(s). Top picks include {condensed_names}.",
-                            f"I pulled {count} recommendation(s) for you, including {condensed_names}.",
-                            f"Your recommendations are ready. A few examples are {condensed_names}.",
+                            f"I found {count} recommendation(s) and saved them to the **Agent Ensemble**.",
+                            f"I pulled {count} recommendation(s) for you and saved them to the **Agent Ensemble**.",
+                            f"Your recommendations are ready and saved to the **Agent Ensemble**.",
                         ],
-                        f"I found {count} recommendation(s). Top picks include {condensed_names}.",
+                        f"I found {count} recommendation(s) and saved them to the **Agent Ensemble**.",
                     )
                 else:
                     response_text = self._pick_response_template(
@@ -3171,6 +3171,9 @@ class AgentSynthesizerClass:
         return furniture_objects
 
     def _extract_search_result(self, result: Any) -> str:
+        if result is None:
+            return ""
+
         if isinstance(result, str):
             return result
 
@@ -3179,6 +3182,8 @@ class AgentSynthesizerClass:
                 value = result.get(key)
                 if isinstance(value, str):
                     return value
+            if not result:
+                return ""
             return json.dumps(result, ensure_ascii=False)
 
         try:
