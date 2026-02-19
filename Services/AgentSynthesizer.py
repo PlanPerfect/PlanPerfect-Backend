@@ -24,7 +24,7 @@ class AgentSynthesizerClass:
     _instance = None
     STATUS_IDLE = "idle"
     STATUS_RUNNING = "running"
-    HISTORY_LIMIT = 50
+    HISTORY_LIMIT = 100
     THINKING_STEP = "Thinking..."
     ANALYZING_FILES_STEP = "Analysing files..."
     SUMMARIZING_STEP = "Summarising..."
