@@ -46,17 +46,114 @@ def normalize_display_list(values):
                 cleaned.append(text)
     return cleaned
 
-def generate_pdf(design_data, room_photo_path, generated_design_path, preferences, budget, unit_info, saved_recommendations=None, detected_style=None):
+
+def _render_image_grid(story, image_paths, heading_style, subheading_style, body_style, caption_style,
+                        section_title, intro_text, img_captions=None):
+    """
+    Render a list of local image paths into the PDF story as a tidy grid.
+    - 1 image  → full-width centred
+    - 2 images → side by side
+    - 3+       → two per row
+    img_captions: optional list of caption strings matching image_paths length.
+    """
+    valid_paths = [p for p in image_paths if p and os.path.exists(p)]
+    if not valid_paths:
+        return
+
+    story.append(Paragraph(section_title, heading_style))
+    if intro_text:
+        story.append(Paragraph(intro_text, body_style))
+    story.append(Spacer(1, 0.15 * inch))
+
+    cell_cap_style = ParagraphStyle(
+        'AgentImgCap',
+        parent=body_style,
+        fontSize=8,
+        textColor=colors.HexColor('#666666'),
+        alignment=TA_CENTER,
+        fontName='Helvetica-Oblique',
+        spaceAfter=4,
+    )
+
+    def _make_img(path, width, height):
+        try:
+            return Image(path, width=width, height=height, kind='proportional')
+        except Exception as e:
+            Logger.log(f"[DESIGN DOCS] - ERROR: Could not load image {path}: {e}")
+            return None
+
+    def _caption(idx):
+        if img_captions and idx < len(img_captions):
+            return img_captions[idx]
+        return f"Image {idx + 1}"
+
+    if len(valid_paths) == 1:
+        img = _make_img(valid_paths[0], 5.0 * inch, 3.5 * inch)
+        if img:
+            img_table = Table([[img], [Paragraph(_caption(0), cell_cap_style)]], colWidths=[6.5 * inch])
+            img_table.setStyle(TableStyle([
+                ('ALIGN',        (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOX',          (0, 0), (0, 0), 1, colors.HexColor('#D4AF37')),
+                ('TOPPADDING',   (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING',(0, 0), (-1, -1), 6),
+            ]))
+            story.append(img_table)
+
+    else:
+        # Two-column grid
+        col_w = 3.1 * inch
+        rows = []
+        for i in range(0, len(valid_paths), 2):
+            img_row = []
+            cap_row = []
+            for j in range(2):
+                idx = i + j
+                if idx < len(valid_paths):
+                    img = _make_img(valid_paths[idx], col_w, 2.4 * inch)
+                    img_row.append(img if img else Paragraph("(image unavailable)", cell_cap_style))
+                    cap_row.append(Paragraph(_caption(idx), cell_cap_style))
+                else:
+                    img_row.append("")
+                    cap_row.append("")
+            rows.append(img_row)
+            rows.append(cap_row)
+
+        grid = Table(rows, colWidths=[col_w + 0.15 * inch, col_w + 0.15 * inch])
+        grid.setStyle(TableStyle([
+            ('ALIGN',        (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING',   (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING',(0, 0), (-1, -1), 4),
+            ('LEFTPADDING',  (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            # Gold border on every image row (even rows)
+            *[('BOX', (c, r), (c, r), 1, colors.HexColor('#D4AF37'))
+              for r in range(0, len(rows), 2) for c in range(2)],
+        ]))
+        story.append(grid)
+
+    story.append(Spacer(1, 0.3 * inch))
+
+
+def generate_pdf(design_data, room_photo_path, generated_design_path, preferences, budget, unit_info,
+                 saved_recommendations=None, detected_style=None,
+                 agent_floor_plan_paths=None, agent_generated_image_paths=None):
     """
     Generate a formatted PDF for an EXISTING home owner from the provided design data.
 
     Key differences from new home owner PDF:
-    - room_photo_path       → Style Analysis image (existing room photo / initial)
-    - generated_design_path → Final Image Selection (user's final selected AI-generated redesign)
-    - saved_recommendations → Displayed as a reference section with furniture images
-    - detected_style        → Shown as the existing detected style
+    - room_photo_path             → Style Analysis image (existing room photo / initial)
+    - generated_design_path       → Final Image Selection (user's final selected AI-generated redesign)
+    - saved_recommendations       → Displayed as a reference section with furniture images
+    - detected_style              → Shown as the existing detected style
+    - agent_floor_plan_paths      → Agent -> Outputs -> Generated Floor Plans (list of local paths)
+    - agent_generated_image_paths → Agent -> Outputs -> Generated Images (list of local paths)
     - Preferences shown: property_type, unit_type, selected_styles, budget_min/max
     """
+    agent_floor_plan_paths      = agent_floor_plan_paths      or []
+    agent_generated_image_paths = agent_generated_image_paths or []
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -221,14 +318,12 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
     story.append(Spacer(1, 0.3 * inch))
 
     # ── Client Preferences Summary (cover page) ───────────────────────────────
-    # Extract from unit_info which now carries existing homeowner preference fields
     prop_type   = safe_get(unit_info, 'property_type', default='')
     unit_type   = safe_get(unit_info, 'unit_type',    default='')
     sel_styles  = unit_info.get('selected_styles', []) if unit_info else []
     budget_min  = unit_info.get('budget_min')  if unit_info else None
     budget_max  = unit_info.get('budget_max')  if unit_info else None
 
-    # Build a clean preference info block
     pref_label_style = ParagraphStyle(
         'PrefLabel',
         parent=styles['Normal'],
@@ -404,7 +499,6 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
         story.append(PageBreak())
 
     # ========== ROOM PHOTOS: INITIAL + FINAL SELECTED ==========
-    # Show both images side-by-side if both are available; else stacked individually.
     has_initial  = room_photo_path and os.path.exists(room_photo_path)
     has_final    = generated_design_path and os.path.exists(generated_design_path)
 
@@ -417,7 +511,6 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
         story.append(Spacer(1, 0.15 * inch))
 
     if has_initial and has_final:
-        # Side-by-side layout
         try:
             img_initial = Image(room_photo_path,       width=3.0 * inch, height=2.4 * inch, kind='proportional')
             img_final   = Image(generated_design_path, width=3.0 * inch, height=2.4 * inch, kind='proportional')
@@ -450,9 +543,7 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
             Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not render side-by-side images: {e}")
             has_initial = False
             has_final   = False
-
     else:
-        # Render whichever image is available individually
         if has_initial:
             try:
                 story.append(Paragraph("Your Current Room", subheading_style))
@@ -472,7 +563,50 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
             except Exception as e:
                 Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not add generated design image: {e}")
 
-    story.append(PageBreak())
+    # ========== AGENT-GENERATED FLOOR PLANS ==========
+    valid_agent_floor_plans = [p for p in agent_floor_plan_paths if p and os.path.exists(p)]
+    if valid_agent_floor_plans:
+        story.append(PageBreak())
+        _render_image_grid(
+            story=story,
+            image_paths=valid_agent_floor_plans,
+            heading_style=heading_style,
+            subheading_style=subheading_style,
+            body_style=body_style,
+            caption_style=caption_style,
+            section_title="AI-Generated Floor Plans",
+            intro_text=(
+                "The following floor plan(s) were generated by the PlanPerfect AI Agent based on your "
+                "uploaded files and preferences. These provide a spatial overview of proposed layout changes."
+            ),
+            img_captions=[f"AI Floor Plan {i + 1}" for i in range(len(valid_agent_floor_plans))],
+        )
+
+    # ========== AGENT-GENERATED DESIGN IMAGES ==========
+    valid_agent_images = [p for p in agent_generated_image_paths if p and os.path.exists(p)]
+    if valid_agent_images:
+        if not valid_agent_floor_plans:
+            story.append(PageBreak())
+        _render_image_grid(
+            story=story,
+            image_paths=valid_agent_images,
+            heading_style=heading_style,
+            subheading_style=subheading_style,
+            body_style=body_style,
+            caption_style=caption_style,
+            section_title="AI-Generated Design Inspirations",
+            intro_text=(
+                "The following design image(s) were created by the PlanPerfect AI Agent to visualise "
+                "how your space could look after renovation. Use these as a reference when discussing "
+                "your project with your interior designer."
+            ),
+            img_captions=[f"Design Concept {i + 1}" for i in range(len(valid_agent_images))],
+        )
+
+    if valid_agent_floor_plans or valid_agent_images:
+        story.append(PageBreak())
+    else:
+        story.append(PageBreak())
 
     # ========== CLIENT PREFERENCES SECTION ==========
     if preferences:
@@ -520,10 +654,8 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
         import requests as _requests
 
         cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)
-        img_cell_style = ParagraphStyle('ImgCellStyle', parent=styles['Normal'], fontSize=8,
-                                        textColor=colors.HexColor('#555555'), alignment=TA_CENTER)
 
-        _tmp_rec_paths = []  # track for cleanup
+        _tmp_rec_paths = []
 
         for rec in saved_recommendations:
             name        = rec.get("name", "Item")
@@ -531,7 +663,6 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
             match_score = rec.get("match", "")
             image_url   = rec.get("image", "")
 
-            # Try to download the furniture image
             rec_img_flowable = None
             if image_url:
                 try:
@@ -579,9 +710,6 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
 
         story.append(Spacer(1, 0.3 * inch))
 
-        # Cleanup temp images after PDF is built — store paths in design_data for deferred cleanup
-        # (We can't delete here because ReportLab reads images lazily at build time.)
-        # The calling code should handle cleanup; we store paths on the buffer object as an attr.
         if not hasattr(buffer, '_tmp_rec_paths'):
             buffer._tmp_rec_paths = []
         buffer._tmp_rec_paths.extend(_tmp_rec_paths)
@@ -635,7 +763,7 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
 
         story.append(PageBreak())
 
-    # ========== ROOM RECOMMENDATIONS (text-only; images already shown above) ==========
+    # ========== ROOM RECOMMENDATIONS ==========
     if design_data and design_data.get('room_recommendations'):
         room_recs = design_data['room_recommendations']
         if room_recs and len(room_recs) > 0:
@@ -649,7 +777,6 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
                 if design_approach:
                     story.append(Paragraph(design_approach, body_style))
 
-                # Furniture items — text-only in this section
                 furniture_items = safe_get(room, 'furniture_items', default=[])
                 if furniture_items and len(furniture_items) > 0:
                     cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)

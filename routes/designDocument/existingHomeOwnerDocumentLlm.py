@@ -181,6 +181,23 @@ def apply_conversation_overrides(design_data, base_preferences, base_budget):
     return final_preferences, final_budget
 
 
+# ── Download a list of image URLs to temp files ────────────────────────────────
+def _download_image_list(urls: list, suffix: str = '.jpg') -> list:
+    """Download a list of image URLs, returning a list of local temp file paths."""
+    paths = []
+    for url in urls:
+        if not url:
+            continue
+        try:
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+                f.write(r.content)
+                paths.append(f.name)
+        except Exception as e:
+            Logger.log(f"[EXISTING DOCUMENT LLM] - ERROR: Could not download image {url}: {e}")
+    return paths
+
 # ── Save PDF endpoint ──────────────────────────────────────────────────────────
 @router.post("/savePdf/{user_id}")
 async def save_generated_pdf(user_id: str, pdf_file: UploadFile = File(...)):
@@ -223,9 +240,13 @@ async def generate_design_document(user_id: str):
     - Final Image Selection → generated_design_path  (replaces segmented floor plan)
     - Saved Recommendations → furniture_items in room recommendations
     - Preferences sourced from New Home Owner section only
+    - Agent -> Outputs -> Generated Floor Plans → shown in PDF if present
+    - Agent -> Outputs -> Generated Images      → shown in PDF if present
     """
     tmp_room_photo_path = None
     tmp_generated_design_path = None
+    tmp_agent_floor_plan_paths = []
+    tmp_agent_generated_image_paths = []
 
     try:
         if not user_id:
@@ -236,7 +257,7 @@ async def generate_design_document(user_id: str):
             return JSONResponse(status_code=404, content={"error": "UERROR: Please login again."})
 
         # ── Existing Home Owner data ──────────────────────────────────────────
-        existing_data = DM.peek(["Users", user_id, "Existing Homeowner"])
+        existing_data = DM.peek(["Users", user_id, "Existing Home Owner"])
         if not existing_data:
             return JSONResponse(status_code=404, content={"error": "ERROR: Existing home owner data not found."})
 
@@ -249,6 +270,19 @@ async def generate_design_document(user_id: str):
 
         saved_recommendations_data = existing_data.get("Saved Recommendations", {}).get("recommendations", {})
         saved_recommendations = list(saved_recommendations_data.values()) if saved_recommendations_data else []
+
+        # ── Agent Outputs ─────────────────────────────────────────────────────
+        agent_data    = DM.peek(["Users", user_id, "Agent"]) or {}
+        agent_outputs = agent_data.get("Outputs", {})
+
+        agent_floor_plan_urls      = agent_outputs.get("Generated Floor Plans", [])
+        agent_generated_image_urls = agent_outputs.get("Generated Images", [])
+
+        # Normalise: Firebase may store these as dicts with numeric keys instead of lists
+        if isinstance(agent_floor_plan_urls, dict):
+            agent_floor_plan_urls = list(agent_floor_plan_urls.values())
+        if isinstance(agent_generated_image_urls, dict):
+            agent_generated_image_urls = list(agent_generated_image_urls.values())
 
         # ── Preferences from New Home Owner only ──────────────────────────────
         new_home_owner_data = DM.peek(["Users", user_id, "New Home Owner"])
@@ -287,6 +321,16 @@ async def generate_design_document(user_id: str):
                     tmp_generated_design_path = f.name
             except Exception as e:
                 Logger.log(f"[EXISTING DOCUMENT LLM] - ERROR: Error downloading generated design: {e}")
+
+        # Download Agent-generated floor plans
+        if agent_floor_plan_urls:
+            tmp_agent_floor_plan_paths = _download_image_list(agent_floor_plan_urls, suffix='.png')
+            Logger.log(f"[EXISTING DOCUMENT LLM] - Downloaded {len(tmp_agent_floor_plan_paths)} agent floor plan(s).")
+
+        # Download Agent-generated images
+        if agent_generated_image_urls:
+            tmp_agent_generated_image_paths = _download_image_list(agent_generated_image_urls, suffix='.jpg')
+            Logger.log(f"[EXISTING DOCUMENT LLM] - Downloaded {len(tmp_agent_generated_image_paths)} agent generated image(s).")
 
         # ── Build prompt context ──────────────────────────────────────────────
         property_type = property_type or "Residential Unit"
@@ -467,10 +511,17 @@ Return ONLY valid JSON matching this exact structure:
             unit_info=unit_info,
             saved_recommendations=saved_recommendations,
             detected_style=detected_style_from_analysis,
+            agent_floor_plan_paths=tmp_agent_floor_plan_paths,
+            agent_generated_image_paths=tmp_agent_generated_image_paths,
         )
 
         # ── Cleanup & return ──────────────────────────────────────────────────
-        for path in [tmp_room_photo_path, tmp_generated_design_path]:
+        all_tmp_paths = (
+            [tmp_room_photo_path, tmp_generated_design_path]
+            + tmp_agent_floor_plan_paths
+            + tmp_agent_generated_image_paths
+        )
+        for path in all_tmp_paths:
             if path and os.path.exists(path):
                 os.unlink(path)
 
@@ -482,7 +533,12 @@ Return ONLY valid JSON matching this exact structure:
         )
 
     except Exception as e:
-        for path in [tmp_room_photo_path, tmp_generated_design_path]:
+        all_tmp_paths = (
+            [tmp_room_photo_path, tmp_generated_design_path]
+            + tmp_agent_floor_plan_paths
+            + tmp_agent_generated_image_paths
+        )
+        for path in all_tmp_paths:
             if path and os.path.exists(path):
                 try:
                     os.unlink(path)

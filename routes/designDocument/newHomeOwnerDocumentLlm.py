@@ -61,7 +61,6 @@ def _attempt_repair(bad_json: str) -> dict:
     attempts = [bad_json]
 
     # 1. Fix unquoted string values like:  "phase": Handover & Styling"
-    #    Pattern: colon followed by whitespace then an unquoted word/phrase until a comma/brace/bracket
     repaired = re.sub(
         r':\s*([A-Za-z][^",\}\]\n]{0,120})"',
         lambda m: ': "' + m.group(1).replace('"', "'") + '"',
@@ -126,14 +125,11 @@ def _call_groq(system_prompt: str, user_prompt: str) -> dict:
         err_str = str(groq_err)
         failed_gen = None
 
-        # Groq SDK surfaces the raw response body in the exception message
         try:
-            # The error message contains the JSON body as a string; parse it
             match = re.search(r"'failed_generation':\s*'(.*?)'(?:\s*\})", err_str, re.DOTALL)
             if match:
                 failed_gen = match.group(1).encode("utf-8").decode("unicode_escape")
             else:
-                # Try parsing the whole error as JSON
                 body_match = re.search(r"\{.*\}", err_str, re.DOTALL)
                 if body_match:
                     body = json.loads(body_match.group(0).replace("'", '"'))
@@ -148,7 +144,6 @@ def _call_groq(system_prompt: str, user_prompt: str) -> dict:
             except Exception as repair_err:
                 Logger.log(f"[NEW DOCUMENT LLM] - ERROR: Repair also failed: {repair_err}")
 
-        # Re-raise original so the endpoint's except block can handle it
         raise groq_err
 
 
@@ -203,6 +198,24 @@ def apply_conversation_overrides(design_data, base_preferences, base_budget):
     return final_preferences, final_budget
 
 
+# ── Download a list of image URLs to temp files ────────────────────────────────
+def _download_image_list(urls: list, suffix: str = '.jpg') -> list:
+    """Download a list of image URLs, returning a list of local temp file paths."""
+    paths = []
+    for url in urls:
+        if not url:
+            continue
+        try:
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+                f.write(r.content)
+                paths.append(f.name)
+        except Exception as e:
+            Logger.log(f"[NEW DOCUMENT LLM] - ERROR: Could not download image {url}: {e}")
+    return paths
+
+
 # ── Save PDF endpoint ──────────────────────────────────────────────────────────
 @router.post("/savePdf/{user_id}")
 async def save_generated_pdf(user_id: str, pdf_file: UploadFile = File(...)):
@@ -241,6 +254,8 @@ async def save_generated_pdf(user_id: str, pdf_file: UploadFile = File(...)):
 async def generate_design_document(user_id: str):
     tmp_floor_plan_path = None
     tmp_segmented_path = None
+    tmp_agent_floor_plan_paths = []
+    tmp_agent_generated_image_paths = []
 
     try:
         if not user_id:
@@ -277,6 +292,19 @@ async def generate_design_document(user_id: str):
             "BALCONY":  number_of_rooms.get("balcony",    0),
         }
 
+        # ── Agent Outputs ─────────────────────────────────────────────────────
+        agent_data    = DM.peek(["Users", user_id, "Agent"]) or {}
+        agent_outputs = agent_data.get("Outputs", {})
+
+        agent_floor_plan_urls      = agent_outputs.get("Generated Floor Plans", [])
+        agent_generated_image_urls = agent_outputs.get("Generated Images", [])
+
+        # Normalise: Firebase may store these as dicts with numeric keys instead of lists
+        if isinstance(agent_floor_plan_urls, dict):
+            agent_floor_plan_urls = list(agent_floor_plan_urls.values())
+        if isinstance(agent_generated_image_urls, dict):
+            agent_generated_image_urls = list(agent_generated_image_urls.values())
+
         # ── Download images ───────────────────────────────────────────────────
         for url, attr_name, suffix in [
             (floor_plan_url,           'tmp_floor_plan_path', '.png'),
@@ -294,6 +322,16 @@ async def generate_design_document(user_id: str):
                             tmp_segmented_path = f.name
                 except Exception as e:
                     Logger.log(f"[NEW DOCUMENT LLM] - ERROR: Error downloading {attr_name}: {e}")
+
+        # Download Agent-generated floor plans
+        if agent_floor_plan_urls:
+            tmp_agent_floor_plan_paths = _download_image_list(agent_floor_plan_urls, suffix='.png')
+            Logger.log(f"[NEW DOCUMENT LLM] - Downloaded {len(tmp_agent_floor_plan_paths)} agent floor plan(s).")
+
+        # Download Agent-generated images
+        if agent_generated_image_urls:
+            tmp_agent_generated_image_paths = _download_image_list(agent_generated_image_urls, suffix='.jpg')
+            Logger.log(f"[NEW DOCUMENT LLM] - Downloaded {len(tmp_agent_generated_image_paths)} agent generated image(s).")
 
         # ── Build prompt context ──────────────────────────────────────────────
         rooms_summary = [f"{c} {rt.title()}" for rt, c in room_counts.items() if c and c > 0]
@@ -469,10 +507,17 @@ Return ONLY valid JSON matching this exact structure:
             preferences=final_preferences,
             budget=final_budget,
             unit_info=unit_info,
+            agent_floor_plan_paths=tmp_agent_floor_plan_paths,
+            agent_generated_image_paths=tmp_agent_generated_image_paths,
         )
 
         # ── Cleanup & return ──────────────────────────────────────────────────
-        for path in [tmp_floor_plan_path, tmp_segmented_path]:
+        all_tmp_paths = (
+            [tmp_floor_plan_path, tmp_segmented_path]
+            + tmp_agent_floor_plan_paths
+            + tmp_agent_generated_image_paths
+        )
+        for path in all_tmp_paths:
             if path and os.path.exists(path):
                 os.unlink(path)
 
@@ -484,7 +529,12 @@ Return ONLY valid JSON matching this exact structure:
         )
 
     except Exception as e:
-        for path in [tmp_floor_plan_path, tmp_segmented_path]:
+        all_tmp_paths = (
+            [tmp_floor_plan_path, tmp_segmented_path]
+            + tmp_agent_floor_plan_paths
+            + tmp_agent_generated_image_paths
+        )
+        for path in all_tmp_paths:
             if path and os.path.exists(path):
                 try:
                     os.unlink(path)
