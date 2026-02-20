@@ -8,8 +8,8 @@ from Services import Logger
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# backup model: gemini-2.5-flash-image
 image_gen_model = "gemini-3-pro-image-preview"
+image_gen_model_fallback = "gemini-2.5-flash-image"
 
 
 def generate_interior_design(
@@ -90,7 +90,7 @@ def generate_interior_design(
 
             These requests must follow ALL structural and layout preservation rules above.
             """
-                    
+
             transformation_prompt = base_prompt
 
         else:
@@ -132,8 +132,16 @@ def generate_interior_design(
 
         if has_furniture:
             contents.append(
-                f"The following {len(furniture_images)} image(s) are supplementary visual references only. "
-                "DO NOT redesign these images. They are provided for additional visual context of the selected items above."
+                f"""The following {len(furniture_images)} image(s) are FURNITURE REFERENCE images.
+                IMPORTANT INSTRUCTIONS FOR THESE REFERENCE IMAGES: 
+                Each image may show a furniture item inside a room scene or environment.
+                You must EXTRACT and identify ONLY the specific furniture item from each image. 
+                IGNORE the room, background, walls, floors, and any surrounding objects in these reference images.
+                IGNORE the style or aesthetic of any room shown in the reference images.
+                Focus ONLY on the furniture piece itself: its shape, form, and structure.
+                Incorporate ONLY that furniture item into the redesigned room, restyled to match the target aesthetic.
+                Do NOT let the reference image room influence the output room style in any way.
+            """
             )
             for img in furniture_images:
                 contents.append(img)
@@ -142,25 +150,43 @@ def generate_interior_design(
             f"[LLM GEMINI] - Generating design | styles={styles} | "
             f"furniture_refs={len(furniture_images) if has_furniture else 0} | "
             f"descriptions={len(furniture_descriptions) if has_descriptions else 0} | "
-            f"aspect_ratio={aspect_ratio_str}"
         )
 
-        response = client.models.generate_content(
-            model=image_gen_model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                response_modalities=['IMAGE'],
-                image_config=types.ImageConfig(
-                    aspect_ratio=aspect_ratio_str,
-                    image_size="2K"
+        if has_descriptions:
+            Logger.log(f"[LLM GEMINI] - Furniture descriptions: {furniture_descriptions}")
+
+        def _call_model(model_name):
+            Logger.log(f"[LLM GEMINI] - Calling model: {model_name}")
+            return client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=['IMAGE'],
+                    image_config=types.ImageConfig(
+                        aspect_ratio=aspect_ratio_str,
+                        image_size="2K"
+                    )
                 )
             )
-        )
+
+        try:
+            response = _call_model(image_gen_model)
+            Logger.log(f"[LLM GEMINI] - Model {image_gen_model} responded successfully")
+        except Exception as primary_err:
+            primary_str = str(primary_err)
+            if any(k in primary_str for k in ["503", "UNAVAILABLE", "high demand", "overloaded", "quota"]):
+                Logger.log(f"[LLM GEMINI] - Primary model ({image_gen_model}) unavailable: {primary_str[:120]}")
+                Logger.log(f"[LLM GEMINI] - Switching to fallback model: {image_gen_model_fallback}")
+                response = _call_model(image_gen_model_fallback)
+                Logger.log(f"[LLM GEMINI] - Fallback model {image_gen_model_fallback} responded successfully")
+            else:
+                raise primary_err
 
         for part in response.parts:
             if part.inline_data is not None:
                 image_data = part.inline_data.data
                 generated_image = Image.open(io.BytesIO(image_data))
+                Logger.log(f"[LLM GEMINI] - Image generated successfully")
                 return generated_image
 
         raise Exception("No image generated in response")

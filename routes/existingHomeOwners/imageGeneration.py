@@ -101,7 +101,7 @@ async def generate_image(
         if user is None:
             return JSONResponse(status_code=404, content={"error": "UERROR: Please login again."})
 
-        analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
+        analysis_path = ["Users", user_id, "Existing Home Owner", "Style Analysis"]
         analysis_data = DM.peek(analysis_path)
 
         if not analysis_data or not analysis_data.get("image_url"):
@@ -204,7 +204,7 @@ async def generate_image(
             "created_at": datetime.utcnow().isoformat(),
         }
 
-        user_home = DM.data["Users"][user_id]["Existing Homeowner"]
+        user_home = DM.data["Users"][user_id]["Existing Home Owner"]
 
         if "Image Generations" not in user_home:
             user_home["Image Generations"] = {}
@@ -245,7 +245,7 @@ async def get_generation_history(request: Request):
 
         DM.load()
 
-        history = DM.peek(["Users", user_id, "Existing Homeowner", "Image Generations"])
+        history = DM.peek(["Users", user_id, "Existing Home Owner", "Image Generations"])
 
         if not history:
             return {"success": True, "designs": []}
@@ -297,7 +297,7 @@ async def select_final_design(request: Request):
         if user_id not in DM.data.get("Users", {}):
             return JSONResponse(status_code=404, content={"error": "UERROR: Please login again."})
 
-        user_home = DM.data["Users"][user_id]["Existing Homeowner"]
+        user_home = DM.data["Users"][user_id]["Existing Home Owner"]
 
         user_home["Final Image Selection"] = {
             "generation_id": generation_id,
@@ -342,7 +342,7 @@ async def get_furniture(request: Request):
 
         DM.load()
 
-        furniture_data = DM.peek(["Users", user_id, "Existing Homeowner", "Saved Recommendations", "recommendations"])
+        furniture_data = DM.peek(["Users", user_id, "Existing Home Owner", "Saved Recommendations", "recommendations"])
 
         if not furniture_data:
             return JSONResponse(status_code=404, content={"error": "UERROR: No saved recommendations found."})
