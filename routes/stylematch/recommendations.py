@@ -59,9 +59,9 @@ async def fetch_preferences(
                 }
             )
 
-        image_url = DM.peek(["Users", x_user_id, "Existing Homeowner", "Style Analysis", "image_url"])
+        image_url = DM.peek(["Users", x_user_id, "Existing Home Owner", "Style Analysis", "image_url"])
 
-        style = DM.peek(["Users", x_user_id, "Existing Homeowner", "Preferences", "selected_styles"])
+        style = DM.peek(["Users", x_user_id, "Existing Home Owner", "Preferences", "selected_styles"])
 
         if not image_url or not style:
             return JSONResponse(
@@ -164,7 +164,7 @@ async def save_recommendation(
 
         rec_id = hashlib.md5(request.image.encode()).hexdigest()
 
-        existing = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations", rec_id])
+        existing = DM.peek(["Users", x_user_id, "Existing Home Owner", "Saved Recommendations", "recommendations", rec_id])
         if existing:
             return JSONResponse(
                 status_code=409,
@@ -181,7 +181,7 @@ async def save_recommendation(
             "match": request.match,
         }
 
-        DM.data["Users"][x_user_id]["Existing Homeowner"]["Saved Recommendations"]["recommendations"][rec_id] = recommendation_data
+        DM.data["Users"][x_user_id]["Existing Home Owner"]["Saved Recommendations"]["recommendations"][rec_id] = recommendation_data
 
         DM.save()
 
@@ -222,7 +222,7 @@ async def delete_recommendation(
         hashed_rec_id = hashlib.md5(rec_id.encode()).hexdigest()
 
         success = DM.destroy(
-            ["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations", hashed_rec_id]
+            ["Users", x_user_id, "Existing Home Owner", "Saved Recommendations", "recommendations", hashed_rec_id]
         )
 
         if not success:
@@ -263,7 +263,7 @@ async def get_saved_recommendations(
                 }
             )
 
-        saved_recs = DM.peek(["Users", x_user_id, "Existing Homeowner", "Saved Recommendations", "recommendations"])
+        saved_recs = DM.peek(["Users", x_user_id, "Existing Home Owner", "Saved Recommendations", "recommendations"])
 
         if not saved_recs:
             return JSONResponse(

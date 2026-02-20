@@ -116,7 +116,7 @@ async def detect_furniture(
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
 
-        DM.data["Users"][x_user_id]["Existing Homeowner"]["Detected Furniture"]["furniture"] = {}
+        DM.data["Users"][x_user_id]["Existing Home Owner"]["Detected Furniture"]["furniture"] = {}
 
         for item in detection_data.get("detected_items", []):
             class_name = item["class_name"]
@@ -160,7 +160,7 @@ async def detect_furniture(
                 "url": upload_result["url"]
             }
 
-            DM.data["Users"][x_user_id]["Existing Homeowner"]["Detected Furniture"]["furniture"][detection_key] = uploadValue
+            DM.data["Users"][x_user_id]["Existing Home Owner"]["Detected Furniture"]["furniture"][detection_key] = uploadValue
 
             cropped_images.append({
                 "class": class_name,

@@ -247,7 +247,7 @@ async def save_preferences(
             "detected_style": analysis_dict.get('detected_style')
         }
 
-        DM.data["Users"][user_id]["Existing Homeowner"]["Style Analysis"] = analysis_data
+        DM.data["Users"][user_id]["Existing Home Owner"]["Style Analysis"] = analysis_data
         DM.save()
 
         # Save Preferences data
@@ -260,10 +260,7 @@ async def save_preferences(
             "selected_styles": selected_styles_list,
         }
 
-        # Save preferences to Firebase Database
-        # Path: Users/{userId}/Existing Homeowner/Preferences
-
-        DM.data["Users"][user_id]["Existing Homeowner"]["Preferences"] = preferences_data
+        DM.data["Users"][user_id]["Existing Home Owner"]["Preferences"] = preferences_data
         DM.data["Users"][user_id]["flow"] = "existingHomeOwner"
         DM.save()
 
@@ -321,8 +318,7 @@ async def get_preferences(user_id: str):
                 }
             )
 
-        # Path: Users/{userId}/Existing Homeowner/Preferences
-        path = ["Users", user_id, "Existing Homeowner", "Preferences"]
+        path = ["Users", user_id, "Existing Home Owner", "Preferences"]
 
         preferences_data = DM.peek(path)
 
@@ -336,7 +332,7 @@ async def get_preferences(user_id: str):
             )
 
         # Also fetch the original image URL from Style Analysis
-        analysis_path = ["Users", user_id, "Existing Homeowner", "Style Analysis"]
+        analysis_path = ["Users", user_id, "Existing Home Owner", "Style Analysis"]
         analysis_data = DM.peek(analysis_path)
 
         # Add original image URL to the response if available
