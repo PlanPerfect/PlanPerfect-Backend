@@ -245,6 +245,10 @@ async def get_generation_history(request: Request):
 
         DM.load()
 
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(status_code=404, content={"error": "UERROR: Please login again."})
+
         history = DM.peek(["Users", user_id, "Existing Home Owner", "Image Generations"])
 
         if not history:
@@ -294,7 +298,8 @@ async def select_final_design(request: Request):
 
         DM.load()
 
-        if user_id not in DM.data.get("Users", {}):
+        user = DM.peek(["Users", user_id])
+        if user is None:
             return JSONResponse(status_code=404, content={"error": "UERROR: Please login again."})
 
         user_home = DM.data["Users"][user_id]["Existing Home Owner"]
@@ -340,6 +345,10 @@ async def get_furniture(request: Request):
             return JSONResponse(status_code=400, content={"error": "UERROR: One or more required fields are invalid / missing."})
 
         DM.load()
+
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(status_code=404, content={"error": "UERROR: Please login again."})
 
         furniture_data = DM.peek(["Users", user_id, "Existing Home Owner", "Saved Recommendations", "recommendations"])
 
