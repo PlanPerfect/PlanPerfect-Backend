@@ -46,13 +46,108 @@ def normalize_display_list(values):
                 cleaned.append(text)
     return cleaned
 
-def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, preferences, budget, unit_info):
+def _render_image_grid(story, image_paths, heading_style, subheading_style, body_style, caption_style,
+                        section_title, intro_text, img_captions=None):
+    """
+    Render a list of local image paths into the PDF story as a tidy grid.
+    - 1 image  → full-width centred
+    - 2 images → side by side
+    - 3+       → two per row
+    img_captions: optional list of caption strings matching image_paths length.
+    """
+    valid_paths = [p for p in image_paths if p and os.path.exists(p)]
+    if not valid_paths:
+        return
+
+    story.append(Paragraph(section_title, heading_style))
+    if intro_text:
+        story.append(Paragraph(intro_text, body_style))
+    story.append(Spacer(1, 0.15 * inch))
+
+    cell_cap_style = ParagraphStyle(
+        'AgentImgCap',
+        parent=body_style,
+        fontSize=8,
+        textColor=colors.HexColor('#666666'),
+        alignment=TA_CENTER,
+        fontName='Helvetica-Oblique',
+        spaceAfter=4,
+    )
+
+    def _make_img(path, width, height):
+        try:
+            return Image(path, width=width, height=height, kind='proportional')
+        except Exception as e:
+            Logger.log(f"[DESIGN DOCS] - ERROR: Could not load image {path}: {e}")
+            return None
+
+    def _caption(idx):
+        if img_captions and idx < len(img_captions):
+            return img_captions[idx]
+        return f"Image {idx + 1}"
+
+    if len(valid_paths) == 1:
+        img = _make_img(valid_paths[0], 5.0 * inch, 3.5 * inch)
+        if img:
+            img_table = Table([[img], [Paragraph(_caption(0), cell_cap_style)]], colWidths=[6.5 * inch])
+            img_table.setStyle(TableStyle([
+                ('ALIGN',        (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOX',          (0, 0), (0, 0), 1, colors.HexColor('#D4AF37')),
+                ('TOPPADDING',   (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING',(0, 0), (-1, -1), 6),
+            ]))
+            story.append(img_table)
+
+    else:
+        # Two-column grid
+        col_w = 3.1 * inch
+        rows = []
+        for i in range(0, len(valid_paths), 2):
+            img_row = []
+            cap_row = []
+            for j in range(2):
+                idx = i + j
+                if idx < len(valid_paths):
+                    img = _make_img(valid_paths[idx], col_w, 2.4 * inch)
+                    img_row.append(img if img else Paragraph("(image unavailable)", cell_cap_style))
+                    cap_row.append(Paragraph(_caption(idx), cell_cap_style))
+                else:
+                    img_row.append("")
+                    cap_row.append("")
+            rows.append(img_row)
+            rows.append(cap_row)
+
+        grid = Table(rows, colWidths=[col_w + 0.15 * inch, col_w + 0.15 * inch])
+        grid.setStyle(TableStyle([
+            ('ALIGN',        (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING',   (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING',(0, 0), (-1, -1), 4),
+            ('LEFTPADDING',  (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            # Gold border on every image row (even rows)
+            *[('BOX', (c, r), (c, r), 1, colors.HexColor('#D4AF37'))
+              for r in range(0, len(rows), 2) for c in range(2)],
+        ]))
+        story.append(grid)
+
+    story.append(Spacer(1, 0.3 * inch))
+
+
+def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, preferences, budget, unit_info,
+                 agent_floor_plan_paths=None, agent_generated_image_paths=None):
     """
     Generate a formatted PDF from the provided design data parameters.
     All sections are optional - if data is missing, the section will be skipped.
     This ensures the PDF can be generated even with incomplete LLM responses.
+
+    agent_floor_plan_paths      → Agent -> Outputs -> Generated Floor Plans (list of local file paths)
+    agent_generated_image_paths → Agent -> Outputs -> Generated Images (list of local file paths)
     """
-    # Create PDF document template
+    agent_floor_plan_paths      = agent_floor_plan_paths      or []
+    agent_generated_image_paths = agent_generated_image_paths or []
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -143,70 +238,52 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         spaceAfter=12
     )
 
-    # Build PDF content
     story = []
     logo_added = False
 
     # ========== LOGO AND TITLE PAGE ==========
     story.append(Spacer(1, 0.3*inch))
 
-    # Add logo and text
     BASE_DIR = Path(__file__).resolve().parents[1]
     logo_svg_path = BASE_DIR / "static" / "Logo.svg"
     logo_text_path = BASE_DIR / "static" / "Logo-Text.png"
 
-    # Add SVG logo
     if os.path.exists(logo_svg_path):
         try:
-            # Convert SVG to ReportLab drawing
             drawing = svg2rlg(str(logo_svg_path))
-
-            # Calculate page center
             page_width = letter[0] - doc.leftMargin - doc.rightMargin
-
-            # Logo
             logo_width = 120
             scale_factor = logo_width / drawing.width
             drawing.width = logo_width
             drawing.height = drawing.height * scale_factor
             drawing.scale(scale_factor, scale_factor)
 
-            # Center the logo using a table
             logo_table = Table([[drawing]], colWidths=[page_width])
             logo_table.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
-
             story.append(logo_table)
             story.append(Spacer(1, 0.15*inch))
             logo_added = True
-
         except Exception as e:
-            Logger.log(f"[DESIGN DOCS] - Could not add SVG logo: {e}")
+            Logger.log(f"[DESIGN DOCS] - ERROR: Could not add SVG logo: {e}")
 
-    # Add logo text png below the logo
     if os.path.exists(logo_text_path):
         try:
-            # Logo text image
             logo_text_img = Image(str(logo_text_path), width=2.5*inch, height=0.6*inch, kind='proportional')
-
-            # Center the logo text using a table
             page_width = letter[0] - doc.leftMargin - doc.rightMargin
             logo_text_table = Table([[logo_text_img]], colWidths=[page_width])
             logo_text_table.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
-
             story.append(logo_text_table)
             story.append(Spacer(1, 0.3*inch))
             logo_added = True
-
         except Exception as e:
-            Logger.log(f"[DESIGN DOCS] - Could not add logo text PNG: {e}")
+            Logger.log(f"[DESIGN DOCS] - ERROR: Could not add logo text PNG: {e}")
 
-    # Fallback if no logos were added
     if not logo_added:
         company_style = ParagraphStyle(
             'CompanyName',
@@ -223,7 +300,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
     story.append(Paragraph("Interior Design Documentation", title_style))
     story.append(Spacer(1, 0.2*inch))
 
-    # Property information - all optional
+    # Property information
     if unit_info:
         unit_rooms = safe_get(unit_info, 'unit_rooms', default='Residential Unit')
         unit_sizes = normalize_display_list(safe_get(unit_info, 'unit_sizes', default=[]))
@@ -244,30 +321,23 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
     story.append(Paragraph(f"<b>Generated On:</b> {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
     story.append(Spacer(1, 0.5*inch))
 
-    # ========== QUOTATION RANGE SECTION (RIGHT AFTER BUDGET) ==========
+    # ========== QUOTATION RANGE SECTION ==========
     if design_data and design_data.get('quotation_range'):
         quotation_range = design_data['quotation_range']
-
-        # Quotation box heading
         story.append(Paragraph("Quotation ", subheading_style))
 
-        # Create highlighted quotation box
         min_quote = safe_get(quotation_range, 'minimum_quote', default='TBD')
         max_quote = safe_get(quotation_range, 'maximum_quote', default='TBD')
         recommended_quote = safe_get(quotation_range, 'recommended_quote', default='TBD')
         quote_basis = safe_get(quotation_range, 'quote_basis', default='')
-        property_class = safe_get(quotation_range, 'property_classification', default='')
         scope_level = safe_get(quotation_range, 'scope_level', default='')
 
-        # Quotation range text
         quotation_content = f"""
 <b>Estimated Project Range:</b> {min_quote} - {max_quote}<br/>
 <b>Recommended Quotation:</b> {recommended_quote}<br/>
 <b>Scope Level:</b> {scope_level}<br/>
 <b>Basis:</b> {quote_basis}
 """
-
-        # Create table for quotation box with golden background
         quotation_para = Paragraph(quotation_content, highlight_box_style)
         quotation_table = Table([[quotation_para]], colWidths=[6.5*inch])
         quotation_table.setStyle(TableStyle([
@@ -282,7 +352,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         story.append(quotation_table)
         story.append(Spacer(1, 0.2*inch))
 
-        # Cost factors
         cost_factors = safe_get(quotation_range, 'cost_factors', default=[])
         if cost_factors and len(cost_factors) > 0:
             story.append(Paragraph("<b>Key Cost Factors:</b>", body_style))
@@ -290,7 +359,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
                 story.append(Paragraph(f"• {factor}", body_style))
 
         story.append(Spacer(1, 0.3*inch))
-
         story.append(PageBreak())
 
     # ========== QUOTATION BREAKDOWN SECTION ==========
@@ -300,15 +368,8 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         story.append(Paragraph("This breakdown provides transparency on how your quotation is calculated based on Singapore 2026 market rates.", body_style))
         story.append(Spacer(1, 0.2*inch))
 
-        # Create detailed breakdown table
-        cell_style = ParagraphStyle(
-            'CellStyle',
-            parent=styles['Normal'],
-            fontSize=9,
-            leading=11
-        )
+        cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)
 
-        # Table header
         breakdown_data = [[
             Paragraph('<b>Category</b>', cell_style),
             Paragraph('<b>Description</b>', cell_style),
@@ -317,7 +378,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             Paragraph('<b>Subtotal</b>', cell_style)
         ]]
 
-        # Define categories in order
         categories = [
             ('carpentry', 'Carpentry'),
             ('flooring', 'Flooring'),
@@ -330,7 +390,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             ('contingency', 'Contingency Buffer')
         ]
 
-        # Add each category to table
         for key, display_name in categories:
             if key in quotation_breakdown:
                 item = quotation_breakdown[key]
@@ -347,7 +406,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
                     Paragraph(f'<b>{subtotal}</b>', cell_style)
                 ])
 
-        # Add total row
         total_quotation = safe_get(quotation_breakdown, 'total_quotation', default='TBD')
         breakdown_data.append([
             Paragraph('<b>TOTAL QUOTATION</b>', cell_style),
@@ -357,30 +415,22 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             Paragraph(f'<b>{total_quotation}</b>', cell_style)
         ])
 
-        # Create and style the table
         breakdown_table = Table(breakdown_data, colWidths=[1.2*inch, 2*inch, 1*inch, 1.1*inch, 1.2*inch])
         breakdown_table.setStyle(TableStyle([
-            # Header styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D4AF37')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 10),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('TOPPADDING', (0, 0), (-1, 0), 12),
-
-            # Data rows styling
             ('BACKGROUND', (0, 1), (-1, -2), colors.beige),
             ('TOPPADDING', (0, 1), (-1, -1), 8),
             ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
             ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-
-            # Total row styling
             ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#FFF9E6')),
             ('LINEABOVE', (0, -1), (-1, -1), 2, colors.HexColor('#D4AF37')),
             ('FONTSIZE', (0, -1), (-1, -1), 11),
-
-            # Grid
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('ALIGN', (3, 1), (4, -1), 'RIGHT'),
@@ -388,21 +438,15 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         story.append(breakdown_table)
         story.append(Spacer(1, 0.3*inch))
-
-        # Add disclaimer
-        disclaimer_style = ParagraphStyle(
-            'Disclaimer',
-            parent=styles['Normal'],
-            fontSize=8,
-            textColor=colors.HexColor('#666666'),
-            fontName='Helvetica-Oblique',
-            spaceAfter=12
-        )
-        story.append(Paragraph("<b>Note:</b> This quotation is based on standard specifications and Singapore 2026 market rates. Final costs may vary based on actual product selection, site conditions, and unforeseen circumstances. The contingency buffer covers unexpected costs and variations.", disclaimer_style))
-
+        story.append(Paragraph(
+            "<b>Note:</b> This quotation is based on standard specifications and Singapore 2026 market rates. "
+            "Final costs may vary based on actual product selection, site conditions, and unforeseen circumstances. "
+            "The contingency buffer covers unexpected costs and variations.",
+            disclaimer_style
+        ))
         story.append(PageBreak())
 
-    # Add raw floor plan image - optional
+    # ========== FLOOR PLAN IMAGES ==========
     if raw_floor_plan_path and os.path.exists(raw_floor_plan_path):
         try:
             story.append(Paragraph("Original Floor Plan", subheading_style))
@@ -411,9 +455,8 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             story.append(Paragraph("Original uploaded floor plan showing the unit layout", caption_style))
             story.append(Spacer(1, 0.3*inch))
         except Exception as e:
-            Logger.log(f"[DESIGN DOCS] - Could not add raw floor plan image: {e}")
+            Logger.log(f"[DESIGN DOCS] - ERROR: Could not add raw floor plan image: {e}")
 
-    # Add segmented floor plan image - optional
     if segmented_floor_plan_path and os.path.exists(segmented_floor_plan_path):
         try:
             story.append(Paragraph("AI-Segmented Floor Plan", subheading_style))
@@ -421,11 +464,51 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             story.append(seg_img)
             story.append(Paragraph("AI-processed floor plan with room segmentation and analysis", caption_style))
         except Exception as e:
-            Logger.log(f"[DESIGN DOCS] - Could not add segmented floor plan image: {e}")
+            Logger.log(f"[DESIGN DOCS] - ERROR: Could not add segmented floor plan image: {e}")
+
+    # ========== AGENT-GENERATED FLOOR PLANS ==========
+    valid_agent_floor_plans = [p for p in agent_floor_plan_paths if p and os.path.exists(p)]
+    if valid_agent_floor_plans:
+        story.append(PageBreak())
+        _render_image_grid(
+            story=story,
+            image_paths=valid_agent_floor_plans,
+            heading_style=heading_style,
+            subheading_style=subheading_style,
+            body_style=body_style,
+            caption_style=caption_style,
+            section_title="AI-Generated Floor Plans",
+            intro_text=(
+                "The following floor plan(s) were generated by the PlanPerfect AI Agent based on your "
+                "uploaded files and preferences. These provide a spatial overview of proposed layout changes."
+            ),
+            img_captions=[f"AI Floor Plan {i + 1}" for i in range(len(valid_agent_floor_plans))],
+        )
+
+    # ========== AGENT-GENERATED DESIGN IMAGES ==========
+    valid_agent_images = [p for p in agent_generated_image_paths if p and os.path.exists(p)]
+    if valid_agent_images:
+        if not valid_agent_floor_plans:
+            story.append(PageBreak())
+        _render_image_grid(
+            story=story,
+            image_paths=valid_agent_images,
+            heading_style=heading_style,
+            subheading_style=subheading_style,
+            body_style=body_style,
+            caption_style=caption_style,
+            section_title="AI-Generated Design Inspirations",
+            intro_text=(
+                "The following design image(s) were created by the PlanPerfect AI Agent to visualise "
+                "how your space could look after renovation. Use these as a reference when discussing "
+                "your project with your interior designer."
+            ),
+            img_captions=[f"Design Concept {i + 1}" for i in range(len(valid_agent_images))],
+        )
 
     story.append(PageBreak())
 
-    # ========== CLIENT PREFERENCES - Optional ==========
+    # ========== CLIENT PREFERENCES ==========
     if preferences:
         story.append(Paragraph("Client Preferences", heading_style))
 
@@ -453,7 +536,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         story.append(Spacer(1, 0.3*inch))
 
-    # ========== EXECUTIVE SUMMARY - Optional ==========
+    # ========== EXECUTIVE SUMMARY ==========
     if design_data and design_data.get('executive_summary'):
         exec_summary = design_data['executive_summary']
         story.append(Paragraph("1. Executive Summary", heading_style))
@@ -475,12 +558,14 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         story.append(Spacer(1, 0.3*inch))
 
-    # ========== SPACE ANALYSIS - Optional ==========
+    # ========== SPACE ANALYSIS ==========
     if design_data and design_data.get('space_analysis'):
         space_analysis = design_data['space_analysis']
         story.append(Paragraph("2. Space Analysis", heading_style))
 
-        total_area = safe_get(space_analysis, 'total_area', default='N/A')
+        total_area = safe_get(space_analysis, "total_area")
+        if isinstance(total_area, list):
+            total_area = ", ".join(total_area) if total_area else "N/A"
         story.append(Paragraph(f"<b>Total Area:</b> {total_area}", body_style))
 
         room_breakdown = safe_get(space_analysis, 'room_breakdown', default=[])
@@ -493,7 +578,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         story.append(Spacer(1, 0.3*inch))
 
-    # ========== DESIGN CONCEPT - Optional ==========
+    # ========== DESIGN CONCEPT ==========
     if design_data and design_data.get('design_concept'):
         design_concept = design_data['design_concept']
         story.append(Paragraph("3. Design Concept", heading_style))
@@ -520,7 +605,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         story.append(PageBreak())
 
-    # ========== ROOM RECOMMENDATIONS - Optional ==========
+    # ========== ROOM RECOMMENDATIONS ==========
     if design_data and design_data.get('room_recommendations'):
         room_recs = design_data['room_recommendations']
         if room_recs and len(room_recs) > 0:
@@ -534,25 +619,16 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
                 if design_approach:
                     story.append(Paragraph(design_approach, body_style))
 
-                # Furniture table with notes - optional
                 furniture_items = safe_get(room, 'furniture_items', default=[])
                 if furniture_items and len(furniture_items) > 0:
-                    # Create cell style
-                    cell_style = ParagraphStyle(
-                        'CellStyle',
-                        parent=styles['Normal'],
-                        fontSize=9,
-                        leading=11
-                    )
+                    cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)
 
-                    # Header row
                     furniture_data = [[
                         Paragraph('<b>Item</b>', cell_style),
                         Paragraph('<b>Cost</b>', cell_style),
                         Paragraph('<b>Notes</b>', cell_style)
                     ]]
 
-                    # Data rows
                     for item in furniture_items:
                         item_name = safe_get(item, 'item', default='Item')
                         item_cost = safe_get(item, 'estimated_cost', default='TBD')
@@ -593,7 +669,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
             story.append(PageBreak())
 
-    # ========== ESTIMATED BUDGET BREAKDOWN - Optional ==========
+    # ========== ESTIMATED BUDGET BREAKDOWN ==========
     if design_data and design_data.get('budget_breakdown'):
         budget_breakdown = design_data['budget_breakdown']
         story.append(Paragraph("5. Estimated Budget Breakdown", heading_style))
@@ -606,22 +682,14 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         by_room = safe_get(budget_breakdown, 'by_room', default=[])
         if by_room and len(by_room) > 0:
-            # Create cell style
-            cell_style = ParagraphStyle(
-                'CellStyle',
-                parent=styles['Normal'],
-                fontSize=9,
-                leading=11
-            )
+            cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=9, leading=11)
 
-            # Header row
             budget_data = [[
                 Paragraph('<b>Room</b>', cell_style),
                 Paragraph('<b>Amount</b>', cell_style),
                 Paragraph('<b>Breakdown</b>', cell_style)
             ]]
 
-            # Data rows
             for item in by_room:
                 room_name = safe_get(item, 'room', default='Room')
                 amount = safe_get(item, 'amount', default='TBD')
@@ -650,21 +718,18 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             story.append(budget_table)
             story.append(Spacer(1, 0.2*inch))
 
-        # Priority items - optional
         priority_items = safe_get(budget_breakdown, 'priority_items', default=[])
         if priority_items and len(priority_items) > 0:
             story.append(Paragraph("<b>Priority Items (Must-Have):</b>", subheading_style))
             for item in priority_items:
                 story.append(Paragraph(f"• {item}", body_style))
 
-        # Optional items - optional
         optional_items = safe_get(budget_breakdown, 'optional_items', default=[])
         if optional_items and len(optional_items) > 0:
             story.append(Paragraph("<b>Optional Items (Nice-to-Have):</b>", subheading_style))
             for item in optional_items:
                 story.append(Paragraph(f"• {item}", body_style))
 
-        # Cost-saving tips - optional
         cost_saving_tips = safe_get(budget_breakdown, 'cost_saving_tips', default=[])
         if cost_saving_tips and len(cost_saving_tips) > 0:
             story.append(Paragraph("<b>Cost-Saving Tips:</b>", subheading_style))
@@ -673,7 +738,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
         story.append(PageBreak())
 
-    # ========== ESTIMATED IMPLEMENTATION TIMELINE - Optional ==========
+    # ========== ESTIMATED IMPLEMENTATION TIMELINE ==========
     if design_data and design_data.get('timeline'):
         timeline = design_data['timeline']
         story.append(Paragraph("6. Estimated Implementation Timeline", heading_style))
@@ -702,7 +767,7 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
 
                 story.append(Spacer(1, 0.1*inch))
 
-    # ========== NEXT STEPS - Optional ==========
+    # ========== NEXT STEPS ==========
     if design_data and design_data.get('next_steps'):
         next_steps = design_data['next_steps']
         if next_steps and len(next_steps) > 0:
@@ -710,11 +775,10 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             for step in next_steps:
                 story.append(Paragraph(f"• {step}", body_style))
 
-    # ========== MAINTENANCE GUIDE - Optional ==========
+    # ========== MAINTENANCE GUIDE ==========
     if design_data and design_data.get('maintenance_guide'):
         maint = design_data['maintenance_guide']
 
-        has_content = False
         daily = safe_get(maint, 'daily', default=[])
         monthly = safe_get(maint, 'monthly', default=[])
         annual = safe_get(maint, 'annual', default=[])
@@ -722,7 +786,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         if (daily and len(daily) > 0) or (monthly and len(monthly) > 0) or (annual and len(annual) > 0):
             story.append(PageBreak())
             story.append(Paragraph("8. Maintenance Guide", heading_style))
-            has_content = True
 
         if daily and len(daily) > 0:
             story.append(Paragraph("<b>Daily Maintenance:</b>", subheading_style))
@@ -739,10 +802,9 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
             for item in annual:
                 story.append(Paragraph(f"• {item}", body_style))
 
-    # ========== CHATBOT CTA AT END ==========
+    # ========== CHATBOT CTA ==========
     story.append(Spacer(1, 0.5*inch))
 
-    # Add separator line
     story.append(HRFlowable(
         width="80%",
         thickness=1,
@@ -752,7 +814,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         hAlign='CENTER'
     ))
 
-    # Chatbot CTA Information
     story.append(Paragraph("Want a More Personalized Design Experience?", chatbot_cta_style))
 
     cta_text_style = ParagraphStyle(
@@ -774,7 +835,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         cta_text_style
     ))
 
-    # Add separator line
     story.append(HRFlowable(
         width="80%",
         thickness=1,
@@ -789,7 +849,6 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         cta_text_style
     ))
 
-    # Add separator line
     story.append(HRFlowable(
         width="80%",
         thickness=1,
@@ -809,8 +868,5 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         cta_text_style
     ))
 
-
-    # Build PDF
     doc.build(story)
-
     return buffer
