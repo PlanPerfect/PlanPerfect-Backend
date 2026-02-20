@@ -344,14 +344,17 @@ async def generate_design_document(user_id: str):
         system_prompt = (
             "You are an expert interior designer with deep knowledge of Singapore's renovation market in 2026. "
             "You create detailed, professional design documents in strict JSON format. "
-            "CRITICAL RULES:\n"
-            "- Use ONLY plain ASCII hyphens (-) for dashes. NEVER use en-dash (\\u2013), em-dash (\\u2014), "
-            "or non-breaking hyphen (\\u2011).\n"
-            "- Use ONLY straight apostrophes (') and straight double quotes (\"). NEVER use curly/smart quotes.\n"
+            "CRITICAL ENCODING RULES - VIOLATIONS WILL CAUSE SYSTEM FAILURE:\n"
+            "- Use ONLY these characters: A-Z, a-z, 0-9, basic punctuation (. , ! ? ; : -)\n"
+            "- For ALL dashes, use ONLY the ASCII hyphen-minus character (- key on keyboard, character code 45)\n"
+            "- NEVER use: en-dash (–), em-dash (—), non-breaking hyphen, or any Unicode dash variants\n"
+            "- For ALL quotes, use ONLY straight quotes: apostrophe (') and double quote (\")\n"
+            "- NEVER use curly/smart quotes: ' ' " "\n"
             "- Every JSON string value MUST be enclosed in double quotes.\n"
             "- ALWAYS suggest specific colors and materials. Never leave them as 'Not specified'.\n"
             "- ENSURE quotation breakdown subtotals add up EXACTLY to the total_quotation.\n"
-            "- Conversation history overrides initial form preferences when they conflict."
+            "- Conversation history overrides initial form preferences when they conflict.\n"
+            "- If you generate ANY non-ASCII character, the system will crash."
         )
 
         user_prompt = f"""Create a comprehensive interior design document in JSON format.

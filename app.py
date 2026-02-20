@@ -16,6 +16,7 @@ from routes.newHomeOwners.extraction import router as newHomeOwners_extraction_r
 from routes.designDocument.existingHomeOwnerDocumentLlm import router as existingHomeOwnerDocument_Llm_router
 from routes.designDocument.newHomeOwnerDocumentLlm import router as newHomeOwnerDocument_Llm_router
 from routes.designDocument.checkFlow import router as checkFlow_router
+from routes.designDocument.clientConfirmationEmail import router as clientConfirmationEmail_router
 from routes.existingHomeOwners.imageGeneration import router as image_router
 from routes.chatbot.chatCompletions import router as chatbot_router
 from routes.stylematch.detection import router as stylematch_detection_router
@@ -52,6 +53,7 @@ app.include_router(image_router)
 app.include_router(existingHomeOwnerDocument_Llm_router)
 app.include_router(newHomeOwnerDocument_Llm_router)
 app.include_router(checkFlow_router)
+app.include_router(clientConfirmationEmail_router)
 app.include_router(chatbot_router)
 app.include_router(stylematch_detection_router)
 app.include_router(stylematch_recommendations_router)
