@@ -353,28 +353,11 @@ class AgentSynthesizerClass:
             if not LLMManager._initialized:
                 raise RuntimeError("LLMManager must be initialized before AgentSynthesizer")
 
-            self._clear_all_user_agents()
             self._initialized = True
             print(f"AGENT SYNTHESIZER INITIALIZED. Model: \033[94m{LLMManager.get_current_agent_model()}\033[0m\n")
         except Exception as e:
             Logger.log(f"[AGENT SYNTHESIZER] - ERROR: Failed to initialize. Error: {e}")
             raise
-
-    def _clear_all_user_agents(self) -> None:
-        users = DM.data.get("Users")
-        if not isinstance(users, dict):
-            return
-
-        cleared_count = 0
-        for user_data in users.values():
-            if not isinstance(user_data, dict):
-                continue
-            if "Agent" in user_data:
-                del user_data["Agent"]
-                cleared_count += 1
-
-        if cleared_count > 0:
-            DM.save()
 
     def register_file(
         self,
