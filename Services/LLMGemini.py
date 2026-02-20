@@ -40,7 +40,7 @@ def generate_interior_design(
         has_furniture = furniture_images and len(furniture_images) > 0
         has_descriptions = furniture_descriptions and len(furniture_descriptions) > 0
 
-        base_prompt = f"""
+        base_prompt = f""" You are a photo editing tool. Your ONLY job is to RECOLOR and RESTYLE the room in the reference image. You are NOT allowed to redesign or reimagine it.
             The FIRST image is the original room.
 
             Apply {styles} styling to this EXACT room.
@@ -94,23 +94,7 @@ def generate_interior_design(
             transformation_prompt = base_prompt
 
         else:
-            transformation_prompt = f"""
-                The FIRST image is the room to redesign. Transform it to {styles} style.
-
-                REQUIREMENTS:
-                1. Preserve the EXACT room layout and furniture positions
-                2. Maintain the same room structure (dimensions, windows, doors)
-                3. Keep the same number of furniture pieces in their current locations
-                4. Update only the styling elements:
-                - Wall colors and textures for {styles} aesthetic
-                - Flooring materials and colors
-                - Furniture upholstery and finishes
-                - Decorative elements (artwork, plants, accessories)
-                - Lighting fixture styles (keep positions)
-                - Window treatments in {styles} style
-
-                Generate a photorealistic transformation that looks like the SAME ROOM professionally redesigned in {styles} style.
-            """
+            transformation_prompt = base_prompt
 
         if has_descriptions:
             desc_text = "\n".join(f"- {d}" for d in furniture_descriptions if d)

@@ -322,7 +322,6 @@ async def select_final_design(request: Request):
             }
 
         DM.save()
-        Logger.log(f"[IMAGE GENERATION] - User {user_id} selected final design: {generation_id}")
         return {"success": True}
 
     except Exception as e:
