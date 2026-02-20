@@ -1754,6 +1754,37 @@ class AgentSynthesizerClass:
         compact = re.sub(r"\s{2,}", " ", compact).strip()
         return compact or "Done."
 
+    def _strip_multi_tool_followups(self, text: Any) -> str:
+        raw = self._sanitize_user_response(text)
+        if not raw:
+            return ""
+
+        cue_phrases = (
+            "let me know",
+            "i hope that helps",
+            "if you'd like",
+            "if you would like",
+            "if you'd need help",
+            "if you need help",
+            "if you want to do anything else",
+            "if you'd like changes",
+            "if you want any refinements",
+            "i can fine-tune",
+        )
+        parts = re.split(r"(?<=[.!?])\s+", raw)
+        kept: List[str] = []
+        for part in parts:
+            sentence = str(part or "").strip()
+            if not sentence:
+                continue
+            lowered = sentence.lower()
+            if any(phrase in lowered for phrase in cue_phrases):
+                continue
+            kept.append(sentence)
+
+        cleaned = " ".join(kept).strip()
+        return cleaned or raw
+
     def _pick_response_template(self, templates: List[str], fallback: str) -> str:
         options = [str(item).strip() for item in templates if isinstance(item, str) and item.strip()]
         if not options:
@@ -1828,6 +1859,7 @@ class AgentSynthesizerClass:
                 result=item.get("result"),
             )
             cleaned_snippet = self._sanitize_user_response(snippet)
+            cleaned_snippet = self._strip_multi_tool_followups(cleaned_snippet)
             if not cleaned_snippet:
                 continue
             dedupe_key = cleaned_snippet.lower()
@@ -1859,8 +1891,9 @@ class AgentSynthesizerClass:
             "Let me know if you want any refinements.",
         )
 
-        if len(snippets) > 3:
-            snippet_text = " ".join(snippets[:3] + ["I also completed the remaining step(s)."])
+        if len(snippets) > 6:
+            remaining = len(snippets) - 6
+            snippet_text = " ".join(snippets[:6] + [f"I also completed {remaining} additional step(s)."])
         else:
             snippet_text = " ".join(snippets)
 
