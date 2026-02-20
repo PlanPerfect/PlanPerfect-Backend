@@ -46,7 +46,6 @@ def normalize_display_list(values):
                 cleaned.append(text)
     return cleaned
 
-
 def _render_image_grid(story, image_paths, heading_style, subheading_style, body_style, caption_style,
                         section_title, intro_text, img_captions=None):
     """

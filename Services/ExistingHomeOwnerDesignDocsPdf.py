@@ -135,7 +135,6 @@ def _render_image_grid(story, image_paths, heading_style, subheading_style, body
 
     story.append(Spacer(1, 0.3 * inch))
 
-
 def generate_pdf(design_data, room_photo_path, generated_design_path, preferences, budget, unit_info,
                  saved_recommendations=None, detected_style=None,
                  agent_floor_plan_paths=None, agent_generated_image_paths=None):
