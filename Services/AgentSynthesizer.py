@@ -3,6 +3,7 @@ import uuid
 import json
 import inspect
 import re
+import random
 from datetime import datetime
 from Services import Logger
 from Services import DatabaseManager as DM
@@ -23,13 +24,15 @@ class AgentSynthesizerClass:
     _instance = None
     STATUS_IDLE = "idle"
     STATUS_RUNNING = "running"
-    HISTORY_LIMIT = 50
+    HISTORY_LIMIT = 100
     THINKING_STEP = "Thinking..."
     ANALYZING_FILES_STEP = "Analysing files..."
+    SUMMARIZING_STEP = "Summarising..."
     DONE_STEP = "Done!"
-    USER_ERROR_MESSAGE = "I'm sorry, but i'm having trouble completing your request right now. Please try again later."
+    USER_ERROR_MESSAGE = "I ran into an issue while working on that request. Please try again in a moment."
+    RECOMMENDATION_STYLE_PROMPT = "Sure! I can help you with that. What style would you prefer?"
     OUT_OF_SCOPE_MESSAGE = (
-        "Sorry, but I'm only able to help with interior design related questions and tasks. If you need help, feel free to ask!"
+        "I can only help with interior design tasks and questions, but I'm happy to help with anything in that space."
     )
     TOOL_CURRENT_STEPS = {
         "generate_image": "Generating Image...",
@@ -45,8 +48,106 @@ class AgentSynthesizerClass:
         "design questions, and tasks related to rooms, furniture, floor plans, layouts, decor, "
         "styles, and color palettes. If a user asks for anything outside interior design, refuse "
         "briefly and redirect to interior-design help. Never call tools for out-of-scope tasks. "
-        "When image tools require file types, use only files that match the tool requirement."
+        "When image tools require file types, use only files that match the tool requirement. "
+        "If files were uploaded in this request/session, do not ask the user to upload again; "
+        "use the appropriate tool with the available uploaded file. "
+        "When a user asks for furniture recommendations by style and furniture type, call the "
+        "`get_recommendations` tool instead of answering directly from general knowledge. "
+        "Never include URLs/links or confidence percentages/scores in user-facing responses. "
+        "Use a warm, natural, conversational tone instead of robotic phrasing. Keep responses concise, "
+        "clear, and helpful."
     )
+
+    RECOMMENDATION_INTENT_KEYWORDS = (
+        "recommend",
+        "recommendation",
+        "suggest",
+        "suggestion",
+        "options",
+        "ideas",
+        "find me",
+        "show me",
+        "looking for",
+    )
+
+    RECOMMENDATION_STYLE_REFERENCE_KEYWORDS = (
+        "my room style",
+        "my room s style",
+        "room style",
+        "room s style",
+        "based on my room style",
+        "based on my room s style",
+        "based on my style",
+        "based on the style",
+        "based on that style",
+        "based on this style",
+        "same style",
+        "that style",
+        "this style",
+    )
+
+    STYLE_ALIASES = {
+        "boho": "bohemian",
+        "bohemian": "bohemian",
+        "modern": "modern",
+        "minimalist": "minimalist",
+        "scandinavian": "scandinavian",
+        "industrial": "industrial",
+        "rustic": "rustic",
+        "traditional": "traditional",
+        "contemporary": "contemporary",
+        "coastal": "coastal",
+        "farmhouse": "farmhouse",
+        "mid century modern": "mid century modern",
+        "mid-century modern": "mid century modern",
+        "japandi": "japandi",
+        "wabi sabi": "wabi sabi",
+    }
+
+    FURNITURE_ALIASES = {
+        "table": "table",
+        "tables": "table",
+        "dining table": "dining table",
+        "dining tables": "dining table",
+        "coffee table": "coffee table",
+        "coffee tables": "coffee table",
+        "side table": "side table",
+        "side tables": "side table",
+        "end table": "end table",
+        "end tables": "end table",
+        "console table": "console table",
+        "console tables": "console table",
+        "sofa": "sofa",
+        "sofas": "sofa",
+        "sectional": "sectional",
+        "sectionals": "sectional",
+        "chair": "chair",
+        "chairs": "chair",
+        "armchair": "armchair",
+        "armchairs": "armchair",
+        "bed": "bed",
+        "beds": "bed",
+        "desk": "desk",
+        "desks": "desk",
+        "bookshelf": "bookshelf",
+        "bookshelves": "bookshelf",
+        "cabinet": "cabinet",
+        "cabinets": "cabinet",
+        "dresser": "dresser",
+        "dressers": "dresser",
+        "nightstand": "nightstand",
+        "nightstands": "nightstand",
+        "ottoman": "ottoman",
+        "ottomans": "ottoman",
+        "bench": "bench",
+        "benches": "bench",
+        "stool": "stool",
+        "stools": "stool",
+        "bar stool": "bar stool",
+        "bar stools": "bar stool",
+        "tv stand": "tv stand",
+        "tv stands": "tv stand",
+    }
 
     OUTPUT_BRANCHES = {
         "generate_image": "Generated Images",
@@ -74,16 +175,25 @@ class AgentSynthesizerClass:
     FILE_REQUIREMENTS = {
         "classify_style": "an interior room photo where the design style is clearly visible",
         "detect_furniture": "a clear room photo with visible furniture",
-        "extract_colors": "an image with visible colors (photo, artwork, or palette)",
+        "extract_colors": "a clear interior room photo with visible colors",
         "generate_floor_plan": "a top-down floor plan or architectural layout image",
     }
 
     SCOPE_CLASSIFIER_INSTRUCTION = (
-        "You are a strict scope classifier for an interior-design assistant. "
+        "You are a scope classifier for an interior-design assistant. "
         "Classify the latest user query into exactly one category:\n"
-        "1) interior_design: The user asks for interior design workflows/questions, or is continuing an existing interior design task.\n"
-        "2) small_talk: Greeting/pleasantry/chitchat without requesting unrelated domain knowledge.\n"
-        "3) out_of_scope: The user asks for non-interior-design tasks or information.\n\n"
+        "1) interior_design: The user asks about interior design, rooms, furniture, floor plans, "
+        "layouts, decor, styles, colors, design trends, or is continuing an interior design workflow. "
+        "Also use this for requests to search for design-related information.\n"
+        "2) small_talk: Greetings, pleasantries, chitchat, questions about the ongoing conversation "
+        "itself, questions the assistant can answer from conversation context "
+        "(e.g. 'what is my name?', 'what did I just ask?', 'can you summarise what we discussed?'), "
+        "or simple follow-up clarifications.\n"
+        "3) out_of_scope: The user explicitly requests help with topics entirely unrelated to "
+        "interior design AND unrelated to the current conversation "
+        "(e.g. writing code, medical advice, sports results, cooking recipes unrelated to design).\n\n"
+        "Important: When in doubt, prefer interior_design or small_talk over out_of_scope. "
+        "Only classify as out_of_scope when the request is clearly and completely unrelated.\n\n"
         "Return JSON only with keys: classification, confidence, explanation.\n"
         "Valid classification values: interior_design, small_talk, out_of_scope.\n"
         "confidence must be a float from 0 to 1."
@@ -183,13 +293,13 @@ class AgentSynthesizerClass:
             "type": "function",
             "function": {
                 "name": "extract_colors",
-                "description": "Extract the dominant color palette from an image. Returns 5 dominant colors with RGB and hex values. Use when user wants to know the color scheme of an image.",
+                "description": "Extract the dominant color palette from an interior room image. Returns 5 dominant colors with RGB and hex values.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "The file ID of the image to extract colors from",
+                            "description": "The file ID of the room image to extract colors from",
                         }
                     },
                     "required": ["file_id"],
@@ -243,46 +353,11 @@ class AgentSynthesizerClass:
             if not LLMManager._initialized:
                 raise RuntimeError("LLMManager must be initialized before AgentSynthesizer")
 
-            self._clear_all_pending_file_actions()
-            self._clear_all_user_agents()
             self._initialized = True
             print(f"AGENT SYNTHESIZER INITIALIZED. Model: \033[94m{LLMManager.get_current_agent_model()}\033[0m\n")
         except Exception as e:
             Logger.log(f"[AGENT SYNTHESIZER] - ERROR: Failed to initialize. Error: {e}")
             raise
-
-    def _clear_all_pending_file_actions(self) -> None:
-        users = DM.data.get("Users")
-        if not isinstance(users, dict):
-            return
-
-        cleared_count = 0
-        for user_data in users.values():
-            if not isinstance(user_data, dict):
-                continue
-            agent_data = user_data.get("Agent")
-            if isinstance(agent_data, dict) and agent_data.get("Pending File Action"):
-                agent_data["Pending File Action"] = None
-                cleared_count += 1
-
-        if cleared_count > 0:
-            DM.save()
-
-    def _clear_all_user_agents(self) -> None:
-        users = DM.data.get("Users")
-        if not isinstance(users, dict):
-            return
-
-        cleared_count = 0
-        for user_data in users.values():
-            if not isinstance(user_data, dict):
-                continue
-            if "Agent" in user_data:
-                del user_data["Agent"]
-                cleared_count += 1
-
-        if cleared_count > 0:
-            DM.save()
 
     def register_file(
         self,
@@ -294,10 +369,6 @@ class AgentSynthesizerClass:
         self._file_registry[file_id] = file_obj
 
         if user_id:
-            self._clear_stale_pending_file_action_for_new_upload(
-                user_id=user_id,
-                new_file_id=file_id,
-            )
             self._upsert_session_file(
                 user_id=user_id,
                 file_id=file_id,
@@ -343,7 +414,6 @@ class AgentSynthesizerClass:
 
             agent_data = self._get_agent_record(user_id)
             agent_data["Uploaded Files"] = []
-            self._clear_pending_file_action(user_id=user_id)
             self._update_session_status(
                 user_id=user_id,
                 status="completed",
@@ -387,6 +457,8 @@ class AgentSynthesizerClass:
                     current_request_file_ids.append(file_id.strip())
             if current_request_file_ids:
                 current_request_file_ids = list(dict.fromkeys(current_request_file_ids))
+                refreshed_agent_data = self._get_agent_record(user_id)
+                history_steps = refreshed_agent_data.get("steps", [])[-self.HISTORY_LIMIT:]
 
         self._update_session_status(
             user_id=user_id,
@@ -397,85 +469,13 @@ class AgentSynthesizerClass:
         DM.save()
 
         try:
-            pending_action = self._get_pending_file_action(user_id=user_id)
-            forced_file_context: Optional[Dict[str, Any]] = None
             effective_query = query
 
-            if pending_action:
-                pending_resolution = self._resolve_pending_file_action(
-                    user_id=user_id,
-                    user_reply=query,
-                    pending_action=pending_action,
-                )
-
-                pending_status = pending_resolution.get("status")
-                if pending_status == "waiting_for_confirmation":
-                    waiting_message = pending_resolution.get(
-                        "response",
-                        "Please let me know if you'd like me to continue with that file, or use a different one.",
-                    )
-                    waiting_message = self._sanitize_user_response(waiting_message)
-                    self._add_step(
-                        user_id=user_id,
-                        step_type="response",
-                        content=waiting_message,
-                    )
-                    self._update_session_status(
-                        user_id=user_id,
-                        status="awaiting_user_confirmation",
-                        current_step=self.DONE_STEP,
-                    )
-                    DM.save()
-                    return {
-                        "session_id": current_session_id,
-                        "status": "awaiting_user_confirmation",
-                        "response": waiting_message,
-                    }
-
-                if pending_status == "needs_file_upload":
-                    upload_message = pending_resolution.get(
-                        "response",
-                        "Sure. Please upload the file you'd like me to use instead.",
-                    )
-                    upload_message = self._sanitize_user_response(upload_message)
-                    self._add_step(
-                        user_id=user_id,
-                        step_type="response",
-                        content=upload_message,
-                    )
-                    self._update_session_status(
-                        user_id=user_id,
-                        status="waiting_for_file_upload",
-                        current_step=self.DONE_STEP,
-                    )
-                    DM.save()
-                    return {
-                        "session_id": current_session_id,
-                        "status": "waiting_for_file_upload",
-                        "response": upload_message,
-                    }
-
-                if pending_status == "confirmed":
-                    confirmed_action = pending_resolution.get("confirmed_action")
-                    if isinstance(confirmed_action, dict):
-                        return await self._execute_confirmed_file_action(
-                            user_id=user_id,
-                            current_session_id=current_session_id,
-                            confirmed_action=confirmed_action,
-                        )
-
-                    forced_file_context = pending_resolution.get("forced_file_context")
-                    confirmed_query = pending_resolution.get("effective_query")
-                    if isinstance(confirmed_query, str) and confirmed_query.strip():
-                        effective_query = confirmed_query
-
-            scope_decision = None
-            if not forced_file_context:
-                scope_decision = self._evaluate_request_scope(
-                    effective_query,
-                    user_id=user_id,
-                    record_step=True,
-                )
+            scope_decision = self._evaluate_request_scope(
+                effective_query,
+                user_id=user_id,
+                record_step=True,
+            )
 
             if scope_decision and not scope_decision.get("allowed", True):
                 out_of_scope_response = self._sanitize_user_response(self.OUT_OF_SCOPE_MESSAGE)
@@ -506,6 +506,8 @@ class AgentSynthesizerClass:
                 }
 
             messages = self._build_messages(query=effective_query, history_steps=history_steps)
+            completed_tool_runs: List[Dict[str, Any]] = []
+            tool_result_cache: Dict[str, Any] = {}
 
             iteration = 0
             while iteration < max_iterations:
@@ -548,10 +550,71 @@ class AgentSynthesizerClass:
                 tool_calls = response.get("tool_calls", [])
                 text_response = response.get("content")
 
-                if not tool_calls:
-                    final_response = self._sanitize_user_response(
-                        text_response or "I've completed processing your request."
+                if not tool_calls and not completed_tool_runs:
+                    parsed_recommendation = self._extract_recommendation_args_from_query(
+                        query=effective_query,
+                        user_id=user_id,
                     )
+                    if parsed_recommendation and parsed_recommendation.get("furniture_name"):
+                        if not parsed_recommendation.get("style"):
+                            style_prompt = self._sanitize_user_response(self.RECOMMENDATION_STYLE_PROMPT)
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="response",
+                                content=style_prompt,
+                            )
+                            self._update_session_status(
+                                user_id=user_id,
+                                status="completed",
+                                current_step=self.DONE_STEP,
+                            )
+                            DM.save()
+                            return {
+                                "session_id": current_session_id,
+                                "status": "completed",
+                                "response": style_prompt,
+                                "iterations": iteration,
+                            }
+
+                        forced_tool_call = self._build_forced_recommendation_tool_call(
+                            user_id=user_id,
+                            query=effective_query,
+                            iteration=iteration,
+                        )
+                        if forced_tool_call:
+                            tool_calls = [forced_tool_call]
+                            text_response = None
+
+                if not tool_calls:
+                    if completed_tool_runs:
+                        if len(completed_tool_runs) > 1:
+                            self._update_session_status(
+                                user_id=user_id,
+                                status="thinking",
+                                current_step=self.SUMMARIZING_STEP,
+                            )
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="thought",
+                                content=f"Iteration {iteration}: Summarising tool outputs...",
+                            )
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="summary",
+                                content={
+                                    "iteration": iteration,
+                                    "tool_runs": len(completed_tool_runs),
+                                },
+                            )
+
+                        final_response = self._build_tool_run_response(
+                            user_id=user_id,
+                            completed_tool_runs=completed_tool_runs,
+                        )
+                    else:
+                        final_response = self._sanitize_user_response(
+                            text_response or "I've completed processing your request."
+                        )
 
                     self._add_step(
                         user_id=user_id,
@@ -586,25 +649,75 @@ class AgentSynthesizerClass:
                     )
                     tool_call_id = tool_call["id"]
 
+                    if function_name == "get_recommendations":
+                        parsed_recommendation = self._extract_recommendation_args_from_query(
+                            query=effective_query,
+                            user_id=user_id,
+                        ) or {}
+                        parsed_furniture = str(parsed_recommendation.get("furniture_name") or "").strip()
+                        parsed_style = self._normalize_style_name(parsed_recommendation.get("style"))
+                        if parsed_furniture and not parsed_style:
+                            style_prompt = self._sanitize_user_response(self.RECOMMENDATION_STYLE_PROMPT)
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="response",
+                                content=style_prompt,
+                            )
+                            self._update_session_status(
+                                user_id=user_id,
+                                status="completed",
+                                current_step=self.DONE_STEP,
+                            )
+                            DM.save()
+                            return {
+                                "session_id": current_session_id,
+                                "status": "completed",
+                                "response": style_prompt,
+                                "iterations": iteration,
+                            }
+
+                        function_args = self._resolve_recommendation_args(
+                            user_id=user_id,
+                            query=effective_query,
+                            existing_args=function_args,
+                        )
+
+                        style_value = self._normalize_style_name(function_args.get("style"))
+                        if not style_value:
+                            style_prompt = self._sanitize_user_response(self.RECOMMENDATION_STYLE_PROMPT)
+                            self._add_step(
+                                user_id=user_id,
+                                step_type="response",
+                                content=style_prompt,
+                            )
+                            self._update_session_status(
+                                user_id=user_id,
+                                status="completed",
+                                current_step=self.DONE_STEP,
+                            )
+                            DM.save()
+                            return {
+                                "session_id": current_session_id,
+                                "status": "completed",
+                                "response": style_prompt,
+                                "iterations": iteration,
+                            }
+                        function_args["style"] = style_value
+
                     file_resolution = await self._resolve_tool_file_requirements(
                         user_id=user_id,
-                        query=effective_query,
                         tool_name=function_name,
                         tool_args=function_args,
-                        forced_file_context=forced_file_context,
                         current_request_file_ids=current_request_file_ids,
                     )
                     resolution_status = file_resolution.get("status")
 
-                    if file_resolution.get("applied_forced_context"):
-                        forced_file_context = None
-
-                    if resolution_status in {"ask_confirmation", "needs_file_upload"}:
+                    if resolution_status in {"needs_file_upload", "unsuitable_file"}:
                         response_message = file_resolution.get("response")
                         if not isinstance(response_message, str) or not response_message.strip():
-                            response_message = (
-                                "I need a file before I can continue. "
-                                "Please upload one and let me know when you're ready."
+                            response_message = self._image_requirement_message(
+                                tool_name=function_name,
+                                reason="required",
                             )
                         response_message = self._sanitize_user_response(response_message)
 
@@ -614,11 +727,10 @@ class AgentSynthesizerClass:
                             content=response_message,
                         )
 
-                        status_value = (
-                            "awaiting_user_confirmation"
-                            if resolution_status == "ask_confirmation"
-                            else "waiting_for_file_upload"
-                        )
+                        if resolution_status == "unsuitable_file":
+                            status_value = "completed"
+                        else:
+                            status_value = "waiting_for_file_upload"
                         self._update_session_status(
                             user_id=user_id,
                             status=status_value,
@@ -648,25 +760,45 @@ class AgentSynthesizerClass:
                     )
 
                     try:
-                        result = await self._execute_tool(
-                            function_name,
-                            function_args,
-                            user_id=user_id,
-                        )
-
-                        output_summary = self._store_tool_output(
-                            user_id=user_id,
-                            tool_name=function_name,
-                            args=function_args,
-                            result=result,
-                        )
-
-                        if output_summary:
+                        call_cache_key = self._tool_call_cache_key(function_name, function_args)
+                        reused_cached_result = call_cache_key in tool_result_cache
+                        if reused_cached_result:
+                            result = tool_result_cache[call_cache_key]
                             self._add_step(
                                 user_id=user_id,
-                                step_type="tool_result",
-                                content=output_summary,
+                                step_type="thought",
+                                content=f"Iteration {iteration}: Reused cached result for `{function_name}`.",
+                            )
+                        else:
+                            result = await self._execute_tool(
+                                function_name,
+                                function_args,
+                                user_id=user_id,
+                                allowed_file_ids=current_request_file_ids,
+                            )
+                            tool_result_cache[call_cache_key] = result
+
+                            output_summary = self._store_tool_output(
+                                user_id=user_id,
                                 tool_name=function_name,
+                                args=function_args,
+                                result=result,
+                            )
+
+                            if output_summary:
+                                self._add_step(
+                                    user_id=user_id,
+                                    step_type="tool_result",
+                                    content=output_summary,
+                                    tool_name=function_name,
+                                )
+
+                            completed_tool_runs.append(
+                                {
+                                    "tool_name": function_name,
+                                    "tool_args": function_args,
+                                    "result": result,
+                                }
                             )
 
                         messages.append(
@@ -694,6 +826,18 @@ class AgentSynthesizerClass:
                                 "role": "tool",
                                 "tool_call_id": tool_call_id,
                                 "content": json.dumps({"error": str(e)}),
+                            }
+                        )
+                        completed_tool_runs.append(
+                            {
+                                "tool_name": function_name,
+                                "tool_args": function_args,
+                                "result": {
+                                    "error": str(e),
+                                    "message": (
+                                        f"I ran into an issue while running `{function_name}`."
+                                    ),
+                                },
                             }
                         )
                         DM.save()
@@ -760,7 +904,6 @@ class AgentSynthesizerClass:
             "steps": [],
             "Outputs": self._default_outputs(),
             "Uploaded Files": [],
-            "Pending File Action": None,
         }
 
     def _normalize_outputs(self, outputs: Any) -> Dict[str, List[Any]]:
@@ -801,31 +944,6 @@ class AgentSynthesizerClass:
 
         return normalized
 
-    def _normalize_pending_file_action(self, pending_action: Any) -> Optional[Dict[str, Any]]:
-        if not isinstance(pending_action, dict):
-            return None
-
-        tool_name = pending_action.get("tool_name")
-        file_id = pending_action.get("file_id")
-        if not isinstance(tool_name, str) or not isinstance(file_id, str):
-            return None
-        if not tool_name.strip() or not file_id.strip():
-            return None
-
-        tool_args = pending_action.get("tool_args")
-        if not isinstance(tool_args, dict):
-            tool_args = {}
-
-        return {
-            "tool_name": tool_name.strip(),
-            "tool_args": tool_args,
-            "file_id": file_id.strip(),
-            "file_description": str(pending_action.get("file_description") or "uploaded file"),
-            "required_file_description": str(pending_action.get("required_file_description") or ""),
-            "original_query": str(pending_action.get("original_query") or ""),
-            "created_at": str(pending_action.get("created_at") or datetime.now().isoformat()),
-        }
-
     def _build_messages(self, query: str, history_steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
 
@@ -864,6 +982,163 @@ class AgentSynthesizerClass:
             return parsed if isinstance(parsed, dict) else {}
         except Exception:
             return {}
+
+    def _normalize_for_cache(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+
+        if isinstance(value, dict):
+            return {
+                str(key): self._normalize_for_cache(val)
+                for key, val in sorted(value.items(), key=lambda item: str(item[0]))
+            }
+
+        if isinstance(value, (list, tuple, set)):
+            return [self._normalize_for_cache(item) for item in value]
+
+        return str(value)
+
+    def _tool_call_cache_key(self, tool_name: str, tool_args: Dict[str, Any]) -> str:
+        normalized_args = self._normalize_for_cache(tool_args if isinstance(tool_args, dict) else {})
+        try:
+            args_text = json.dumps(
+                normalized_args,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except Exception:
+            args_text = str(normalized_args)
+        return f"{str(tool_name or '').strip()}::{args_text}"
+
+    def _normalize_recommendation_query_text(self, query: str) -> str:
+        normalized_query = re.sub(r"[^\w\s-]", " ", str(query or "").lower())
+        normalized_query = re.sub(r"\s{2,}", " ", normalized_query).strip()
+        return normalized_query
+
+    def _query_references_prior_style(self, normalized_query: str) -> bool:
+        if not isinstance(normalized_query, str) or not normalized_query.strip():
+            return False
+        return any(
+            keyword in normalized_query
+            for keyword in self.RECOMMENDATION_STYLE_REFERENCE_KEYWORDS
+        )
+
+    def _normalize_style_name(self, style: Any) -> Optional[str]:
+        normalized_style = re.sub(r"\s{2,}", " ", str(style or "").strip().lower())
+        if not normalized_style or normalized_style in {"unknown", "n/a", "none", "null"}:
+            return None
+        return self.STYLE_ALIASES.get(normalized_style, normalized_style)
+
+    def _latest_classified_style(self, user_id: Optional[str]) -> Optional[str]:
+        if not isinstance(user_id, str) or not user_id.strip():
+            return None
+
+        agent_data = self._get_agent_record(user_id)
+        outputs = self._normalize_outputs(agent_data.get("Outputs"))
+        style_entries = outputs.get("Classified Style", [])
+        if not isinstance(style_entries, list):
+            return None
+
+        for entry in reversed(style_entries):
+            style_candidate = None
+            if isinstance(entry, dict):
+                style_candidate = (
+                    entry.get("style")
+                    or entry.get("detected_style")
+                    or entry.get("classified_style")
+                )
+            elif isinstance(entry, str):
+                style_candidate = entry
+
+            normalized_style = self._normalize_style_name(style_candidate)
+            if normalized_style:
+                return normalized_style
+
+        return None
+
+    def _extract_recommendation_args_from_query(
+        self,
+        query: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, str]]:
+        normalized_query = self._normalize_recommendation_query_text(query)
+        if not normalized_query:
+            return None
+
+        has_intent = any(keyword in normalized_query for keyword in self.RECOMMENDATION_INTENT_KEYWORDS)
+        if not has_intent:
+            return None
+
+        style = None
+        for alias in sorted(self.STYLE_ALIASES.keys(), key=len, reverse=True):
+            if re.search(rf"\b{re.escape(alias)}\b", normalized_query):
+                style = self.STYLE_ALIASES[alias]
+                break
+        if not style and self._query_references_prior_style(normalized_query):
+            style = self._latest_classified_style(user_id=user_id)
+
+        furniture_name = None
+        for alias in sorted(self.FURNITURE_ALIASES.keys(), key=len, reverse=True):
+            if re.search(rf"\b{re.escape(alias)}\b", normalized_query):
+                furniture_name = self.FURNITURE_ALIASES[alias]
+                break
+
+        if not furniture_name:
+            return None
+
+        parsed_args: Dict[str, str] = {"furniture_name": furniture_name}
+        normalized_style = self._normalize_style_name(style)
+        if normalized_style:
+            parsed_args["style"] = normalized_style
+
+        return parsed_args
+
+    def _resolve_recommendation_args(
+        self,
+        user_id: Optional[str],
+        query: str,
+        existing_args: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        resolved_args = dict(existing_args or {})
+        parsed_args = self._extract_recommendation_args_from_query(
+            query=query,
+            user_id=user_id,
+        ) or {}
+
+        if not isinstance(resolved_args.get("furniture_name"), str) or not resolved_args.get("furniture_name", "").strip():
+            furniture_name = parsed_args.get("furniture_name")
+            if isinstance(furniture_name, str) and furniture_name.strip():
+                resolved_args["furniture_name"] = furniture_name.strip()
+
+        normalized_style = self._normalize_style_name(resolved_args.get("style"))
+        if normalized_style:
+            resolved_args["style"] = normalized_style
+        else:
+            style_from_context = self._normalize_style_name(parsed_args.get("style"))
+            if style_from_context:
+                resolved_args["style"] = style_from_context
+
+        return resolved_args
+
+    def _build_forced_recommendation_tool_call(
+        self,
+        user_id: str,
+        query: str,
+        iteration: int,
+    ) -> Optional[Dict[str, Any]]:
+        args = self._extract_recommendation_args_from_query(query=query, user_id=user_id)
+        if not args or not isinstance(args.get("style"), str) or not args.get("style", "").strip():
+            return None
+
+        return {
+            "id": f"forced_get_recommendations_{iteration}",
+            "type": "function",
+            "function": {
+                "name": "get_recommendations",
+                "arguments": json.dumps(args),
+            },
+        }
 
     def _normalize_steps(self, steps: Any) -> List[Dict[str, Any]]:
         if not isinstance(steps, list):
@@ -938,9 +1213,6 @@ class AgentSynthesizerClass:
             normalized["Uploaded Files"] = self._normalize_uploaded_files(
                 selected_session.get("Uploaded Files", raw_session_data.get("Uploaded Files", []))
             )
-            normalized["Pending File Action"] = self._normalize_pending_file_action(
-                selected_session.get("Pending File Action", raw_session_data.get("Pending File Action"))
-            )
             return normalized
 
         existing_session_id = raw_session_data.get("session_id")
@@ -960,9 +1232,6 @@ class AgentSynthesizerClass:
         normalized["steps"] = self._normalize_steps(raw_session_data.get("steps", []))
         normalized["Outputs"] = self._normalize_outputs(raw_session_data.get("Outputs"))
         normalized["Uploaded Files"] = self._normalize_uploaded_files(raw_session_data.get("Uploaded Files", []))
-        normalized["Pending File Action"] = self._normalize_pending_file_action(
-            raw_session_data.get("Pending File Action")
-        )
         return normalized
 
     def _get_or_initialize_session(
@@ -1003,6 +1272,7 @@ class AgentSynthesizerClass:
         if isinstance(current_step, str) and current_step in {
             self.THINKING_STEP,
             self.ANALYZING_FILES_STEP,
+            self.SUMMARIZING_STEP,
             self.DONE_STEP,
             *self.TOOL_CURRENT_STEPS.values(),
         }:
@@ -1036,7 +1306,12 @@ class AgentSynthesizerClass:
         }:
             return self.STATUS_IDLE
 
-        if normalized_step in {self.THINKING_STEP, self.ANALYZING_FILES_STEP, *self.TOOL_CURRENT_STEPS.values()}:
+        if normalized_step in {
+            self.THINKING_STEP,
+            self.ANALYZING_FILES_STEP,
+            self.SUMMARIZING_STEP,
+            *self.TOOL_CURRENT_STEPS.values(),
+        }:
             return self.STATUS_RUNNING
 
         return self.STATUS_IDLE
@@ -1072,6 +1347,25 @@ class AgentSynthesizerClass:
 
     def _required_file_description(self, tool_name: str) -> str:
         return self.FILE_REQUIREMENTS.get(tool_name, "a valid input file")
+
+    def _image_requirement_message(self, tool_name: Optional[str], reason: str = "required") -> str:
+        normalized_tool_name = str(tool_name).strip() if isinstance(tool_name, str) else ""
+        if reason == "unsuitable":
+            if normalized_tool_name == "generate_floor_plan":
+                return self._sanitize_user_response(
+                    "I'm sorry, but the image you provided does not seem to be an image of a floor-plan."
+                )
+            return self._sanitize_user_response(
+                "I'm sorry, but the image you provided does not seem to be an image of a room."
+            )
+
+        if normalized_tool_name == "generate_floor_plan":
+            return self._sanitize_user_response(
+                "Sure! I can help you with that. I'd need you to upload a clear image of your floor plan."
+            )
+        return self._sanitize_user_response(
+            "Sure! I can help you with that. I'd need you to upload a clear image of your room."
+        )
 
     def _scope_context(self, user_id: str, limit: int = 8) -> List[Dict[str, Any]]:
         agent_data = self._get_agent_record(user_id)
@@ -1243,25 +1537,42 @@ class AgentSynthesizerClass:
         user_id: Optional[str],
         tool_name: str,
         args: Dict[str, Any],
+        allowed_file_ids: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         if not self._tool_requires_file(tool_name):
             return None
 
         file_id = args.get("file_id")
         if not isinstance(file_id, str) or not file_id.strip():
-            needed = self._required_file_description(tool_name)
             return {
                 "error": "missing_file",
-                "message": f"I need {needed} before I can continue.",
+                "message": self._image_requirement_message(tool_name=tool_name, reason="required"),
             }
 
         cleaned_file_id = file_id.strip()
+        allowed_file_id_set: Optional[set] = None
+        if isinstance(allowed_file_ids, list):
+            allowed_file_id_set = {
+                item.strip()
+                for item in allowed_file_ids
+                if isinstance(item, str) and item.strip()
+            }
+            if not allowed_file_id_set:
+                return {
+                    "error": "missing_file",
+                    "message": self._image_requirement_message(tool_name=tool_name, reason="required"),
+                }
+            if cleaned_file_id not in allowed_file_id_set:
+                return {
+                    "error": "file_not_found",
+                    "message": self._image_requirement_message(tool_name=tool_name, reason="required"),
+                }
+
         file_obj = self._file_registry.get(cleaned_file_id)
         if not file_obj:
-            needed = self._required_file_description(tool_name)
             return {
                 "error": "file_not_found",
-                "message": f"I can't access that file in this session. Please upload {needed}.",
+                "message": self._image_requirement_message(tool_name=tool_name, reason="not_found"),
             }
 
         if tool_name in {"classify_style", "detect_furniture", "generate_floor_plan", "extract_colors"}:
@@ -1271,17 +1582,10 @@ class AgentSynthesizerClass:
                 file_info=file_info,
                 file_obj=file_obj,
             )
-
             if not analysis.get("suitable"):
-                filename = str(analysis.get("filename") or self._file_label(cleaned_file_id, user_id=user_id))
-                needed = self._required_file_description(tool_name)
-
                 return {
                     "error": "invalid_file_type",
-                    "message": (
-                        f"I can't use `{filename}` for this step. "
-                        f"Please upload {needed}."
-                    ),
+                    "message": self._image_requirement_message(tool_name=tool_name, reason="unsuitable"),
                 }
 
         return None
@@ -1343,54 +1647,6 @@ class AgentSynthesizerClass:
         files = self._normalize_uploaded_files(agent_data.get("Uploaded Files"))
         agent_data["Uploaded Files"] = [item for item in files if item.get("file_id") != cleaned_file_id]
 
-        pending_action = self._normalize_pending_file_action(agent_data.get("Pending File Action"))
-        if pending_action and pending_action.get("file_id") == cleaned_file_id:
-            agent_data["Pending File Action"] = None
-
-    def _set_pending_file_action(
-        self,
-        user_id: str,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        file_id: str,
-        file_description: str,
-        required_file_description: str,
-        original_query: str,
-    ) -> None:
-        agent_data = self._get_agent_record(user_id)
-        agent_data["Pending File Action"] = {
-            "tool_name": tool_name,
-            "tool_args": tool_args if isinstance(tool_args, dict) else {},
-            "file_id": file_id,
-            "file_description": file_description,
-            "required_file_description": required_file_description,
-            "original_query": original_query,
-            "created_at": datetime.now().isoformat(),
-        }
-
-    def _clear_pending_file_action(self, user_id: str) -> None:
-        agent_data = self._get_agent_record(user_id)
-        agent_data["Pending File Action"] = None
-
-    def _get_pending_file_action(self, user_id: str) -> Optional[Dict[str, Any]]:
-        agent_data = self._get_agent_record(user_id)
-        normalized = self._normalize_pending_file_action(agent_data.get("Pending File Action"))
-        agent_data["Pending File Action"] = normalized
-        return normalized
-
-    def _clear_stale_pending_file_action_for_new_upload(self, user_id: str, new_file_id: str) -> None:
-        if not isinstance(new_file_id, str) or not new_file_id.strip():
-            return
-
-        pending_action = self._get_pending_file_action(user_id=user_id)
-        if not pending_action:
-            return
-
-        pending_file_id = str(pending_action.get("file_id") or "").strip()
-        cleaned_new_file_id = new_file_id.strip()
-        if pending_file_id and pending_file_id != cleaned_new_file_id:
-            self._clear_pending_file_action(user_id=user_id)
-
     def _ingest_uploaded_files(
         self,
         user_id: str,
@@ -1417,10 +1673,6 @@ class AgentSynthesizerClass:
                     source=source,
                 )
             else:
-                self._clear_stale_pending_file_action_for_new_upload(
-                    user_id=user_id,
-                    new_file_id=file_id.strip(),
-                )
                 self._upsert_session_file(
                     user_id=user_id,
                     file_id=file_id.strip(),
@@ -1429,130 +1681,6 @@ class AgentSynthesizerClass:
                 )
 
         DM.save()
-
-    def _resolve_pending_file_action(
-        self,
-        user_id: str,
-        user_reply: str,
-        pending_action: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        normalized_reply = str(user_reply or "").strip().lower()
-        affirmative_keywords = (
-            "yes",
-            "yeah",
-            "yep",
-            "sure",
-            "ok",
-            "okay",
-            "use it",
-            "use that",
-            "use this",
-            "go with it",
-            "go with this",
-            "continue",
-            "proceed",
-            "go ahead",
-            "please do",
-        )
-        negative_keywords = (
-            "no",
-            "nope",
-            "don't",
-            "do not",
-            "dont",
-            "not this",
-            "another",
-            "different",
-            "different one",
-            "different file",
-            "new file",
-            "upload another",
-            "use another",
-        )
-
-        is_affirmative = any(keyword in normalized_reply for keyword in affirmative_keywords)
-        is_negative = any(keyword in normalized_reply for keyword in negative_keywords)
-
-        if is_affirmative and not is_negative:
-            self._add_step(
-                user_id=user_id,
-                step_type="file_confirmation",
-                content={
-                    "decision": "accepted",
-                    "tool": pending_action.get("tool_name"),
-                    "file_id": pending_action.get("file_id"),
-                },
-            )
-            self._clear_pending_file_action(user_id=user_id)
-            DM.save()
-
-            return {
-                "status": "confirmed",
-                "effective_query": pending_action.get("original_query") or user_reply,
-                "confirmed_action": {
-                    "tool_name": pending_action.get("tool_name"),
-                    "file_id": pending_action.get("file_id"),
-                    "tool_args": pending_action.get("tool_args", {}),
-                    "original_query": pending_action.get("original_query") or user_reply,
-                },
-                "forced_file_context": {
-                    "tool_name": pending_action.get("tool_name"),
-                    "file_id": pending_action.get("file_id"),
-                    "tool_args": pending_action.get("tool_args", {}),
-                },
-            }
-
-        if is_negative and not is_affirmative:
-            self._add_step(
-                user_id=user_id,
-                step_type="file_confirmation",
-                content={
-                    "decision": "rejected",
-                    "tool": pending_action.get("tool_name"),
-                    "file_id": pending_action.get("file_id"),
-                },
-            )
-            self._clear_pending_file_action(user_id=user_id)
-            DM.save()
-
-            needed = pending_action.get("required_file_description") or "the required file"
-            return {
-                "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    "Sure! Please upload the file you'd like me to use instead. "
-                    f"I need {needed} before I can continue."
-                ),
-            }
-
-        file_desc = pending_action.get("file_description") or "that uploaded file"
-        return {
-            "status": "waiting_for_confirmation",
-            "response": self._sanitize_user_response(
-                f"I can continue with {file_desc}. "
-                "Let me know if you'd like me to proceed with it, or if you want to use a different file."
-            ),
-        }
-
-    def _file_label(self, file_id: Any, user_id: Optional[str] = None) -> str:
-        if not isinstance(file_id, str) or not file_id.strip():
-            return "uploaded file"
-
-        cleaned_file_id = file_id.strip()
-
-        if user_id:
-            for item in self._get_session_files(user_id=user_id):
-                if item.get("file_id") != cleaned_file_id:
-                    continue
-                filename = str(item.get("filename") or "").strip()
-                if filename:
-                    return filename
-
-        file_obj = self._file_registry.get(cleaned_file_id)
-        filename = str(getattr(file_obj, "filename", "") or "").strip()
-        if filename:
-            return filename
-
-        return cleaned_file_id
 
     def _strip_links_from_text(self, text: str) -> str:
         if not isinstance(text, str):
@@ -1567,11 +1695,176 @@ class AgentSynthesizerClass:
         cleaned = re.sub(r"(?:https?://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
         return cleaned
 
+    def _strip_tool_markup_from_text(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        cleaned = text
+        patterns = [
+            r"<\s*function\s*=\s*[a-zA-Z_][\w\-]*\s*>\s*\{.*?\}\s*</\s*function\s*>",
+            r"<\s*[a-zA-Z_][\w\-]*\s*>\s*\{.*?\}\s*</\s*function\s*>",
+            r"<\s*function_call\s+name\s*=\s*[\"']?[a-zA-Z_][\w\-]*[\"']?\s*>\s*\{.*?\}\s*</\s*function_call\s*>",
+            r"^\s*[a-zA-Z_][\w\-]*\s*\(\s*\{.*\}\s*\)\s*$",
+        ]
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        return cleaned
+
+    def _strip_confidence_from_text(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        cleaned = text
+        confidence_patterns = [
+            r"\(\s*(?:with\s+)?confidence(?:\s*(?:score|level))?\s*(?:is|was|of|:|=)?\s*\d+(?:\.\d+)?\s*%?\s*\)",
+            r"\b(?:with\s+)?confidence(?:\s*(?:score|level))?\s*(?:is|was|of|:|=)?\s*\d+(?:\.\d+)?\s*%?\b",
+            r"\b\d+(?:\.\d+)?\s*%\s*(?:confidence|certainty)\b",
+            r"\bconfidence\s*(?:score|level)?\s*(?:is|was|of|:|=)\s*\d+(?:\.\d+)?\s*%?\b",
+            r"\bconfidence\s*(?:score|level)?\s*(?:is|was|of|:|=)\s*(?:very\s+)?(?:high|medium|low)\b",
+            r"\bconfidence\s*(?:score|level)\b",
+        ]
+        for pattern in confidence_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+        return cleaned
+
+    def _strip_dangling_link_phrases(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        cleaned = text
+        cleaned = re.sub(
+            r"(?:^|\s)(?:you can|you may|please)?\s*(?:view|see|find|access)\s+"
+            r"(?:it|them|this|that)?\s*(?:here|at)\s*:?\s*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\b(?:here|link|url)\s*:\s*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        cleaned = re.sub(r"[:;]\s*$", "", cleaned).strip()
+        return cleaned
+
     def _sanitize_user_response(self, text: Any) -> str:
         value = str(text or "")
-        without_links = self._strip_links_from_text(value)
-        compact = re.sub(r"\s{2,}", " ", without_links).strip()
+        without_markup = self._strip_tool_markup_from_text(value)
+        without_links = self._strip_links_from_text(without_markup)
+        without_confidence = self._strip_confidence_from_text(without_links)
+        compact = self._strip_dangling_link_phrases(without_confidence)
+        compact = re.sub(r"\s{2,}", " ", compact).strip()
         return compact or "Done."
+
+    def _pick_response_template(self, templates: List[str], fallback: str) -> str:
+        options = [str(item).strip() for item in templates if isinstance(item, str) and item.strip()]
+        if not options:
+            return fallback
+        return random.choice(options)
+
+    def _natural_join(self, values: List[str]) -> str:
+        cleaned_values: List[str] = []
+        seen = set()
+        for value in values:
+            entry = str(value or "").strip()
+            if not entry:
+                continue
+            key = entry.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned_values.append(entry)
+
+        if not cleaned_values:
+            return ""
+        if len(cleaned_values) == 1:
+            return cleaned_values[0]
+        if len(cleaned_values) == 2:
+            return f"{cleaned_values[0]} and {cleaned_values[1]}"
+        return f"{', '.join(cleaned_values[:-1])}, and {cleaned_values[-1]}"
+
+    def _build_tool_run_response(
+        self,
+        user_id: str,
+        completed_tool_runs: List[Dict[str, Any]],
+    ) -> str:
+        if not completed_tool_runs:
+            return self._sanitize_user_response("Done.")
+
+        if len(completed_tool_runs) == 1:
+            item = completed_tool_runs[0]
+            return self._build_direct_tool_response(
+                user_id=user_id,
+                tool_name=str(item.get("tool_name") or ""),
+                tool_args=item.get("tool_args") if isinstance(item.get("tool_args"), dict) else {},
+                result=item.get("result"),
+            )
+
+        return self._build_multi_tool_response(
+            user_id=user_id,
+            completed_tool_runs=completed_tool_runs,
+        )
+
+    def _build_multi_tool_response(
+        self,
+        user_id: str,
+        completed_tool_runs: List[Dict[str, Any]],
+    ) -> str:
+        snippets: List[str] = []
+        seen = set()
+        seen_tool_calls = set()
+
+        for item in completed_tool_runs:
+            tool_name = str(item.get("tool_name") or "").strip()
+            if not tool_name:
+                continue
+            tool_args = item.get("tool_args") if isinstance(item.get("tool_args"), dict) else {}
+            tool_call_key = self._tool_call_cache_key(tool_name, tool_args)
+            if tool_call_key in seen_tool_calls:
+                continue
+            seen_tool_calls.add(tool_call_key)
+            snippet = self._build_direct_tool_response(
+                user_id=user_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result=item.get("result"),
+            )
+            cleaned_snippet = self._sanitize_user_response(snippet)
+            if not cleaned_snippet:
+                continue
+            dedupe_key = cleaned_snippet.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            snippets.append(cleaned_snippet)
+
+        if not snippets:
+            return self._sanitize_user_response("Done.")
+
+        if len(snippets) == 1:
+            return self._sanitize_user_response(snippets[0])
+
+        opener = self._pick_response_template(
+            [
+                "I've completed the requested steps.",
+                "All requested steps are done.",
+                "Everything you asked for has been completed.",
+            ],
+            "I've completed the requested steps.",
+        )
+        closer = self._pick_response_template(
+            [
+                "Let me know if you want any refinements.",
+                "If you'd like changes, I can adjust it.",
+                "I can fine-tune any part of this if you want.",
+            ],
+            "Let me know if you want any refinements.",
+        )
+
+        if len(snippets) > 3:
+            snippet_text = " ".join(snippets[:3] + ["I also completed the remaining step(s)."])
+        else:
+            snippet_text = " ".join(snippets)
+
+        return self._sanitize_user_response(f"{opener} {snippet_text} {closer}")
 
     def _build_direct_tool_response(
         self,
@@ -1582,55 +1875,14 @@ class AgentSynthesizerClass:
     ) -> str:
         response_text = "Done."
 
-        def _furniture_summary() -> str:
-            normalized: List[str] = []
-            entries = None
-            if isinstance(result, dict):
-                entries = result.get("furniture_placed")
-
-            if isinstance(entries, dict):
-                entries = [
-                    {"name": key, "count": value}
-                    for key, value in entries.items()
-                ]
-
-            if isinstance(entries, list) and entries:
-                for item in entries:
-                    if isinstance(item, dict):
-                        name = str(item.get("name") or "").strip()
-                        count_value = item.get("count", 1)
-                    else:
-                        name = str(item).strip()
-                        count_value = 1
-
-                    if not name:
-                        continue
-                    try:
-                        count = int(count_value)
-                    except Exception:
-                        count = 1
-                    count = max(1, count)
-                    normalized.append(f"{name} x{count}" if count > 1 else name)
-                if normalized:
-                    return ", ".join(normalized)
-
-            raw_furniture = tool_args.get("furniture_list", [])
-            raw_counts = tool_args.get("furniture_counts", {})
-            if isinstance(raw_furniture, list):
-                for item in raw_furniture:
-                    name = str(item).strip()
-                    if not name:
-                        continue
-                    count = 1
-                    if isinstance(raw_counts, dict):
-                        try:
-                            count = int(raw_counts.get(name, 1))
-                        except Exception:
-                            count = 1
-                    count = max(1, count)
-                    normalized.append(f"{name} x{count}" if count > 1 else name)
-
-            return ", ".join(normalized)
+        def _has_generated_asset(payload: Any) -> bool:
+            if not isinstance(payload, dict):
+                return False
+            for key in ("url", "floor_plan_url", "file_id", "image_url"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return True
+            return False
 
         if isinstance(result, dict):
             error_message = result.get("message")
@@ -1639,47 +1891,106 @@ class AgentSynthesizerClass:
                 return self._sanitize_user_response(response_text)
 
         if tool_name == "classify_style":
-            style = "Unknown"
-            confidence_text = ""
+            style = "unknown"
             if isinstance(result, dict):
                 style = (
                     result.get("detected_style")
                     or result.get("style")
                     or result.get("classified_style")
-                    or "Unknown"
+                    or "unknown"
                 )
-                confidence = result.get("confidence")
-                if isinstance(confidence, (int, float)):
-                    confidence_value = float(confidence)
-                    if 0.0 <= confidence_value <= 1.0:
-                        confidence_value *= 100.0
-                    confidence_text = f" ({confidence_value:.0f}% confidence)"
+            style = str(style).strip() or "unknown"
+            style_lower = style.lower()
+            if style_lower == "unknown":
+                response_text = self._pick_response_template(
+                    [
+                        "I couldn't determine a clear room style from the image yet. Let me know if you'd like further assistance!",
+                        "I wasn't able to identify a clear style this time. Let me know if you'd like further assistance!",
+                        "The style wasn't clear enough for me to classify yet. Let me know if you'd like further assistance!",
+                    ],
+                    "I couldn't determine a clear room style from the image yet. Let me know if you'd like further assistance!",
+                )
+                return self._sanitize_user_response(response_text)
 
-            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-            response_text = (
-                f"I used `{source_name}` and detected the style as **{style}**{confidence_text}."
+            response_text = self._pick_response_template(
+                [
+                    f"Your room style looks like **{style}**. Let me know if you'd like further assistance!",
+                    f"It seems your room is **{style}** in style. Let me know if you'd need help with your room!",
+                    f"I'd classify your room as **{style}**. I hope that helps! Let me know if you want to do anything else with your room.",
+                ],
+                f"Your room style looks like **{style}**. Let me know if you'd like further assistance!",
             )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "detect_furniture":
-            detected_furniture = self._extract_furniture_objects(result=result)
-            total_items = len(detected_furniture)
+            counts_by_name: Dict[str, int] = {}
+            detections = result.get("detections", []) if isinstance(result, dict) else []
+            if isinstance(detections, list):
+                for item in detections:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("class") or item.get("name") or item.get("label") or "").strip()
+                    if not name:
+                        continue
+                    counts_by_name[name] = counts_by_name.get(name, 0) + 1
+
+            if not counts_by_name:
+                for item in self._extract_furniture_objects(result=result):
+                    name = str(item.get("name") or "").strip()
+                    if not name:
+                        continue
+                    counts_by_name[name] = counts_by_name.get(name, 0) + 1
+
+            total_items = sum(counts_by_name.values())
             if total_items == 0 and isinstance(result, dict):
                 if isinstance(result.get("total_items"), int):
-                    total_items = result.get("total_items", 0)
+                    total_items = max(0, int(result.get("total_items", 0)))
                 elif isinstance(result.get("detections"), list):
                     total_items = len(result.get("detections", []))
 
-            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-            if detected_furniture:
-                detected_names = ", ".join(item.get("name", "") for item in detected_furniture if item.get("name"))
-                if detected_names:
-                    response_text = (
-                        f"I used `{source_name}` and detected {total_items} furniture item(s): {detected_names}."
-                    )
-                    return self._sanitize_user_response(response_text)
-            response_text = (
-                f"I used `{source_name}` and detected {total_items} furniture item(s)."
+            def _counted_name(name: str, count: int) -> str:
+                clean_name = str(name or "").strip()
+                if not clean_name:
+                    return ""
+
+                if count <= 1:
+                    lowered = clean_name.lower()
+                    article = "an" if lowered[:1] in {"a", "e", "i", "o", "u"} else "a"
+                    return f"{article} {clean_name}"
+
+                lowered = clean_name.lower()
+                if lowered.endswith(("s", "x", "z", "ch", "sh")):
+                    plural = f"{clean_name}es"
+                elif lowered.endswith("y") and len(clean_name) > 1 and lowered[-2] not in {"a", "e", "i", "o", "u"}:
+                    plural = f"{clean_name[:-1]}ies"
+                else:
+                    plural = f"{clean_name}s"
+                return f"{count} {plural}"
+
+            furniture_parts: List[str] = []
+            for name, count in counts_by_name.items():
+                counted = _counted_name(name=name, count=count)
+                if counted:
+                    furniture_parts.append(counted)
+            furniture_text = self._natural_join(furniture_parts)
+            if furniture_text:
+                response_text = self._pick_response_template(
+                    [
+                        f"It seems like your room has {furniture_text}. Let me know if you'd like further assistance!",
+                        f"From what I can see, your room includes {furniture_text}. Let me know if you'd need help with your room!",
+                        f"I can see {furniture_text} in your room. I hope that helps! Let me know if you want to do anything else with your room.",
+                    ],
+                    f"It seems like your room has {furniture_text}. Let me know if you'd like further assistance!",
+                )
+                return self._sanitize_user_response(response_text)
+
+            response_text = self._pick_response_template(
+                [
+                    f"It looks like I detected {total_items} furniture item(s) in your room. Let me know if you'd like further assistance!",
+                    f"I found {total_items} furniture item(s) in your room. Let me know if you'd need help with your room!",
+                    f"I detected {total_items} furniture item(s) in your room. I hope that helps! Let me know if you want to do anything else with your room.",
+                ],
+                f"It looks like I detected {total_items} furniture item(s) in your room. Let me know if you'd like further assistance!",
             )
             return self._sanitize_user_response(response_text)
 
@@ -1691,59 +2002,140 @@ class AgentSynthesizerClass:
                         hex_code = item.get("hex")
                         if isinstance(hex_code, str) and hex_code.strip():
                             colors.append(hex_code.strip())
+                    elif isinstance(item, str) and item.strip():
+                        colors.append(item.strip())
 
-            source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
             if colors:
                 color_text = ", ".join(colors[:5])
-                response_text = f"I extracted colors from `{source_name}`: {color_text}."
+                response_text = self._pick_response_template(
+                    [
+                        f"The dominant colors I found are {color_text}. Let me know if you'd like further assistance!",
+                        f"Your palette looks like {color_text}. Let me know if you'd need help with your room!",
+                        f"I picked out these key colors: {color_text}. I hope that helps! Let me know if you want to do anything else with your room.",
+                    ],
+                    f"The dominant colors I found are {color_text}. Let me know if you'd like further assistance!",
+                )
                 return self._sanitize_user_response(response_text)
-            response_text = f"I used `{source_name}` and completed color extraction."
+            response_text = self._pick_response_template(
+                [
+                    "I completed color extraction, but no clear palette was returned. Let me know if you'd like further assistance!",
+                    "I wasn't able to pull a clear color palette from this image. Let me know if you'd like further assistance!",
+                    "I finished the color analysis, but the palette wasn't clear enough to report. Let me know if you'd like further assistance!",
+                ],
+                "I completed color extraction, but no clear palette was returned. Let me know if you'd like further assistance!",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "generate_floor_plan":
-            if isinstance(result, dict):
-                floor_plan_url = result.get("floor_plan_url")
-                if isinstance(floor_plan_url, str) and floor_plan_url.strip():
-                    furniture_text = _furniture_summary()
-                    source_name = self._file_label(tool_args.get("file_id"), user_id=user_id)
-                    if furniture_text:
-                        response_text = (
-                            f"I used `{source_name}` and generated an updated floor plan with {furniture_text}. "
-                            "The result is saved in your generated floor plan outputs."
-                        )
-                        return self._sanitize_user_response(response_text)
-                    response_text = (
-                        f"I used `{source_name}` and generated the updated floor plan. "
-                        "The result is saved in your generated floor plan outputs."
-                    )
-                    return self._sanitize_user_response(response_text)
+            if _has_generated_asset(result):
+                response_text = self._pick_response_template(
+                    [
+                        "I've successfully generated your updated floor plan and saved it to the **Agent Ensemble**. Let me know if you'd like further assistance!",
+                        "Your new floor plan is ready and stored in the **Agent Ensemble**. Let me know if you'd like further assistance!",
+                        "Floor plan generation is complete, and the result is saved in the **Agent Ensemble**. Let me know if you'd like further assistance!",
+                    ],
+                    "I've successfully generated your updated floor plan and saved it to the **Agent Ensemble**. Let me know if you'd like further assistance!",
+                )
+                return self._sanitize_user_response(response_text)
 
-            response_text = "I ran the floor plan generation, but I couldn't produce a valid output."
+            response_text = self._pick_response_template(
+                [
+                    "I tried generating the floor plan, but couldn't produce a valid output. Let me know if you'd like further assistance!",
+                    "I wasn't able to generate a valid floor plan this time. Let me know if you'd like further assistance!",
+                    "Floor plan generation started, but no valid output was produced. Let me know if you'd like further assistance!",
+                ],
+                "I tried generating the floor plan, but couldn't produce a valid output. Let me know if you'd like further assistance!",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "generate_image":
-            if isinstance(result, dict):
-                image_url = result.get("url")
-                if isinstance(image_url, str) and image_url.strip():
-                    response_text = "I generated the image and saved it in your generated image outputs."
-                    return self._sanitize_user_response(response_text)
-            response_text = "I ran image generation, but couldn't produce a valid image output."
+            if _has_generated_asset(result):
+                response_text = self._pick_response_template(
+                    [
+                        "Your generated image is ready and saved to the **Agent Ensemble**.",
+                        "Done. I generated the image and saved it to the **Agent Ensemble**.",
+                        "Image generation is complete, and it's now saved to the **Agent Ensemble**.",
+                    ],
+                    "Your generated image is ready and saved to the **Agent Ensemble**.",
+                )
+                return self._sanitize_user_response(response_text)
+
+            response_text = self._pick_response_template(
+                [
+                    "I tried generating the image, but couldn't produce a valid output.",
+                    "Image generation didn't return a valid output this time.",
+                    "I couldn't generate a valid image from that request.",
+                ],
+                "I tried generating the image, but couldn't produce a valid output.",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "get_recommendations":
             if isinstance(result, dict) and isinstance(result.get("recommendations"), list):
                 count = len(result.get("recommendations", []))
-                response_text = f"I found {count} recommendation(s) based on your request."
+                recommendation_names: List[str] = []
+                for item in result.get("recommendations", []):
+                    if not isinstance(item, dict):
+                        continue
+                    name = (
+                        item.get("name")
+                        or item.get("title")
+                        or item.get("product_name")
+                        or item.get("furniture_name")
+                    )
+                    if isinstance(name, str) and name.strip():
+                        recommendation_names.append(name.strip())
+
+                condensed_names = self._natural_join(recommendation_names[:3])
+                if condensed_names:
+                    response_text = self._pick_response_template(
+                        [
+                            f"I found {count} recommendation(s) and saved them to the **Agent Ensemble**.",
+                            f"I pulled {count} recommendation(s) for you and saved them to the **Agent Ensemble**.",
+                            f"Your recommendations are ready and saved to the **Agent Ensemble**.",
+                        ],
+                        f"I found {count} recommendation(s) and saved them to the **Agent Ensemble**.",
+                    )
+                else:
+                    response_text = self._pick_response_template(
+                        [
+                            f"I pulled {count} recommendation(s) based on your request.",
+                            f"I found {count} recommendation(s) for your request.",
+                            f"Your recommendations are ready, with {count} result(s) returned.",
+                        ],
+                        f"I pulled {count} recommendation(s) based on your request.",
+                    )
                 return self._sanitize_user_response(response_text)
-            response_text = "I ran the recommendation search, but couldn't retrieve recommendations."
+            response_text = self._pick_response_template(
+                [
+                    "I tried pulling recommendations, but couldn't retrieve results.",
+                    "I wasn't able to retrieve recommendations this time.",
+                    "Recommendation retrieval didn't return results for that request.",
+                ],
+                "I tried pulling recommendations, but couldn't retrieve results.",
+            )
             return self._sanitize_user_response(response_text)
 
         if tool_name == "web_search":
             answer = self._extract_search_result(result)
             if isinstance(answer, str) and answer.strip():
-                response_text = answer.strip()
+                response_text = self._pick_response_template(
+                    [
+                        f"Here's what I found: {answer.strip()}",
+                        f"I looked that up for you: {answer.strip()}",
+                        f"Quick summary from the search: {answer.strip()}",
+                    ],
+                    answer.strip(),
+                )
                 return self._sanitize_user_response(response_text)
-            response_text = "I completed the web search."
+            response_text = self._pick_response_template(
+                [
+                    "I finished the web search.",
+                    "I completed the web search, but no summary text came back.",
+                    "Web search is done.",
+                ],
+                "I finished the web search.",
+            )
             return self._sanitize_user_response(response_text)
 
         if isinstance(result, str) and result.strip():
@@ -1757,147 +2149,11 @@ class AgentSynthesizerClass:
 
         return self._sanitize_user_response(response_text)
 
-    async def _execute_confirmed_file_action(
-        self,
-        user_id: str,
-        current_session_id: str,
-        confirmed_action: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        tool_name = str(confirmed_action.get("tool_name") or "").strip()
-        tool_args = confirmed_action.get("tool_args")
-        if not isinstance(tool_args, dict):
-            tool_args = {}
-
-        file_id = confirmed_action.get("file_id")
-        if isinstance(file_id, str) and file_id.strip():
-            tool_args["file_id"] = file_id.strip()
-
-        if not tool_name:
-            fallback_response = self._sanitize_user_response(
-                "I couldn't determine which action to continue. Please resend your request."
-            )
-            self._add_step(user_id=user_id, step_type="response", content=fallback_response)
-            self._update_session_status(
-                user_id=user_id,
-                status="completed",
-                current_step=self.DONE_STEP,
-            )
-            DM.save()
-            return {
-                "session_id": current_session_id,
-                "status": "completed",
-                "response": fallback_response,
-            }
-
-        if self._tool_requires_file(tool_name):
-            file_id_value = tool_args.get("file_id")
-            if not isinstance(file_id_value, str) or file_id_value not in self._file_registry:
-                needed = self._required_file_description(tool_name)
-                upload_message = (
-                    "Sure! Please upload the file you'd like me to use instead. "
-                    f"I need {needed} before I can continue."
-                )
-                upload_message = self._sanitize_user_response(upload_message)
-                self._add_step(user_id=user_id, step_type="response", content=upload_message)
-                self._update_session_status(
-                    user_id=user_id,
-                    status="waiting_for_file_upload",
-                    current_step=self.DONE_STEP,
-                )
-                DM.save()
-                return {
-                    "session_id": current_session_id,
-                    "status": "waiting_for_file_upload",
-                    "response": upload_message,
-                }
-
-        self._update_session_status(
-            user_id=user_id,
-            status="executing",
-            current_step=self._tool_current_step(tool_name),
-        )
-        self._add_step(
-            user_id=user_id,
-            step_type="tool_call",
-            content=tool_args,
-            tool_name=tool_name,
-        )
-
-        try:
-            result = await self._execute_tool(
-                tool_name,
-                tool_args,
-                user_id=user_id,
-            )
-
-            output_summary = self._store_tool_output(
-                user_id=user_id,
-                tool_name=tool_name,
-                args=tool_args,
-                result=result,
-            )
-            if output_summary:
-                self._add_step(
-                    user_id=user_id,
-                    step_type="tool_result",
-                    content=output_summary,
-                    tool_name=tool_name,
-                )
-
-            final_response = self._build_direct_tool_response(
-                user_id=user_id,
-                tool_name=tool_name,
-                tool_args=tool_args,
-                result=result,
-            )
-            final_response = self._sanitize_user_response(final_response)
-            self._add_step(
-                user_id=user_id,
-                step_type="response",
-                content=final_response,
-            )
-            self._update_session_status(
-                user_id=user_id,
-                status="completed",
-                current_step=self.DONE_STEP,
-            )
-            DM.save()
-
-            return {
-                "session_id": current_session_id,
-                "status": "completed",
-                "response": final_response,
-                "iterations": 1,
-            }
-        except Exception as e:
-            error_msg = f"Tool execution failed for {tool_name}: {str(e)}"
-            Logger.log(f"[AGENT SYNTHESIZER] - ERROR: {error_msg}")
-            self._add_step(
-                user_id=user_id,
-                step_type="error",
-                content={"error": str(e)},
-                tool_name=tool_name,
-            )
-            self._update_session_status(
-                user_id=user_id,
-                status="error",
-                current_step=self.THINKING_STEP,
-            )
-            DM.save()
-            return {
-                "session_id": current_session_id,
-                "status": "error",
-                "error": error_msg,
-                "response": self._sanitize_user_response(self.USER_ERROR_MESSAGE),
-            }
-
     async def _resolve_tool_file_requirements(
         self,
         user_id: str,
-        query: str,
         tool_name: str,
         tool_args: Dict[str, Any],
-        forced_file_context: Optional[Dict[str, Any]] = None,
         current_request_file_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         if not self._tool_requires_file(tool_name):
@@ -1910,18 +2166,13 @@ class AgentSynthesizerClass:
             if isinstance(file_id, str) and file_id.strip()
         }
 
-        if (
-            isinstance(forced_file_context, dict)
-            and forced_file_context.get("tool_name") == tool_name
-            and isinstance(forced_file_context.get("file_id"), str)
-        ):
-            merged_args = dict(forced_file_context.get("tool_args") or {})
-            merged_args.update(args)
-            merged_args["file_id"] = forced_file_context["file_id"]
+        if not current_request_file_id_set:
             return {
-                "status": "ready",
-                "tool_args": merged_args,
-                "applied_forced_context": True,
+                "status": "needs_file_upload",
+                "response": self._image_requirement_message(
+                    tool_name=tool_name,
+                    reason="required",
+                ),
             }
 
         provided_file_id = args.get("file_id")
@@ -1929,58 +2180,23 @@ class AgentSynthesizerClass:
         if isinstance(provided_file_id, str) and provided_file_id.strip():
             cleaned_provided_file_id = provided_file_id.strip()
             if cleaned_provided_file_id not in self._file_registry:
-                if current_request_file_id_set:
-                    cleaned_provided_file_id = None
-                else:
-                    needed = self._required_file_description(tool_name)
-                    return {
-                        "status": "needs_file_upload",
-                        "response": self._sanitize_user_response(
-                            "I can see a file ID in the tool input, but I can't access that file in this session. "
-                            f"Please upload {needed} and let me know when you're ready."
-                        ),
-                    }
+                cleaned_provided_file_id = None
+            elif cleaned_provided_file_id not in current_request_file_id_set:
+                cleaned_provided_file_id = None
 
-        if cleaned_provided_file_id and current_request_file_id_set and cleaned_provided_file_id not in current_request_file_id_set:
-            # Prefer the files uploaded with the current prompt over stale references from previous turns.
-            cleaned_provided_file_id = None
-
-        session_files = self._get_session_files(user_id=user_id)
-        candidates_by_id: Dict[str, Dict[str, Any]] = {}
-
-        for item in session_files:
-            file_id = item.get("file_id")
-            if not isinstance(file_id, str) or file_id not in self._file_registry:
+        candidates: List[Dict[str, Any]] = []
+        for fid in current_request_file_id_set:
+            if fid not in self._file_registry:
                 continue
-            candidates_by_id[file_id] = item
-
-        if cleaned_provided_file_id and cleaned_provided_file_id in self._file_registry:
-            if cleaned_provided_file_id not in candidates_by_id:
-                referenced_file_obj = self._file_registry.get(cleaned_provided_file_id)
-                self._upsert_session_file(
-                    user_id=user_id,
-                    file_id=cleaned_provided_file_id,
-                    file_obj=referenced_file_obj,
-                    source="tool-args",
-                )
-                candidates_by_id[cleaned_provided_file_id] = {
-                    "file_id": cleaned_provided_file_id,
-                    "filename": str(getattr(referenced_file_obj, "filename", "") or ""),
-                    "content_type": str(getattr(referenced_file_obj, "content_type", "") or ""),
-                    "source": "tool-args",
-                    "uploaded_at": datetime.now().isoformat(),
-                    "analysis": {},
-                }
-
-        candidates = list(candidates_by_id.values())
+            file_info = self._session_file_info(user_id=user_id, file_id=fid)
+            candidates.append(file_info)
 
         if not candidates:
-            needed = self._required_file_description(tool_name)
             return {
                 "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    "Sure! Before we continue, I'd need you to upload "
-                    f"{needed}. Let me know when you're ready."
+                "response": self._image_requirement_message(
+                    tool_name=tool_name,
+                    reason="not_found",
                 ),
             }
 
@@ -2036,134 +2252,66 @@ class AgentSynthesizerClass:
         )
         DM.save()
 
-        suitable_files = [
-            item for item in analysis_results if item.get("suitable") and item.get("file_id")
-        ]
+        suitable_files = [item for item in analysis_results if item.get("suitable") and item.get("file_id")]
         suitable_files.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
 
-        if current_request_file_id_set:
-            current_request_suitable = [
-                item
-                for item in suitable_files
-                if str(item.get("file_id") or "") in current_request_file_id_set
-            ]
-            current_request_suitable.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
-
-            selected_current: Optional[Dict[str, Any]] = None
-            if cleaned_provided_file_id:
-                selected_current = next(
-                    (
-                        item
-                        for item in current_request_suitable
-                        if item.get("file_id") == cleaned_provided_file_id
-                    ),
-                    None,
-                )
-            if not selected_current and current_request_suitable:
-                selected_current = current_request_suitable[0]
-
-            if selected_current:
-                selected_file_id = str(selected_current.get("file_id") or "").strip()
-                if selected_file_id:
-                    merged_args = dict(args)
-                    merged_args["file_id"] = selected_file_id
-                    self._add_step(
-                        user_id=user_id,
-                        step_type="file_selected",
-                        content={
-                            "tool": tool_name,
-                            "file_id": selected_file_id,
-                            "reason": "auto-selected from files uploaded with current prompt",
-                            "filename": str(selected_current.get("filename") or ""),
-                            "description": str(selected_current.get("description") or ""),
-                        },
-                    )
-                    DM.save()
-                    return {
-                        "status": "ready",
-                        "tool_args": merged_args,
-                    }
-
-            needed = self._required_file_description(tool_name)
-            return {
-                "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    "I checked the file uploaded with your message, but it doesn't look suitable for this task. "
-                    f"Please upload {needed} and try again."
-                ),
-            }
-
         selected: Optional[Dict[str, Any]] = None
+        selection_reason = "auto-selected suitable file from current prompt uploads"
+
         if cleaned_provided_file_id:
             selected = next(
                 (
                     item
                     for item in suitable_files
-                    if item.get("file_id") == cleaned_provided_file_id
+                    if str(item.get("file_id") or "").strip() == cleaned_provided_file_id
                 ),
                 None,
             )
+            if selected:
+                selection_reason = "tool-specified uploaded file from current prompt"
 
         if not selected and suitable_files:
             selected = suitable_files[0]
+            selection_reason = "auto-selected best suitable file from current prompt uploads"
 
         if not selected:
-            needed = self._required_file_description(tool_name)
             return {
-                "status": "needs_file_upload",
-                "response": self._sanitize_user_response(
-                    "I checked the uploaded files, but none look suitable for this task. "
-                    f"Please upload {needed}, then tell me when to continue."
+                "status": "unsuitable_file",
+                "response": self._image_requirement_message(
+                    tool_name=tool_name,
+                    reason="unsuitable",
                 ),
             }
 
-        selected_file_id = selected.get("file_id")
-        selected_filename = str(selected.get("filename") or self._file_label(selected_file_id, user_id=user_id))
-        selected_description = selected.get("description") or "an uploaded image"
-        selected_label = f"`{selected_filename}` ({selected_description})"
-        needed = self._required_file_description(tool_name)
-
-        self._set_pending_file_action(
-            user_id=user_id,
-            tool_name=tool_name,
-            tool_args=args,
-            file_id=selected_file_id,
-            file_description=selected_label,
-            required_file_description=needed,
-            original_query=query,
-        )
-        self._add_step(
-            user_id=user_id,
-            step_type="file_confirmation_requested",
-            content={
-                "tool": tool_name,
-                "file_id": selected_file_id,
-                "description": selected_description,
-                "filename": selected_filename,
-                "from_explicit_file_id": bool(cleaned_provided_file_id),
-            },
-        )
-        DM.save()
-
-        response_message = (
-            f"I found an uploaded image named `{selected_filename}` and it looks like {selected_description}. "
-            "Would you like me to use this image, or would you prefer a different file?"
-        )
-        if cleaned_provided_file_id and selected_file_id == cleaned_provided_file_id:
-            response_message = (
-                f"I analysed the files and `{selected_filename}` (the referenced image) looks suitable "
-                f"because it appears to be {selected_description}. "
-                "Would you like me to use it, or do you want a different file?"
+        selected_file_id = str(selected.get("file_id") or "").strip()
+        if selected_file_id:
+            merged_args = dict(args)
+            merged_args["file_id"] = selected_file_id
+            self._add_step(
+                user_id=user_id,
+                step_type="file_selected",
+                content={
+                    "tool": tool_name,
+                    "file_id": selected_file_id,
+                    "reason": selection_reason,
+                    "filename": str(selected.get("filename") or ""),
+                    "description": str(selected.get("description") or ""),
+                    "suitable": bool(selected.get("suitable")),
+                    "score": selected.get("score"),
+                },
             )
-        elif cleaned_provided_file_id and selected_file_id != cleaned_provided_file_id:
-            response_message = (
-                f"I analysed the files and found a better match than the referenced image: `{selected_filename}` "
-                f"({selected_description}). Would you like me to use this one, or do you want a different file?"
-            )
+            DM.save()
+            return {
+                "status": "ready",
+                "tool_args": merged_args,
+            }
 
         return {
-            "status": "ask_confirmation",
-            "response": self._sanitize_user_response(response_message),
+            "status": "needs_file_upload",
+            "response": self._image_requirement_message(
+                tool_name=tool_name,
+                reason="selection_error",
+            ),
         }
 
     async def _analyze_uploaded_file_for_tool(
@@ -2193,27 +2341,31 @@ class AgentSynthesizerClass:
                 raise ValueError("Empty file content")
 
             required_description = self._required_file_description(tool_name)
+            expects_floor_plan = tool_name == "generate_floor_plan"
+            expected_scene = (
+                "a top-down view of a floor plan"
+                if expects_floor_plan
+                else "an interior room"
+            )
             analysis_prompt = (
-                "You are validating uploaded images for an interior-design assistant tool.\n"
-                "Analyze the provided image and determine if it is suitable for the specified tool.\n\n"
+                "You are validating an uploaded image for an interior-design assistant.\n"
+                "Decide if the image matches the required scene.\n\n"
                 f"Tool name: {tool_name}\n"
-                f"Required file description: {required_description}\n\n"
+                f"Required scene: {expected_scene}\n\n"
                 "Return JSON only with exactly these keys:\n"
                 "{\n"
-                '  "predicted_type": "floor_plan|room_photo|palette_or_graphic|unclear",\n'
+                '  "predicted_type": "floor_plan|room_photo|other|unclear",\n'
                 '  "suitable": true,\n'
                 '  "score": 0.0,\n'
                 '  "description": "short plain-English description"\n'
                 "}\n\n"
-                "Guidelines:\n"
-                "- generate_floor_plan: suitable only for top-down floor plan / architectural layout images.\n"
-                "- classify_style and detect_furniture: suitable only for clear interior room photos.\n"
-                "- extract_colors: suitable for images with visible colors (photos, palettes, graphics).\n"
+                "Rules:\n"
+                "- If tool is generate_floor_plan: suitable=true only when the image clearly shows a top-down floor-plan layout.\n"
+                "- For all other image tools: suitable=true only when the image clearly shows an interior room scene.\n"
+                "- If uncertain, set suitable=false.\n"
                 "- score must be between 0.0 and 1.0.\n"
-                "- description should describe what is visually present (objects, layout, colors, style cues).\n"
-                "- do not copy/rephrase the required file description.\n"
-                "- avoid generic requirement language like 'clear interior room photo with visible furniture'.\n"
-                "- description should be concise and should not include links."
+                "- description should mention what is visible.\n"
+                "- no links."
             )
             raw_analysis = LLMManager.chat_with_vision(
                 prompt=analysis_prompt,
@@ -2223,15 +2375,28 @@ class AgentSynthesizerClass:
                 max_tokens=300,
             )
             parsed_analysis = self._parse_json_object(raw_analysis)
+            fallback_text = str(raw_analysis or "").strip().lower()
             if not parsed_analysis:
-                raise ValueError("Vision model did not return valid JSON.")
+                yes_no_match = re.search(r"\b(yes|no)\b", fallback_text)
+                if yes_no_match:
+                    parsed_analysis = {
+                        "predicted_type": "floor_plan" if (expects_floor_plan and yes_no_match.group(1) == "yes") else (
+                            "room_photo" if (not expects_floor_plan and yes_no_match.group(1) == "yes") else "unclear"
+                        ),
+                        "suitable": yes_no_match.group(1) == "yes",
+                        "score": 0.75 if yes_no_match.group(1) == "yes" else 0.2,
+                        "description": str(raw_analysis or "").strip() or "an image with unclear structure",
+                    }
+                else:
+                    raise ValueError("Vision model did not return valid JSON.")
 
             predicted_type = str(parsed_analysis.get("predicted_type") or "unclear").strip().lower()
-            if predicted_type not in {"floor_plan", "room_photo", "palette_or_graphic", "unclear"}:
+            if predicted_type not in {"floor_plan", "room_photo", "other", "unclear"}:
+                predicted_type = "unclear"
+            if predicted_type == "other":
                 predicted_type = "unclear"
 
             suitable_raw = parsed_analysis.get("suitable")
-            suitable: bool
             if isinstance(suitable_raw, bool):
                 suitable = suitable_raw
             else:
@@ -2248,10 +2413,26 @@ class AgentSynthesizerClass:
             if isinstance(description_raw, str) and description_raw.strip():
                 description = description_raw.strip()
             else:
-                description = "an image with unclear structure"
+                if suitable:
+                    description = (
+                        "a top-down floor-plan layout with walls and room boundaries"
+                        if expects_floor_plan
+                        else "an interior room scene with visible layout and furnishings"
+                    )
+                else:
+                    description = (
+                        "the image does not appear to show a top-down floor-plan layout"
+                        if expects_floor_plan
+                        else "the image does not appear to show an interior room"
+                    )
 
-            if not suitable and score > 0.7:
-                score = 0.7
+            if suitable and expects_floor_plan and predicted_type == "room_photo":
+                suitable = False
+            if suitable and not expects_floor_plan and predicted_type == "floor_plan":
+                suitable = False
+
+            if not suitable and score > 0.49:
+                score = 0.49
             if suitable and score < 0.5:
                 score = 0.5
 
@@ -2345,7 +2526,7 @@ class AgentSynthesizerClass:
             "classify_style": "a room scene with visible decor, furnishings, and style cues",
             "detect_furniture": "a room scene with visible furniture pieces and layout",
             "generate_floor_plan": "a top-down plan showing walls, room boundaries, and layout lines",
-            "extract_colors": "a colorful image with distinct tones and color regions",
+            "extract_colors": "a room scene with visible colors across walls, furniture, and decor",
         }
         fallback_by_type = {
             "room_photo": "a room scene with visible furnishings and decor",
@@ -2358,7 +2539,6 @@ class AgentSynthesizerClass:
             fallback_by_type.get(predicted_type, "an image with unclear structure"),
         )
 
-        # Guard against requirement-echo phrasing.
         required_tokens = set(re.findall(r"[a-z0-9]+", str(required_description or "").lower()))
         description_tokens = set(re.findall(r"[a-z0-9]+", lower_description))
         token_overlap = 0.0
@@ -2548,6 +2728,9 @@ class AgentSynthesizerClass:
         return furniture_objects
 
     def _extract_search_result(self, result: Any) -> str:
+        if result is None:
+            return ""
+
         if isinstance(result, str):
             return result
 
@@ -2556,6 +2739,8 @@ class AgentSynthesizerClass:
                 value = result.get(key)
                 if isinstance(value, str):
                     return value
+            if not result:
+                return ""
             return json.dumps(result, ensure_ascii=False)
 
         try:
@@ -2628,7 +2813,6 @@ class AgentSynthesizerClass:
 
             target_list.append(
                 {
-                    "image_url": image_url,
                     "style": style,
                 }
             )
@@ -2651,7 +2835,6 @@ class AgentSynthesizerClass:
 
             target_list.append(
                 {
-                    "image_url": image_url,
                     "colors": colors,
                 }
             )
@@ -2673,11 +2856,13 @@ class AgentSynthesizerClass:
         tool_name: str,
         args: Dict[str, Any],
         user_id: Optional[str] = None,
+        allowed_file_ids: Optional[List[str]] = None,
     ) -> Any:
         validation_error = await self._validate_tool_file_input(
             user_id=user_id,
             tool_name=tool_name,
             args=args,
+            allowed_file_ids=allowed_file_ids,
         )
         if validation_error:
             return validation_error
@@ -2698,9 +2883,21 @@ class AgentSynthesizerClass:
             return await SO.detect_furniture(file=file_obj)
 
         if tool_name in {"get_recommendations"}:
+            style = self._normalize_style_name(args.get("style"))
+            if not style:
+                return {
+                    "error": "missing_style",
+                    "message": self.RECOMMENDATION_STYLE_PROMPT,
+                }
+            furniture_name = str(args.get("furniture_name") or "").strip()
+            if not furniture_name:
+                return {
+                    "error": "missing_furniture_name",
+                    "message": "Sure! I can help you with that. Which furniture would you like recommendations for?",
+                }
             return await SO.get_recommendations(
-                style=args["style"],
-                furniture_name=args["furniture_name"],
+                style=style,
+                furniture_name=furniture_name,
             )
 
         if tool_name == "web_search":
@@ -2710,7 +2907,7 @@ class AgentSynthesizerClass:
                 user_id=user_id,
                 record_step=False,
             )
-            if scope_decision.get("classification") != "interior_design":
+            if scope_decision.get("classification") == "out_of_scope":
                 return {
                     "error": "out_of_scope",
                     "message": self.OUT_OF_SCOPE_MESSAGE,
