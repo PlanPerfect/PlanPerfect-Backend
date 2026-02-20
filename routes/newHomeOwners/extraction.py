@@ -381,16 +381,33 @@ def process_floorplan_image(img_path):
                 line_text = " ".join([w.value for w in line.words])
                 detected_lines.append(line_text.strip())
 
+    normalized_lines = []
+    i = 0
+    while i < len(detected_lines):
+        if detected_lines[i].strip().lower() == 'type' and i + 1 < len(detected_lines):
+            normalized_lines.append(f"Type {detected_lines[i+1].strip()}")
+            i += 2
+        else:
+            normalized_lines.append(detected_lines[i])
+            i += 1
+    detected_lines = normalized_lines
+
     # Extract unit info
     unit_rooms = "" # e.g., "3-BEDROOM"
     unit_types = [] # e.g., ["(TYPE A)"]
     unit_sizes = [] # e.g., ["1200 sq ft"]
 
     # Define patterns for key information
-    rooms_pattern = re.compile(r'^\d+\-(BEDROOM|ROOM)\b', re.IGNORECASE)
+    rooms_pattern = re.compile(r'^\d+\s*-?\s*(BEDROOM|ROOM)\b', re.IGNORECASE)
     reject_room_pattern_words = re.compile(r'\s+FLOOR PLAN$', re.IGNORECASE)
-    unit_type_pattern = re.compile(r'\bType\s*[:\-]?\s*('r'\([A-Za-z0-9]+\)'r'|'r'[A-Za-z0-9]+\([A-Za-z0-9]+\)'r'|'r'[A-Za-z0-9]+'r')\b',re.IGNORECASE)
-    unit_size_pattern = re.compile(r'\b(\d+)\s*sq\s*m\s*/\s*(\d+)\s*sq\s*ft\b',re.IGNORECASE)
+    unit_type_pattern = re.compile(
+        r'\bTYPE\s+([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\([A-Za-z0-9]+\)|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)',
+        re.IGNORECASE
+    )
+    unit_size_pattern = re.compile(
+        r'(\d+)\s*sq[.\s]?m\s*[/\(]\s*([\d,]+)\s*sq[.\s]?ft',
+        re.IGNORECASE
+    )
 
     # Ignore lines if they include these words
     ignore_patterns = [
@@ -404,9 +421,16 @@ def process_floorplan_image(img_path):
     ]
 
     # Extract unit information from lines
+    skip_next = False
     for line in detected_lines:
-        # Skip ignored lines
+        # If previous line was a strata/void/includes line, skip this one too
+        if skip_next:
+            skip_next = False
+            continue
+
+        # Skip ignored lines and flag the next line to skip as well
         if any(pat.search(line) for pat in ignore_patterns):
+            skip_next = True
             continue
 
         if rooms_pattern.match(line):
@@ -415,24 +439,13 @@ def process_floorplan_image(img_path):
 
         match_type = unit_type_pattern.search(line)
         if match_type:
-            raw = match_type.group(0)
-
-            # Remove "Type" prefix
-            cleaned = re.sub(r'Type\s*', '', raw, flags=re.IGNORECASE).strip()
-
-            # Case 1 — (B)
-            bracket_only = re.fullmatch(r'\(([A-Za-z0-9]+)\)', cleaned)
-            if bracket_only:
-                unit_types.append(bracket_only.group(1))
-
-            # Case 2 — B2 or B2(D)
-            else:
-                unit_types.append(cleaned)
+            unit_types.append(match_type.group(1))
 
         match_size = unit_size_pattern.search(line)
         if match_size:
-            cleaned = re.sub(r'\s+', ' ', match_size.group(0)).strip()
-            unit_sizes.append(cleaned.lower())
+            sqm = match_size.group(1)
+            sqft = match_size.group(2).replace(',', '')
+            unit_sizes.append(f"{sqm} sqm / {sqft} sqft")
 
     # Count room names
     room_keywords = ["WC", "BATH", "BALCONY", "BEDROOM", "KITCHEN", "LIVING", "LEDGE"]
@@ -450,6 +463,23 @@ def process_floorplan_image(img_path):
         for keyword in room_keywords:
             if keyword in line_upper:
                 room_counter[keyword] += 1
+
+    joined_text = " ".join(detected_lines)
+    if not unit_sizes:
+        for pat in [
+            re.compile(r'(\d+)\s*sq\s*[.\s]?m\s*[/\(]\s*([\d,]+)\s*sq\s*[.\s]?ft', re.IGNORECASE),
+            re.compile(r'(\d+)\s*sqm\s*\(([\d,]+)\s*sq\s*ft\)', re.IGNORECASE),
+        ]:
+            m = pat.search(joined_text)
+            if m:
+                sqft = m.group(2).replace(',', '')
+                unit_sizes.append(f"{m.group(1)} sqm / {sqft} sqft")
+                break
+    seen = []
+    for type in unit_types:
+        if type not in seen:
+            seen.append(type)
+    unit_types = seen
 
     if not unit_rooms:
         unit_rooms = "N/A"
