@@ -18,9 +18,9 @@ from Services import Logger
 router = APIRouter(prefix="/designDocument/newHomeOwnerDocumentLlm", tags=["LLM PDF Generation - New Home Owner"], dependencies=[Depends(_verify_api_key)])
 
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+groq_alt_client = Groq(api_key=os.getenv("GROQ_ALT_API_KEY"))
 
-
-# ── Unicode cleaning ───────────────────────────────────────────────────────────
+# Unicode cleaning
 UNICODE_REPLACEMENTS = str.maketrans({
     "\u202f": " ",
     "\u00a0": " ", 
@@ -41,8 +41,7 @@ UNICODE_REPLACEMENTS = str.maketrans({
 def _clean_text(text: str) -> str:
     return text.translate(UNICODE_REPLACEMENTS)
 
-
-# ── JSON extraction & repair ───────────────────────────────────────────────────
+# JSON extraction & repair
 def _extract_json_str(raw: str) -> str:
     """Pull JSON out of markdown code fences if present."""
     raw = raw.strip()
@@ -52,7 +51,6 @@ def _extract_json_str(raw: str) -> str:
         return raw.split("```", 1)[1].split("```", 1)[0].strip()
     return raw
 
-
 def _attempt_repair(bad_json: str) -> dict:
     """
     Try a series of increasingly aggressive repairs on malformed JSON.
@@ -60,7 +58,7 @@ def _attempt_repair(bad_json: str) -> dict:
     """
     attempts = [bad_json]
 
-    # 1. Fix unquoted string values like:  "phase": Handover & Styling"
+    # 1. Fix unquoted string values
     repaired = re.sub(
         r':\s*([A-Za-z][^",\}\]\n]{0,120})"',
         lambda m: ': "' + m.group(1).replace('"', "'") + '"',
@@ -84,7 +82,6 @@ def _attempt_repair(bad_json: str) -> dict:
 
     raise ValueError("All JSON repair attempts failed.")
 
-
 def _parse_llm_response(response_text: str) -> dict:
     """
     Clean → extract → parse JSON from an LLM response string.
@@ -99,32 +96,33 @@ def _parse_llm_response(response_text: str) -> dict:
         Logger.log("[NEW DOCUMENT LLM] - ERROR: Initial JSON parse failed, attempting repair...")
         return _attempt_repair(json_str)
 
-
-# ── Groq call with failed_generation fallback ─────────────────────────────────
 def _call_groq(system_prompt: str, user_prompt: str) -> dict:
-    """
-    Call Groq with json_object mode.
-    If Groq returns json_validate_failed (400), extract the failed_generation
-    string from the error body and attempt to parse/repair it ourselves.
-    """
-    try:
-        completion = groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            model="openai/gpt-oss-120b",
-            temperature=0.7,
-            max_tokens=5120,
-            response_format={"type": "json_object"},
-        )
-        return _parse_llm_response(completion.choices[0].message.content)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": user_prompt},
+    ]
+    params = dict(
+        messages=messages,
+        model="openai/gpt-oss-120b",
+        temperature=0.7,
+        max_tokens=5120,
+        response_format={"type": "json_object"},
+    )
 
+    # Primary key attempt
+    try:
+        completion = groq_client.chat.completions.create(**params)
+        return _parse_llm_response(completion.choices[0].message.content)
+    except Exception as primary_err:
+        Logger.log(f"[DOCUMENT LLM] - WARNING: Primary Groq key failed ({primary_err}), retrying with alt key...")
+
+    # Alt key attempt 
+    try:
+        completion = groq_alt_client.chat.completions.create(**params)
+        return _parse_llm_response(completion.choices[0].message.content)
     except Exception as groq_err:
-        # Try to salvage the failed_generation from the Groq error body
         err_str = str(groq_err)
         failed_gen = None
-
         try:
             match = re.search(r"'failed_generation':\s*'(.*?)'(?:\s*\})", err_str, re.DOTALL)
             if match:
@@ -138,16 +136,15 @@ def _call_groq(system_prompt: str, user_prompt: str) -> dict:
             pass
 
         if failed_gen:
-            Logger.log("[NEW DOCUMENT LLM] - ERROR: Groq json_validate_failed — attempting to parse failed_generation...")
+            Logger.log("[DOCUMENT LLM] - ERROR: Groq json_validate_failed - attempting to parse failed_generation...")
             try:
                 return _parse_llm_response(failed_gen)
             except Exception as repair_err:
-                Logger.log(f"[NEW DOCUMENT LLM] - ERROR: Repair also failed: {repair_err}")
+                Logger.log(f"[DOCUMENT LLM] - ERROR: Repair also failed: {repair_err}")
 
         raise groq_err
 
-
-# ── Placeholder helper ─────────────────────────────────────────────────────────
+# Placeholder helper
 def _is_placeholder_value(value):
     if not value:
         return True
@@ -158,8 +155,7 @@ def _is_placeholder_value(value):
     }
     return str(value).lower().strip() in placeholder_phrases
 
-
-# ── Conversation override helper ───────────────────────────────────────────────
+# Conversation override helper
 def apply_conversation_overrides(design_data, base_preferences, base_budget):
     final_preferences = base_preferences.copy()
     final_budget = base_budget
@@ -197,8 +193,7 @@ def apply_conversation_overrides(design_data, base_preferences, base_budget):
 
     return final_preferences, final_budget
 
-
-# ── Download a list of image URLs to temp files ────────────────────────────────
+# Download a list of image URLs to temp files
 def _download_image_list(urls: list, suffix: str = '.jpg') -> list:
     """Download a list of image URLs, returning a list of local temp file paths."""
     paths = []
@@ -215,8 +210,7 @@ def _download_image_list(urls: list, suffix: str = '.jpg') -> list:
             Logger.log(f"[NEW DOCUMENT LLM] - ERROR: Could not download image {url}: {e}")
     return paths
 
-
-# ── Save PDF endpoint ──────────────────────────────────────────────────────────
+# Save PDF endpoint 
 @router.post("/savePdf/{user_id}")
 async def save_generated_pdf(user_id: str, pdf_file: UploadFile = File(...)):
     try:
@@ -248,8 +242,7 @@ async def save_generated_pdf(user_id: str, pdf_file: UploadFile = File(...)):
         Logger.log(f"[NEW DOCUMENT LLM] - ERROR: Error saving generated PDF: {str(e)}")
         return JSONResponse(status_code=500, content={"error": f"ERROR: Failed to save PDF. {str(e)}"})
 
-
-# ── Generate design document endpoint ─────────────────────────────────────────
+# Generate design document endpoint
 @router.post("/generateDesignDocument/{user_id}")
 async def generate_design_document(user_id: str):
     tmp_floor_plan_path = None
@@ -269,7 +262,7 @@ async def generate_design_document(user_id: str):
         if not user_data:
             return JSONResponse(status_code=404, content={"error": "ERROR: User data not found."})
 
-        # ── Extract preferences & unit info ──────────────────────────────────
+        # Extract preferences & unit info
         preferences_data  = user_data.get("Preferences", {})
         budget            = preferences_data.get("budget", "Not specified")
         styles            = preferences_data.get("Preferred Styles", {}).get("styles", [])
@@ -292,20 +285,20 @@ async def generate_design_document(user_id: str):
             "BALCONY":  number_of_rooms.get("balcony",    0),
         }
 
-        # ── Agent Outputs ─────────────────────────────────────────────────────
+        # Agent Outputs
         agent_data    = DM.peek(["Users", user_id, "Agent"]) or {}
         agent_outputs = agent_data.get("Outputs", {})
 
         agent_floor_plan_urls      = agent_outputs.get("Generated Floor Plans", [])
         agent_generated_image_urls = agent_outputs.get("Generated Images", [])
 
-        # Normalise: Firebase may store these as dicts with numeric keys instead of lists
+        # Normaliseg Agent output formats
         if isinstance(agent_floor_plan_urls, dict):
             agent_floor_plan_urls = list(agent_floor_plan_urls.values())
         if isinstance(agent_generated_image_urls, dict):
             agent_generated_image_urls = list(agent_generated_image_urls.values())
 
-        # ── Download images ───────────────────────────────────────────────────
+        # Download images
         for url, attr_name, suffix in [
             (floor_plan_url,           'tmp_floor_plan_path', '.png'),
             (segmented_floor_plan_url, 'tmp_segmented_path',  '.png'),
@@ -333,7 +326,7 @@ async def generate_design_document(user_id: str):
             tmp_agent_generated_image_paths = _download_image_list(agent_generated_image_urls, suffix='.jpg')
             Logger.log(f"[NEW DOCUMENT LLM] - Downloaded {len(tmp_agent_generated_image_paths)} agent generated image(s).")
 
-        # ── Build prompt context ──────────────────────────────────────────────
+        # Build prompt context
         rooms_summary = [f"{c} {rt.title()}" for rt, c in room_counts.items() if c and c > 0]
         property_type = unit_rooms or "Residential Unit"
         styles_str    = ", ".join(styles) if styles else "Not specified"
@@ -481,10 +474,10 @@ Return ONLY valid JSON matching this exact structure:
   }}
 }}"""
 
-        # ── Call LLM ─────────────────────────────────────────────────────────
+        # Call LLM
         design_data = _call_groq(system_prompt, user_prompt)
 
-        # ── Build final preferences & unit info ───────────────────────────────
+        # Build final preferences & unit info
         final_preferences = {"style": styles_str, "styles": styles}
         final_preferences, final_budget = apply_conversation_overrides(
             design_data=design_data,
@@ -499,7 +492,7 @@ Return ONLY valid JSON matching this exact structure:
             "room_counts": room_counts,
         }
 
-        # ── Generate PDF ──────────────────────────────────────────────────────
+        # Generate PDF
         pdf_buffer = generate_pdf(
             design_data=design_data,
             raw_floor_plan_path=tmp_floor_plan_path,
@@ -511,7 +504,7 @@ Return ONLY valid JSON matching this exact structure:
             agent_generated_image_paths=tmp_agent_generated_image_paths,
         )
 
-        # ── Cleanup & return ──────────────────────────────────────────────────
+        # Cleanup & return
         all_tmp_paths = (
             [tmp_floor_plan_path, tmp_segmented_path]
             + tmp_agent_floor_plan_paths
