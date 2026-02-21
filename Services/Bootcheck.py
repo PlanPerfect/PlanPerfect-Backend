@@ -33,14 +33,6 @@ class Bootcheck:
     ]
 
     @staticmethod
-    def check_env_file(): # check if .env file exists
-        if not os.path.exists('.env'):
-            print("BOOTCHECK - ERROR: Environment file not found. Please create a .env file with the required environment variables.\n")
-            return False
-
-        return True
-
-    @staticmethod
     def check_env_variables(): # check if all required env vars are set
         missing_vars = []
 
@@ -125,7 +117,6 @@ class Bootcheck:
     def run_checks():
         checks = [
             ("Environment file check", Bootcheck.check_env_file),
-            ("Environment variables check", Bootcheck.check_env_variables),
             ("Firebase key file check", Bootcheck.check_firebase_key_file),
             ("RAG context file check", Bootcheck.check_rag_context_file),
             ("Firebase credentials validation", Bootcheck.validate_firebase_credentials),
