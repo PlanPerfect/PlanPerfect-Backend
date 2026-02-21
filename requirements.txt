@@ -25,4 +25,3 @@ pillow-avif-plugin==1.5.2
 opencv-python==4.8.1.78
 python-doctr[torch]==1.0.0
 reportlab==4.4.9
-svglib==1.6.0

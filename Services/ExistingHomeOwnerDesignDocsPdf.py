@@ -6,7 +6,6 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, TableStyle, Table, HRFlowable
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-from svglib.svglib import svg2rlg
 from datetime import datetime
 from pathlib import Path
 from Services import Logger
@@ -250,20 +249,14 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
     story.append(Spacer(1, 0.3 * inch))
 
     BASE_DIR = Path(__file__).resolve().parents[1]
-    logo_svg_path = BASE_DIR / "static" / "Logo.svg"
+    logo_image_path = BASE_DIR / "static" / "Logo.png"
     logo_text_path = BASE_DIR / "static" / "Logo-Text.png"
 
-    if os.path.exists(logo_svg_path):
+    if logo_image_path.exists():
         try:
-            drawing = svg2rlg(str(logo_svg_path))
+            logo_image = Image(str(logo_image_path), width=1.7 * inch, height=1.7 * inch, kind='proportional')
             page_width = letter[0] - doc.leftMargin - doc.rightMargin
-            logo_width = 120
-            scale_factor = logo_width / drawing.width
-            drawing.width = logo_width
-            drawing.height = drawing.height * scale_factor
-            drawing.scale(scale_factor, scale_factor)
-
-            logo_table = Table([[drawing]], colWidths=[page_width])
+            logo_table = Table([[logo_image]], colWidths=[page_width])
             logo_table.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -272,9 +265,9 @@ def generate_pdf(design_data, room_photo_path, generated_design_path, preference
             story.append(Spacer(1, 0.15 * inch))
             logo_added = True
         except Exception as e:
-            Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not add SVG logo: {e}")
+            Logger.log(f"[EXISTING DESIGN DOCS] - ERROR: Could not add logo image {logo_image_path.name}: {e}")
 
-    if os.path.exists(logo_text_path):
+    if logo_text_path.exists():
         try:
             logo_text_img = Image(str(logo_text_path), width=2.5 * inch, height=0.6 * inch, kind='proportional')
             page_width = letter[0] - doc.leftMargin - doc.rightMargin
