@@ -1,9 +1,14 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import os
 import uuid
 from middleware.auth import _verify_api_key
 from Services import DatabaseManager as DM
+from Services import Logger
+from Services.Emailer import Emailer
+
+emailer = Emailer()
 
 router = APIRouter(
     prefix="/auth",
@@ -16,8 +21,25 @@ class UserData(BaseModel):
     email: str
     displayName: str
 
+def _send_welcome_email(email: str, display_name: str) -> None:
+    username = display_name.strip() if display_name and display_name.strip() else "there"
+    app_url = os.getenv("VITE_FRONTEND_URL", "http://localhost:5173")
+
+    result = emailer.send_email(
+        to=email,
+        subject="Welcome to PlanPerfect",
+        template="welcome_email",
+        variables={
+            "username": username,
+            "app_url": app_url
+        }
+    )
+
+    if result.startswith("ERROR"):
+        Logger.log(f"[EMAIL] - ERROR: Failed to send welcome email. {result}")
+
 @router.post("/register")
-async def register_user(user_data: UserData):
+async def register_user(user_data: UserData, background_tasks: BackgroundTasks):
     try:
         existing_user = DM.peek(["Users", user_data.uid])
 
@@ -48,6 +70,7 @@ async def register_user(user_data: UserData):
             DM.data["Users"][user_data.uid] = user_info
 
             DM.save()
+            background_tasks.add_task(_send_welcome_email, user_data.email, user_data.displayName)
 
             return JSONResponse(
                 status_code=200,
