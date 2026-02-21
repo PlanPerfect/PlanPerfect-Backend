@@ -481,7 +481,8 @@ Return ONLY valid JSON matching this exact structure:
         design_data = _call_groq(system_prompt, user_prompt)
 
         # Build final preferences & unit info
-        final_preferences = {"style": styles_str, "styles": styles}
+
+        final_preferences = {"style": styles_str}
         final_preferences, final_budget = apply_conversation_overrides(
             design_data=design_data,
             base_preferences=final_preferences,

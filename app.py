@@ -37,9 +37,41 @@ load_dotenv()
 
 app = FastAPI(title="PlanPerfect Backend", version="1.0.0", swagger_ui_parameters={"defaultModelsExpandDepth": -1})
 
+
+def _normalize_origin(origin: str) -> str:
+    return origin.strip().strip('"').strip("'").rstrip("/")
+
+
+def _build_allowed_origins() -> list[str]:
+    raw_origins = []
+
+    frontend_origins = os.getenv("FRONTEND_ORIGINS", "")
+    if frontend_origins:
+        raw_origins.extend(frontend_origins.split(","))
+
+    raw_origins.extend([
+        os.getenv("VITE_FRONTEND_URL", ""),
+        "http://localhost:5173",
+        "https://planperfect-app.netlify.app",
+    ])
+
+    cleaned = []
+    seen = set()
+    for origin in raw_origins:
+        if not origin:
+            continue
+        normalized = _normalize_origin(origin)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            cleaned.append(normalized)
+    return cleaned
+
+
+ALLOWED_ORIGINS = _build_allowed_origins()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("VITE_FRONTEND_URL"), "http://localhost:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
