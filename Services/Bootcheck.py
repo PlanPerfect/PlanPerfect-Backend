@@ -116,7 +116,7 @@ class Bootcheck:
     @staticmethod
     def run_checks():
         checks = [
-            ("Environment file check", Bootcheck.check_env_file),
+            ("Environment variables check", Bootcheck.check_env_variables),
             ("Firebase key file check", Bootcheck.check_firebase_key_file),
             ("RAG context file check", Bootcheck.check_rag_context_file),
             ("Firebase credentials validation", Bootcheck.validate_firebase_credentials),
