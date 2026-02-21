@@ -23,13 +23,13 @@ groq_alt_client = Groq(api_key=os.getenv("GROQ_ALT_API_KEY"))
 # Unicode cleaning
 UNICODE_REPLACEMENTS = str.maketrans({
     "\u202f": " ",
-    "\u00a0": " ", 
+    "\u00a0": " ",
     "\u2013": "-",
     "\u2014": "-",
     "\u2018": "'",
-    "\u2019": "'", 
-    "\u201c": '"', 
-    "\u201d": '"', 
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
     "\u2011": "-",
     "\u2012": "-",
     "\u00d7": "x",
@@ -105,7 +105,7 @@ def _call_groq(system_prompt: str, user_prompt: str) -> dict:
         messages=messages,
         model="openai/gpt-oss-120b",
         temperature=0.7,
-        max_tokens=5120,
+        max_tokens=7000,
         response_format={"type": "json_object"},
     )
 
@@ -116,7 +116,7 @@ def _call_groq(system_prompt: str, user_prompt: str) -> dict:
     except Exception as primary_err:
         Logger.log(f"[DOCUMENT LLM] - WARNING: Primary Groq key failed ({primary_err}), retrying with alt key...")
 
-    # Alt key attempt 
+    # Alt key attempt
     try:
         completion = groq_alt_client.chat.completions.create(**params)
         return _parse_llm_response(completion.choices[0].message.content)
@@ -210,7 +210,7 @@ def _download_image_list(urls: list, suffix: str = '.jpg') -> list:
             Logger.log(f"[NEW DOCUMENT LLM] - ERROR: Could not download image {url}: {e}")
     return paths
 
-# Save PDF endpoint 
+# Save PDF endpoint
 @router.post("/savePdf/{user_id}")
 async def save_generated_pdf(user_id: str, pdf_file: UploadFile = File(...)):
     try:

@@ -41,7 +41,7 @@ UNICODE_REPLACEMENTS = str.maketrans({
 def _clean_text(text: str) -> str:
     return text.translate(UNICODE_REPLACEMENTS)
 
-# JSON extraction & repair 
+# JSON extraction & repair
 def _extract_json_str(raw: str) -> str:
     raw = raw.strip()
     if "```json" in raw:
@@ -95,7 +95,7 @@ def _call_groq(system_prompt: str, user_prompt: str) -> dict:
         messages=messages,
         model="openai/gpt-oss-120b",
         temperature=0.7,
-        max_tokens=5120,
+        max_tokens=7000,
         response_format={"type": "json_object"},
     )
 
@@ -106,7 +106,7 @@ def _call_groq(system_prompt: str, user_prompt: str) -> dict:
     except Exception as primary_err:
         Logger.log(f"[DOCUMENT LLM] - WARNING: Primary Groq key failed ({primary_err}), retrying with alt key...")
 
-    # Alt key attempt 
+    # Alt key attempt
     try:
         completion = groq_alt_client.chat.completions.create(**params)
         return _parse_llm_response(completion.choices[0].message.content)
@@ -134,7 +134,7 @@ def _call_groq(system_prompt: str, user_prompt: str) -> dict:
 
         raise groq_err
 
-# Placeholder helper 
+# Placeholder helper
 def _is_placeholder_value(value):
     if not value:
         return True
@@ -183,7 +183,7 @@ def apply_conversation_overrides(design_data, base_preferences, base_budget):
 
     return final_preferences, final_budget
 
-# Download a list of image URLs to temp files 
+# Download a list of image URLs to temp files
 def _download_image_list(urls: list, suffix: str = '.jpg') -> list:
     """Download a list of image URLs, returning a list of local temp file paths."""
     paths = []
@@ -200,7 +200,7 @@ def _download_image_list(urls: list, suffix: str = '.jpg') -> list:
             Logger.log(f"[EXISTING DOCUMENT LLM] - ERROR: Could not download image {url}: {e}")
     return paths
 
-# Save PDF endpoint 
+# Save PDF endpoint
 @router.post("/savePdf/{user_id}")
 async def save_generated_pdf(user_id: str, pdf_file: UploadFile = File(...)):
     try:
@@ -232,7 +232,7 @@ async def save_generated_pdf(user_id: str, pdf_file: UploadFile = File(...)):
         Logger.log(f"[EXISTING DOCUMENT LLM] - ERROR: Error saving generated PDF: {str(e)}")
         return JSONResponse(status_code=500, content={"error": f"ERROR: Failed to save PDF. {str(e)}"})
 
-# Generate design document endpoint 
+# Generate design document endpoint
 @router.post("/generateDesignDocument/{user_id}")
 async def generate_design_document(user_id: str):
     """
@@ -257,7 +257,7 @@ async def generate_design_document(user_id: str):
         if user is None:
             return JSONResponse(status_code=404, content={"error": "UERROR: Please login again."})
 
-        # Existing Home Owner data 
+        # Existing Home Owner data
         existing_data = DM.peek(["Users", user_id, "Existing Home Owner"])
         if not existing_data:
             return JSONResponse(status_code=404, content={"error": "ERROR: Existing home owner data not found."})
@@ -486,10 +486,10 @@ Return ONLY valid JSON matching this exact structure:
   }}
 }}"""
 
-        # Call LLM 
+        # Call LLM
         design_data = _call_groq(system_prompt, user_prompt)
 
-        # Build final preferences 
+        # Build final preferences
         final_preferences = {"style": styles_str}
         final_preferences, final_budget = apply_conversation_overrides(
             design_data=design_data,
@@ -506,7 +506,7 @@ Return ONLY valid JSON matching this exact structure:
             "budget_max":     existing_prefs.get("budget_max"),
         }
 
-        # Generate PDF 
+        # Generate PDF
         pdf_buffer = generate_pdf(
             design_data=design_data,
             room_photo_path=tmp_room_photo_path,
@@ -520,7 +520,7 @@ Return ONLY valid JSON matching this exact structure:
             agent_generated_image_paths=tmp_agent_generated_image_paths,
         )
 
-        # Cleanup & return 
+        # Cleanup & return
         all_tmp_paths = (
             [tmp_room_photo_path, tmp_generated_design_path]
             + tmp_agent_floor_plan_paths
