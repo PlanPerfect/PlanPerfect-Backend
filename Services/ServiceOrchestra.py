@@ -9,7 +9,6 @@ import json
 import tempfile
 from io import BytesIO
 from PIL import Image
-import pillow_avif  # Required for AVIF support
 import asyncio
 import httpx
 import numpy as np
