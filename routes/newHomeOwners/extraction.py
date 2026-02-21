@@ -22,6 +22,10 @@ from Services import Logger
 router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"], dependencies=[Depends(_verify_api_key)])
 
 executor = ThreadPoolExecutor(max_workers=8)
+ocr_executor = ThreadPoolExecutor(max_workers=1)
+
+MAX_OCR_UPLOAD_BYTES = int(os.getenv("MAX_OCR_UPLOAD_BYTES", str(8 * 1024 * 1024)))
+OCR_TIMEOUT_SECONDS = float(os.getenv("OCR_TIMEOUT_SECONDS", "60"))
 
 def run_room_segmentation(file_path: str):
     client = Client(
@@ -313,15 +317,31 @@ async def unit_information_extraction(file: UploadFile = File(...)):
     """
     tmp_file_path = None
     try:
+        # Read and validate upload before OCR to avoid proxy-level failures on large payloads.
+        content = await file.read()
+        if not content:
+            return JSONResponse(status_code=400, content={ "error": "ERROR: Uploaded file is empty." })
+
+        if len(content) > MAX_OCR_UPLOAD_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": f"ERROR: Uploaded file too large. Max size is {MAX_OCR_UPLOAD_BYTES // (1024 * 1024)}MB."
+                }
+            )
+
         # Save uploaded file temporarily
         suffix = os.path.splitext(file.filename)[1] if file.filename else '.png'
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-            content = await file.read()
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
 
-        # Process the floor plan
-        results = process_floorplan_image(tmp_file_path)
+        # Process OCR in a dedicated small worker pool to reduce memory spikes.
+        loop = asyncio.get_running_loop()
+        results = await asyncio.wait_for(
+            loop.run_in_executor(ocr_executor, process_floorplan_image, tmp_file_path),
+            timeout=OCR_TIMEOUT_SECONDS
+        )
 
         # Clean up temporary file
         os.unlink(tmp_file_path)
@@ -341,6 +361,18 @@ async def unit_information_extraction(file: UploadFile = File(...)):
                 "success": True,
                 "result": response_data
             }
+        )
+
+    except asyncio.TimeoutError:
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
+                os.unlink(tmp_file_path)
+            except:
+                pass
+
+        return JSONResponse(
+            status_code=504,
+            content={ "error": "ERROR: OCR timeout. Please try a smaller or clearer floor plan image." }
         )
 
     except Exception as e:
@@ -365,6 +397,16 @@ def process_floorplan_image(img_path):
     image_bgr = cv2.imread(img_path)
     if image_bgr is None:
         raise ValueError(f"Image not found: {img_path}")
+
+    # Downscale large images to keep OCR latency and memory bounded on Render.
+    max_dim = 1800
+    h, w = image_bgr.shape[:2]
+    largest_side = max(h, w)
+    if largest_side > max_dim:
+        scale = max_dim / float(largest_side)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        image_bgr = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     # Conver BGR image to RGB image for OCR
     image_rgb = image_bgr[:, :, ::-1]
