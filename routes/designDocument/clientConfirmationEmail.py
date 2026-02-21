@@ -47,7 +47,7 @@ async def send_client_confirmation_email(user_id: str):
         # Send Email
         result = emailer.send_email(
             to=email,
-            subject="Your Design Document is Ready — PlanPerfect",
+            subject="Your Design Document is Ready",
             template="design_document_confirmation",
             variables={
                 "username": username
