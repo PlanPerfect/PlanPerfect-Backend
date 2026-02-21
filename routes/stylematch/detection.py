@@ -3,7 +3,6 @@ from fastapi.responses import JSONResponse
 from middleware.auth import _verify_api_key
 from gradio_client import Client, handle_file
 from PIL import Image
-import pillow_avif
 import tempfile
 import os
 import asyncio
