@@ -556,10 +556,14 @@ def generate_pdf(design_data, raw_floor_plan_path, segmented_floor_plan_path, pr
         space_analysis = design_data['space_analysis']
         story.append(Paragraph("2. Space Analysis", heading_style))
 
-        total_area = safe_get(space_analysis, "total_area")
-        if isinstance(total_area, list):
-            total_area = ", ".join(total_area) if total_area else "N/A"
-        story.append(Paragraph(f"<b>Total Area:</b> {total_area}", body_style))
+        if unit_info:
+            unit_sizes = normalize_display_list(safe_get(unit_info, 'unit_sizes', default=[]))
+            if unit_sizes:
+                story.append(Paragraph(f"<b>Total Area:</b> {', '.join(unit_sizes)}", body_style))
+            else:
+                story.append(Paragraph(f"<b>Total Area:</b> Not specified", body_style))
+        else:
+            story.append(Paragraph(f"<b>Total Area:</b> Not specified", body_style))
 
         room_breakdown = safe_get(space_analysis, 'room_breakdown', default=[])
         if room_breakdown and len(room_breakdown) > 0:
