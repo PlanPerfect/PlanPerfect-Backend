@@ -12,7 +12,7 @@ from Services import DatabaseManager as DM
 
 router = APIRouter(
     prefix="/stylematch/recommendations",
-    tags=["Get Recommendations"],
+    tags=["Furniture Recommendations"],
     dependencies=[Depends(_verify_api_key)]
 )
 

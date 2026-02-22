@@ -126,7 +126,6 @@ def index():
                 <div class="nav-links">
                     <a href="/" class="nav-link">Home</a>
                     <a href="/docs" class="nav-link">API</a>
-                    <a href="/sample/logs-page" class="nav-link">Logs</a>
                 </div>
             </div>
         </nav>

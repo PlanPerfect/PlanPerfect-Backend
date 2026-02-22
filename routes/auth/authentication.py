@@ -12,7 +12,7 @@ emailer = Emailer()
 
 router = APIRouter(
     prefix="/auth",
-    tags=["Authentication"],
+    tags=["Registration"],
     dependencies=[Depends(_verify_api_key)]
 )
 

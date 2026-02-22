@@ -4,7 +4,7 @@ from middleware.auth import _verify_api_key
 from Services import DatabaseManager as DM
 from Services import Logger
 
-router = APIRouter(prefix="/designDocument/checkFlow", tags=["User"], dependencies=[Depends(_verify_api_key)])
+router = APIRouter(prefix="/designDocument/checkFlow", tags=["Design Document User Flow"], dependencies=[Depends(_verify_api_key)])
 
 @router.get("/{user_id}")
 async def get_user_flow(user_id: str):

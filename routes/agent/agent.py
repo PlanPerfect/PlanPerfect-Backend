@@ -10,7 +10,7 @@ from Services import Logger
 from Services import AgentSynthesizer as AGS
 from Services import LLMManager as LLM
 
-router = APIRouter(prefix="/agent", tags=["agent"], dependencies=[Depends(_verify_api_key)])
+router = APIRouter(prefix="/agent", tags=["Agent Session"], dependencies=[Depends(_verify_api_key)])
 
 ALLOWED_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg"}
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg"}
