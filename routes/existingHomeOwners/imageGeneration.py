@@ -355,9 +355,18 @@ async def get_furniture(request: Request):
         if not furniture_data:
             return JSONResponse(status_code=404, content={"error": "UERROR: No saved recommendations found."})
 
+        # ← NEW: get selected styles for filtering
+        selected_styles = DM.peek(["Users", user_id, "Existing Home Owner", "Preferences", "selected_styles"]) or []
+        selected_styles_lower = [s.lower() for s in selected_styles]
+
         furniture_list = []
         for item_id, item_data in furniture_data.items():
             if isinstance(item_data, dict) and item_data.get("image"):
+                # ← NEW: filter by style if styles exist
+                if selected_styles_lower:
+                    item_text = (item_data.get("name", "") + " " + item_data.get("description", "")).lower()
+                    if not any(style in item_text for style in selected_styles_lower):
+                        continue
                 furniture_list.append({
                     "id": item_id,
                     "name": item_data.get("name", "Unknown"),
