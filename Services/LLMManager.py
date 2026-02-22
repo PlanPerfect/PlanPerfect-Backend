@@ -444,15 +444,25 @@ class LLMManagerClass: # singleton class managing LLM calls, rate-limits, and mo
             or "unsupported content type" in error_str
         )
 
-    def chat(self, prompt: str) -> str: # main chat method with smart model switching and rate-limit handling
+    def chat(
+        self,
+        prompt: str,
+        temperature: float = 0.8,
+        max_tokens: int = 1024,
+    ) -> str: # main chat method with smart model switching and rate-limit handling
         if not self._initialized:
             raise RuntimeError("LLMManager not initialized. Call initialize() first.")
 
         if prompt is None:
             return self.FALLBACK_MESSAGE
 
-        temperature = 0.8
-        max_tokens = 1024
+        if not isinstance(temperature, (int, float)):
+            temperature = 0.8
+        temperature = max(0.0, min(1.5, float(temperature)))
+
+        if not isinstance(max_tokens, int) or max_tokens <= 0:
+            max_tokens = 1024
+
         max_retries = 8
         attempts = 0
 

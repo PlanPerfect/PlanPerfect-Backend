@@ -1834,24 +1834,26 @@ class AgentSynthesizerClass:
             completed_tool_runs=completed_tool_runs,
         )
 
-    def _build_multi_tool_response(
+    def _collect_multi_tool_response_items(
         self,
         user_id: str,
         completed_tool_runs: List[Dict[str, Any]],
-    ) -> str:
-        snippets: List[str] = []
-        seen = set()
+    ) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        seen_summaries = set()
         seen_tool_calls = set()
 
         for item in completed_tool_runs:
             tool_name = str(item.get("tool_name") or "").strip()
             if not tool_name:
                 continue
+
             tool_args = item.get("tool_args") if isinstance(item.get("tool_args"), dict) else {}
             tool_call_key = self._tool_call_cache_key(tool_name, tool_args)
             if tool_call_key in seen_tool_calls:
                 continue
             seen_tool_calls.add(tool_call_key)
+
             snippet = self._build_direct_tool_response(
                 user_id=user_id,
                 tool_name=tool_name,
@@ -1862,42 +1864,161 @@ class AgentSynthesizerClass:
             cleaned_snippet = self._strip_multi_tool_followups(cleaned_snippet)
             if not cleaned_snippet:
                 continue
-            dedupe_key = cleaned_snippet.lower()
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            snippets.append(cleaned_snippet)
 
-        if not snippets:
+            dedupe_key = cleaned_snippet.lower()
+            if dedupe_key in seen_summaries:
+                continue
+            seen_summaries.add(dedupe_key)
+
+            items.append(
+                {
+                    "tool_name": tool_name,
+                    "summary": cleaned_snippet,
+                }
+            )
+
+        return items
+
+    def _is_generic_completion_response(self, text: Any) -> bool:
+        normalized = self._sanitize_user_response(text).lower()
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+        if not normalized:
+            return True
+
+        if normalized in {"done", "done done", "done i"}:
+            return True
+
+        generic_prefixes = (
+            "all requested steps are done",
+            "i ve completed the requested steps",
+            "i have completed the requested steps",
+            "everything you asked for has been completed",
+        )
+        return any(normalized.startswith(prefix) for prefix in generic_prefixes)
+
+    def _rewrite_multi_tool_response_with_llm(
+        self,
+        response_items: List[Dict[str, str]],
+    ) -> str:
+        if len(response_items) < 2:
+            return ""
+
+        source_sentences = [
+            str(item.get("summary") or "").strip()
+            for item in response_items
+            if isinstance(item, dict) and str(item.get("summary") or "").strip()
+        ]
+        if len(source_sentences) < 2:
+            return ""
+
+        source_text = " ".join(source_sentences).strip()
+        if not source_text:
+            return ""
+
+        rewrite_prompt = (
+            "You are a response editor.\n"
+            "Combine the source sentences into one short, natural paragraph.\n"
+            "Hard constraints:\n"
+            "- Use only facts and details already present in source sentences.\n"
+            "- Do not add new content, new comparisons, new materials, or extra recommendations.\n"
+            "- Keep the response short (2 to 4 sentences).\n"
+            "- Remove duplicate or repetitive phrases.\n"
+            "- Do not output headings, bullet points, numbered lists, or markdown tables.\n"
+            "- Return plain text only.\n\n"
+            f"Source sentences:\n{json.dumps(source_sentences, ensure_ascii=False)}"
+        )
+
+        try:
+            rewritten = LLMManager.chat(
+                rewrite_prompt,
+                temperature=0.15,
+                max_tokens=220,
+            )
+        except Exception as e:
+            Logger.log(f"[AGENT SYNTHESIZER] - WARNING: Multi-tool rewrite failed. Error: {e}")
+            return ""
+
+        cleaned = self._sanitize_user_response(rewritten)
+        cleaned = self._strip_multi_tool_followups(cleaned)
+        if not cleaned:
+            return ""
+
+        fallback_message = self._sanitize_user_response(getattr(LLMManager, "FALLBACK_MESSAGE", ""))
+        if fallback_message and cleaned == fallback_message:
+            return ""
+
+        if self._is_generic_completion_response(cleaned):
+            return ""
+
+        if re.search(r"(^|\n)\s*[-*•]\s+", cleaned):
+            return ""
+        if re.search(r"(^|\n)\s*\d+\.\s+", cleaned):
+            return ""
+        if cleaned.count("|") >= 2:
+            return ""
+
+        if len(cleaned) > int(len(source_text) * 1.25) + 24:
+            return ""
+
+        token_pattern = re.compile(r"[a-z0-9#]+(?:-[a-z0-9#]+)?", re.IGNORECASE)
+        ignored_tokens = {
+            "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with", "from",
+            "is", "are", "was", "were", "be", "been", "it", "this", "that", "these", "those",
+            "your", "you", "i", "we", "as", "at", "by", "if", "then", "also", "overall", "looks",
+            "look", "style", "room", "palette", "colors", "furniture", "recommendations", "saved",
+            "ready", "generated", "found",
+        }
+        source_tokens = {
+            token.lower()
+            for token in token_pattern.findall(source_text)
+            if len(token) > 2
+        }
+        candidate_tokens = [
+            token.lower()
+            for token in token_pattern.findall(cleaned)
+            if len(token) > 2
+        ]
+        candidate_unique = set(candidate_tokens)
+        novel_tokens = {
+            token
+            for token in candidate_unique
+            if token not in source_tokens and token not in ignored_tokens
+        }
+        if len(novel_tokens) > max(3, int(len(candidate_unique) * 0.22)):
+            return ""
+
+        return cleaned
+
+    def _build_multi_tool_response(
+        self,
+        user_id: str,
+        completed_tool_runs: List[Dict[str, Any]],
+    ) -> str:
+        response_items = self._collect_multi_tool_response_items(
+            user_id=user_id,
+            completed_tool_runs=completed_tool_runs,
+        )
+
+        if not response_items:
             return self._sanitize_user_response("Done.")
 
-        if len(snippets) == 1:
-            return self._sanitize_user_response(snippets[0])
+        if len(response_items) == 1:
+            return self._sanitize_user_response(response_items[0]["summary"])
 
-        opener = self._pick_response_template(
-            [
-                "I've completed the requested steps.",
-                "All requested steps are done.",
-                "Everything you asked for has been completed.",
-            ],
-            "I've completed the requested steps.",
+        rewritten = self._rewrite_multi_tool_response_with_llm(
+            response_items=response_items,
         )
-        closer = self._pick_response_template(
-            [
-                "Let me know if you want any refinements.",
-                "If you'd like changes, I can adjust it.",
-                "I can fine-tune any part of this if you want.",
-            ],
-            "Let me know if you want any refinements.",
-        )
+        if rewritten:
+            return rewritten
 
+        snippets = [item["summary"] for item in response_items if item.get("summary")]
         if len(snippets) > 6:
             remaining = len(snippets) - 6
             snippet_text = " ".join(snippets[:6] + [f"I also completed {remaining} additional step(s)."])
         else:
             snippet_text = " ".join(snippets)
 
-        return self._sanitize_user_response(f"{opener} {snippet_text} {closer}")
+        return self._sanitize_user_response(snippet_text)
 
     def _build_direct_tool_response(
         self,
