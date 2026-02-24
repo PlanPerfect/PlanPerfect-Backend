@@ -285,16 +285,17 @@ async def generate_design_document(user_id: str):
         if isinstance(agent_generated_image_urls, dict):
             agent_generated_image_urls = list(agent_generated_image_urls.values())
 
-        # Preferences from New Home Owner only
-        new_home_owner_data = DM.peek(["Users", user_id, "New Home Owner"])
+        # Preferences from Existing Home Owner only
+        existing_home_owner_data = DM.peek(["Users", user_id, "Existing Home Owner"])
         budget_min     = "Not specified"
         budget_max     = "Not specified"
+        budget         = "Not specified"
         selected_styles     = []
         unit_type       = "Not specified"
         property_type   = "Residential Unit"
 
-        if new_home_owner_data:
-            prefs = new_home_owner_data.get("Preferences", {})
+        if existing_home_owner_data:
+            prefs = existing_home_owner_data.get("Preferences", {})
             budget_min = prefs.get("budget_min", budget_min)
             budget_max = prefs.get("budget_max", budget_max)
             selected_styles = prefs.get("selected_styles", selected_styles)
@@ -397,6 +398,10 @@ Landed: New S$100,000-S$250,000+ | Resale S$300,000-S$1.5M+
 Component Costs: Carpentry S$250-S$400/ft | Flooring vinyl S$4-S$8 psf / premium S$10-S$47.50 psf
 Electrical S$1,500-S$15,000 | Plumbing S$1,500-S$4,000
 
+IMPORTANT: The client's property is a {property_type} ({unit_type}). 
+Your quotation MUST be based on {property_type} ({unit_type}) renovation costs from the reference above, NOT HDB costs.
+Your quote_basis field MUST mention "{property_type} ({unit_type})" specifically.
+
 {formatted_chat_history}
 
 INSTRUCTIONS:
@@ -405,7 +410,8 @@ INSTRUCTIONS:
 3. For furniture_items in room recommendations, USE the saved furniture recommendations above.
 4. ALWAYS provide 3-5 specific color and material suggestions.
 5. Quotation breakdown subtotals MUST add up EXACTLY to total_quotation.
-6. Use ONLY plain ASCII characters - no special dashes, no curly quotes.
+6. Base your quotation on {property_type} ({unit_type}) costs from the reference, NOT other property types.
+7. Use ONLY plain ASCII characters - no special dashes, no curly quotes.
 
 Return ONLY valid JSON matching this exact structure:
 {{
@@ -497,13 +503,12 @@ Return ONLY valid JSON matching this exact structure:
             base_budget=budget,
         )
 
-        existing_prefs = existing_data.get("Preferences", {})
         unit_info = {
-            "property_type":  existing_prefs.get("property_type", ""),
-            "unit_type":      existing_prefs.get("unit_type", ""),
-            "selected_styles": existing_prefs.get("selected_styles", []),
-            "budget_min":     existing_prefs.get("budget_min"),
-            "budget_max":     existing_prefs.get("budget_max"),
+            "property_type":   property_type,
+            "unit_type":       unit_type,
+            "selected_styles": selected_styles,
+            "budget_min":      budget_min,
+            "budget_max":      budget_max,
         }
 
         # Generate PDF
