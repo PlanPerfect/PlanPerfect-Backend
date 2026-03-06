@@ -15,9 +15,16 @@ import asyncio
 import httpx
 from collections import Counter
 
+from typing import Dict, List, Optional
+from pydantic import BaseModel
+from groq import Groq
 from Services import DatabaseManager as DM
 from Services import FileManager as FM
 from Services import Logger
+from Services import ServiceOrchestra as SO
+
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+groq_alt_client = Groq(api_key=os.getenv("GROQ_ALT_API_KEY"))
 
 router = APIRouter(prefix="/newHomeOwners/extraction", tags=["New Home Owners AI Extraction"], dependencies=[Depends(_verify_api_key)])
 
@@ -26,6 +33,119 @@ ocr_executor = ThreadPoolExecutor(max_workers=1)
 
 MAX_OCR_UPLOAD_BYTES = int(os.getenv("MAX_OCR_UPLOAD_BYTES", str(8 * 1024 * 1024)))
 OCR_TIMEOUT_SECONDS = float(os.getenv("OCR_TIMEOUT_SECONDS", "60"))
+
+# Unicode cleaning
+UNICODE_REPLACEMENTS = str.maketrans({
+    "\u202f": " ",
+    "\u00a0": " ",
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2011": "-",
+    "\u2012": "-",
+    "\u00d7": "x",
+    "\u25a0": "",
+    "\u00ab": '"',
+    "\u00bb": '"',
+})
+
+def _clean_text(text: str) -> str:
+    return text.translate(UNICODE_REPLACEMENTS)
+
+# JSON extraction & repair
+def _extract_json_str(raw: str) -> str:
+    raw = raw.strip()
+    if "```json" in raw:
+        return raw.split("```json", 1)[1].split("```", 1)[0].strip()
+    if "```" in raw:
+        return raw.split("```", 1)[1].split("```", 1)[0].strip()
+    return raw
+
+def _attempt_repair(bad_json: str) -> dict:
+    attempts = [bad_json]
+
+    # Fix unquoted string values
+    repaired = re.sub(
+        r':\s*([A-Za-z][^",\}\]\n]{0,120})"',
+        lambda m: ': "' + m.group(1).replace('"', "'") + '"',
+        bad_json,
+    )
+    attempts.append(repaired)
+
+    # Remove trailing commas before } or ]
+    no_trailing = re.sub(r',\s*([}\]])', r'\1', bad_json)
+    attempts.append(no_trailing)
+
+    # Both repairs combined
+    both = re.sub(r',\s*([}\]])', r'\1', repaired)
+    attempts.append(both)
+
+    for attempt in attempts:
+        try:
+            return json.loads(attempt)
+        except json.JSONDecodeError:
+            continue
+
+def _parse_llm_response(response_text: str) -> dict:
+    cleaned = _clean_text(response_text)
+    json_str = _extract_json_str(cleaned)
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        Logger.log("[EXISTING DOCUMENT LLM] - ERROR: Initial JSON parse failed, attempting repair...")
+        return _attempt_repair(json_str)
+
+
+def _call_groq(system_prompt: str, user_prompt: str) -> dict:
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": user_prompt},
+    ]
+    params = dict(
+        messages=messages,
+        model="openai/gpt-oss-120b",
+        temperature=0.7,
+        max_tokens=7000,
+        response_format={"type": "json_object"},
+    )
+
+    # Primary key attempt
+    try:
+        completion = groq_client.chat.completions.create(**params)
+        return _parse_llm_response(completion.choices[0].message.content)
+    except Exception as primary_err:
+        Logger.log(f"[DOCUMENT LLM] - WARNING: Primary Groq key failed ({primary_err}), retrying with alt key...")
+
+    # Alt key attempt
+    try:
+        completion = groq_alt_client.chat.completions.create(**params)
+        return _parse_llm_response(completion.choices[0].message.content)
+    except Exception as groq_err:
+        err_str = str(groq_err)
+        failed_gen = None
+        try:
+            match = re.search(r"'failed_generation':\s*'(.*?)'(?:\s*\})", err_str, re.DOTALL)
+            if match:
+                failed_gen = match.group(1).encode("utf-8").decode("unicode_escape")
+            else:
+                body_match = re.search(r"\{.*\}", err_str, re.DOTALL)
+                if body_match:
+                    body = json.loads(body_match.group(0).replace("'", '"'))
+                    failed_gen = body.get("error", {}).get("failed_generation")
+        except Exception:
+            pass
+
+        if failed_gen:
+            Logger.log("[DOCUMENT LLM] - ERROR: Groq json_validate_failed - attempting to parse failed_generation...")
+            try:
+                return _parse_llm_response(failed_gen)
+            except Exception as repair_err:
+                Logger.log(f"[DOCUMENT LLM] - ERROR: Repair also failed: {repair_err}")
+
+        raise groq_err
 
 def run_room_segmentation(file_path: str):
     client = Client(
@@ -64,6 +184,7 @@ async def save_user_input(
     preferences: str = Form(...),
     budget: str = Form(None),
     unit_info: str = Form(None),
+    furniture_selections: str = Form(None),
     user_id: str = Form(...),
 ):
     """
@@ -206,6 +327,13 @@ async def save_user_input(
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["kitchen"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["ledge"] = None
             DM.data["Users"][user_id]["New Home Owner"]["Unit Information"]["Number Of Rooms"]["livingRoom"] = None
+
+        # Save furniture selections if provided
+        if furniture_selections:
+            try:
+                DM.data["Users"][user_id]["New Home Owner"]["Furniture Selections"] = json.loads(furniture_selections)
+            except json.JSONDecodeError:
+                pass
 
         # Save to Firebase RTDB
         DM.save()
@@ -458,7 +586,7 @@ def process_floorplan_image(img_path):
         re.compile(r'.*strata void.*', re.IGNORECASE),
         re.compile(r'.*WITHSTRATA VOIDI.*', re.IGNORECASE),
         re.compile(r'strata', re.IGNORECASE),
-        re.compile(r'VOIDOF', re.IGNORECASE), 
+        re.compile(r'VOIDOF', re.IGNORECASE),
         re.compile(r'.*LIVING, DINING.*DRY KITCHEN.*', re.IGNORECASE)
     ]
 
@@ -541,3 +669,157 @@ def process_floorplan_image(img_path):
         "detected_lines": detected_lines,
         "raw_result": result
     }
+
+def _get_furniture_quotation(budget: str, unit_info: dict, furniture_list: list, furniture_counts: dict) -> dict:
+    unit = unit_info.get("unit", "N/A") if unit_info else "N/A"
+    unit_size = unit_info.get("unitSize", ["N/A"])[0] if unit_info and unit_info.get("unitSize") else "N/A"
+    furniture_summary = ", ".join([f"{v}x {k}" for k, v in (furniture_counts or {}).items()]) or "Not specified"
+
+    system_prompt = (
+        "You are an interior design cost estimator specialising in Singapore (2026 market). "
+        "You MUST respond with ONLY a valid JSON object, no other text. "
+        "Use ONLY plain ASCII characters - no special dashes, no curly quotes. "
+        "The JSON object must contain exactly these keys: "
+        "quotation_range, recommended_quote, quote_basis."
+    )
+
+    user_prompt = (
+        f"Estimate the furniture cost for this unit:\n"
+        f"- Unit type: {unit}\n"
+        f"- Unit size: {unit_size}\n"
+        f"- Client stated budget: {budget or 'Not specified'}\n"
+        f"- Furniture selected: {furniture_summary}\n\n"
+        "Singapore furniture cost reference (2026):\n"
+        "- Basic (HDB): S$8,000 - S$15,000\n"
+        "- Mid-range (HDB/Condo): S$15,000 - S$35,000\n"
+        "- Premium (Condo/Landed): S$35,000 - S$80,000+\n"
+        "- Bed frame: S$500-S$3,000 | Sofa: S$800-S$5,000 | Dining set: S$600-S$3,000\n\n"
+        "Respond with ONLY this JSON structure:\n"
+        '{"quotation_range": "S$XX,000 - S$XX,000", "recommended_quote": "S$XX,000", "quote_basis": "Brief explanation."}'
+    )
+
+    return _call_groq(system_prompt, user_prompt)
+
+class FurnitureFloorPlanRequest(BaseModel):
+    furniture_list: List[str]
+    furniture_counts: Optional[Dict[str, int]] = None
+
+@router.post("/generateFurnitureFloorPlan/{user_id}")
+async def generate_furniture_floor_plan(
+    user_id: str,
+    body: FurnitureFloorPlanRequest,
+):
+    """
+    Generates a new floor plan image with the user's selected furniture placed on it.
+    Fetches the user's original uploaded floor plan from the database, then calls the AI
+    service to overlay the chosen furniture symbols.
+
+    The AI will replace existing furniture if the floor plan already contains any,
+    or add new furniture symbols to an empty floor plan.
+    """
+    try:
+        user = DM.peek(["Users", user_id])
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "result": "UERROR: No user found. Please login again."
+                }
+            )
+
+        floor_plan_url = DM.peek(["Users", user_id, "New Home Owner", "Uploaded Floor Plan", "url"])
+        if not floor_plan_url:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "result": "UERROR: No floor plan image found. Please upload a floor plan first."
+                }
+            )
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            img_response = await client.get(floor_plan_url)
+            img_response.raise_for_status()
+            image_bytes = img_response.content
+
+        filename = floor_plan_url.split("/")[-1].split("?")[0] or "floor_plan.png"
+
+        result = await SO.generate_furniture_floor_plan(
+            image_bytes=image_bytes,
+            filename=filename,
+            furniture_list=body.furniture_list,
+            furniture_counts=body.furniture_counts or {},
+        )
+
+        if result is None:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "result": "ERROR: Floor plan generation failed. Please try again."
+                }
+            )
+
+        if result.get("error") == "invalid_floor_plan":
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "success": False,
+                    "result": f"UERROR: {result['message']}"
+                }
+            )
+
+        if result.get("error") == "no_image":
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "result": "ERROR: AI did not return a floor plan image. Please try again."
+                }
+            )
+
+        DM.data["Users"][user_id]["New Home Owner"]["Furniture Floor Plan"] = {
+            "url": result["floor_plan_url"],
+            "furniture_list": body.furniture_list,
+            "furniture_counts": body.furniture_counts or {},
+        }
+        DM.save()
+
+        quotation_range = None
+        try:
+            unit_info = DM.peek(["Users", user_id, "New Home Owner", "Unit Information"])
+            budget = DM.peek(["Users", user_id, "New Home Owner", "Preferences", "budget"])
+            quotation_data = _get_furniture_quotation(
+                budget=budget,
+                unit_info=unit_info,
+                furniture_list=body.furniture_list,
+                furniture_counts=body.furniture_counts or {},
+            )
+            quotation_range = quotation_data.get("quotation_range")
+            DM.data["Users"][user_id]["New Home Owner"]["Quotation"] = quotation_data
+            DM.save()
+        except Exception as e:
+            Logger.log(f"[GENERATE FURNITURE FLOOR PLAN] - WARNING: Quotation generation failed: {str(e)}")
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "result": {
+                    "floor_plan_url": result["floor_plan_url"],
+                    "furniture_placed": result.get("furniture_placed", []),
+                    "quotation_range": quotation_range,
+                }
+            }
+        )
+
+    except Exception as e:
+        Logger.log(f"[GENERATE FURNITURE FLOOR PLAN] - ERROR: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "result": f"ERROR: {str(e)}"
+            }
+        )

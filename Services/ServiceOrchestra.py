@@ -1023,4 +1023,183 @@ Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid
 
             return None
 
+    async def generate_furniture_floor_plan(
+        self,
+        image_bytes: bytes,
+        filename: str,
+        furniture_list: list,
+        furniture_counts: Optional[Dict[str, int]] = None,
+    ) -> Optional[Dict[str, any]]:
+        if not self._initialized:
+            raise RuntimeError("ServiceOrchestra not initialized. Call initialize() first.")
+
+        if not self._client:
+            Logger.log("[SERVICE ORCHESTRA] - ERROR: Client not available.")
+            return None
+
+        try:
+            suffix = os.path.splitext(filename)[1].lower() if filename else '.png'
+
+            mime_type = "image/png"
+            if suffix in ['.jpg', '.jpeg']:
+                mime_type = "image/jpeg"
+            elif suffix == '.webp':
+                mime_type = "image/webp"
+
+            normalized_counts: Dict[str, int] = {}
+            if isinstance(furniture_counts, dict):
+                for raw_name, raw_count in furniture_counts.items():
+                    name = str(raw_name).strip()
+                    if not name:
+                        continue
+                    try:
+                        count = int(raw_count)
+                    except Exception:
+                        count = 1
+                    normalized_counts[name] = max(1, count)
+
+            normalized_furniture: List[Dict[str, Any]] = []
+            seen_names = set()
+            if isinstance(furniture_list, list):
+                for item in furniture_list:
+                    name = str(item).strip()
+                    if not name:
+                        continue
+                    count = normalized_counts.get(name, 1)
+                    normalized_furniture.append({"name": name, "count": count})
+                    seen_names.add(name)
+
+            for name, count in normalized_counts.items():
+                if name in seen_names:
+                    continue
+                normalized_furniture.append({"name": name, "count": count})
+
+            furniture_lines = "\n".join(
+                f"   - {entry['name']}: {entry['count']} item(s)"
+                for entry in normalized_furniture
+            )
+            if not furniture_lines:
+                furniture_lines = "   - No furniture provided"
+
+            prompt = f"""CRITICAL INSTRUCTIONS - READ CAREFULLY:
+
+1. FIRST, analyze if the uploaded image is a valid floor plan or architectural drawing.
+   - Valid floor plan indicators: walls, rooms, architectural symbols, top-down view, measurements
+   - If NOT a valid floor plan, respond ONLY with the text: "Sorry, but no valid floor plan was detected"
+
+2. IF it IS a valid floor plan, generate a new image that:
+   - If the floor plan already contains furniture symbols, REPLACE them entirely with the new furniture listed below.
+   - If the floor plan is empty (no furniture), ADD the new furniture symbols.
+   - Maintain all walls, room labels, dimensions, and architectural details exactly as they are.
+   - Place furniture as simple top-down symbols appropriately scaled to the rooms.
+
+3. Furniture to place on the floor plan:
+{furniture_lines}
+   - Draw exactly the requested count for each furniture type
+
+4. Layout guidelines:
+   - Place sofas along walls in living areas
+   - Place dining tables in dining areas with chairs around them
+   - Place beds in bedrooms
+   - Place desks in study/office areas
+   - Ensure furniture placement makes logical sense for room flow and usage
+   - Do NOT overlap furniture items
+   - Leave adequate walking space between furniture
+
+5. Visual requirements for the furniture drawings:
+   - Draw simple, recognizable top-down furniture symbols
+   - Use black outlines with minimal detail
+   - Examples:
+     * Sofa: L-shaped or rectangular shape with cushion segments indicated
+     * Chair: Simple seat with backrest indicated
+     * Table: Rectangular or circular outline
+     * Bed: Rectangle with pillow area indicated at one end
+     * Desk: Rectangle with drawer indicators on one side
+   - Scale furniture appropriately to the floor plan
+   - Use standard architectural furniture symbols
+
+6. IMPORTANT:
+   - Maintain the exact same floor plan layout and dimensions
+   - Keep all architectural details visible
+   - Only ADD or REPLACE the furniture drawings, do not modify the floor plan structure itself
+   - Generate a high-quality image output
+   - Furniture should look like professional architectural floor plan symbols
+
+Remember: If this is NOT a floor plan, output ONLY the text "Sorry, but no valid floor plan was detected" and nothing else."""
+
+            response = self._generate_content_with_image_fallback(
+                operation_name="Furniture floor plan generation",
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type=mime_type
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    response_modalities=['TEXT', 'IMAGE'],
+                    image_config=types.ImageConfig(
+                        aspect_ratio="1:1",
+                        image_size="2K"
+                    ),
+                )
+            )
+
+            response_text = None
+            image_bytes_result = None
+
+            for part in response.parts:
+                if hasattr(part, 'text') and part.text:
+                    response_text = part.text.strip()
+
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    image_data = part.inline_data.data
+                    if image_data:
+                        if isinstance(image_data, bytes):
+                            image_bytes_result = image_data
+                        else:
+                            image_bytes_result = base64.b64decode(image_data)
+
+            if response_text and "no valid floor plan was detected" in response_text.lower():
+                return {
+                    "error": "invalid_floor_plan",
+                    "message": "Sorry, but no valid floor plan was detected"
+                }
+
+            if not image_bytes_result:
+                Logger.log("[SERVICE ORCHESTRA] - WARNING: No furniture floor plan image generated.")
+                return {
+                    "error": "no_image",
+                    "message": "Failed to generate floor plan with furniture"
+                }
+
+            output_filename = f"furniture_floor_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            file_obj = BytesIO(image_bytes_result)
+            file_obj.seek(0)
+
+            class MockUploadFile:
+                def __init__(self, filename: str, file_obj: BytesIO):
+                    self.filename = filename
+                    self.file = file_obj
+                    self.content_type = "image/png"
+
+            mock_file = MockUploadFile(output_filename, file_obj)
+
+            upload_result = FM.store_file(
+                file=mock_file,
+                subfolder="Generated Floor Plans"
+            )
+
+            return {
+                "floor_plan_url": upload_result["url"],
+                "file_id": upload_result["file_id"],
+                "filename": upload_result["filename"],
+                "furniture_placed": normalized_furniture,
+            }
+
+        except Exception as e:
+            Logger.log(f"[SERVICE ORCHESTRA] - ERROR: Furniture floor plan generation failed. {str(e)}")
+            return None
+
+
 ServiceOrchestra = ServiceOrchestraClass()
